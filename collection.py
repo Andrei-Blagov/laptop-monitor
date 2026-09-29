@@ -92,6 +92,37 @@ def collect_products(
     return CollectionResult(regard=regard, andpro=andpro)
 
 
+def write_collection_diagnostic(
+    collection: CollectionResult,
+    last_run_path: Path | str,
+) -> None:
+    """Пишет diagnostic JSON без изменения production DB."""
+    path = Path(last_run_path)
+    path.parent.mkdir(parents=True, exist_ok=True)
+    products = collection.products
+    path.write_text(
+        json.dumps(
+            {
+                "regard_ok": collection.regard.ok,
+                "andpro_ok": collection.andpro.ok,
+                "regard_count": (
+                    collection.regard.count if collection.regard.ok else None
+                ),
+                "andpro_count": (
+                    collection.andpro.count if collection.andpro.ok else None
+                ),
+                "count": len(products),
+                "incomplete": not collection.both_ok,
+                "products": [asdict(p) for p in products],
+            },
+            ensure_ascii=False,
+            indent=2,
+            default=str,
+        ),
+        encoding="utf-8",
+    )
+
+
 def persist_collection(
     collection: CollectionResult,
     db_path: Path | str = DEFAULT_DB_PATH,
@@ -99,30 +130,14 @@ def persist_collection(
     last_run_path: Path | str | None = None,
 ) -> SaveStats:
     """
-    Сохраняет только продукты успешно собранных магазинов.
+    Сохраняет продукты успешно собранных магазинов в production DB.
 
-    Не пишет «пустой» снимок упавшего магазина — availability не трогается.
+    Для неполного collection вызывающий код (pipeline) не должен
+    вызывать эту функцию — иначе можно потерять PRICE_DROP.
     """
     products = collection.products
     if last_run_path is not None:
-        path = Path(last_run_path)
-        path.parent.mkdir(parents=True, exist_ok=True)
-        path.write_text(
-            json.dumps(
-                {
-                    "regard_ok": collection.regard.ok,
-                    "andpro_ok": collection.andpro.ok,
-                    "regard_count": collection.regard.count if collection.regard.ok else None,
-                    "andpro_count": collection.andpro.count if collection.andpro.ok else None,
-                    "count": len(products),
-                    "products": [asdict(p) for p in products],
-                },
-                ensure_ascii=False,
-                indent=2,
-                default=str,
-            ),
-            encoding="utf-8",
-        )
+        write_collection_diagnostic(collection, last_run_path)
     stats = save_products(products, db_path)
     collection.save_stats = stats
     return stats

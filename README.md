@@ -99,7 +99,7 @@ python run_pipeline.py
 ### Порядок стадий
 
 1. **Collection** — Regard, затем ANDPRO  
-2. **Storage** — сохранение только успешно собранных магазинов  
+2. **Storage** — только при полном успешном collection обоих магазинов  
 3. **Identity sync** — strong identifiers  
 4. **Comparison / matching**  
 5. **Alert generation** (`monitor`)  
@@ -132,14 +132,22 @@ python run_pipeline.py --status
 
 Если **один** магазин упал:
 
-- успешные данные другого магазина можно сохранить;
-- availability упавшего магазина **не** помечается unavailable;
-- alerts и Telegram delivery в этом run **пропускаются** (статус `partial`, exit `2`);
-- так нельзя сравнить свежую цену одного магазина со stale-снимком другого и получить ложный `CROSS_STORE_SAVING`.
+- production DB (**products** / **price_history**) **не** обновляется;
+- identity / comparison / alerts / Telegram в этом run **пропускаются**;
+- статус `partial`, exit `2`;
+- в `pipeline_runs` пишется запись; diagnostic `last_run.json` можно обновить без изменения ценового snapshot.
 
-Если **оба** магазина упали → `failed` (exit `1`), alerts/delivery не выполняются.
+Incomplete collection does not advance the production price snapshot.  
+This prevents losing price alerts while another store is unavailable.
 
-Если Telegram отправил часть сообщений, а часть failed → `partial`; alert_events и retryable delivery state сохраняются.
+Пример: Regard упал с 300 000 → 250 000, а ANDPRO недоступен.  
+Цена 250 000 **не** попадёт в history; следующий полный run с 250 000 всё ещё сможет создать `PRICE_DROP`.
+
+Если **оба** магазина упали → `failed` (exit `1`), snapshot не меняется.
+
+Ошибка / exception на стадии Telegram (после успешных alerts) → `partial` (exit `2`): alert_events сохраняются для retry.
+
+Если Telegram отправил часть сообщений, а часть failed → тоже `partial`; retryable delivery state сохраняется.
 
 ---
 

@@ -10,7 +10,11 @@ from pathlib import Path
 from typing import Any, Callable
 
 from alerts import run_monitor
-from collection import CollectionResult, collect_products, persist_collection
+from collection import (
+    collect_products,
+    persist_collection,
+    write_collection_diagnostic,
+)
 from compare import build_comparison
 from deliver import deliver_alert_events
 from identity_sync import sync_product_identifiers
@@ -27,8 +31,8 @@ from storage import (
     PIPELINE_STATUS_SUCCESS,
     create_pipeline_run,
     init_db,
-    list_pipeline_runs,
     open_db,
+    read_pipeline_runs_readonly,
     update_pipeline_run,
 )
 from telegram_sender import MessageSender
@@ -163,6 +167,11 @@ def run_pipeline(
                 errors.append(f"andpro: {collection.andpro.error}")
             if errors:
                 msg = msg + " | " + "; ".join(errors)
+            if last_run_path is not None:
+                try:
+                    write_collection_diagnostic(collection, last_run_path)
+                except Exception:
+                    pass
             _record_run(
                 db_path,
                 run_id,
@@ -174,7 +183,31 @@ def run_pipeline(
             )
             return finish(PIPELINE_STATUS_FAILED, EXIT_FAILED)
 
-        # Persist only successful stores (never empty failed store snapshot).
+        if not collection.both_ok:
+            # Incomplete collection: do NOT advance production price snapshot.
+            failed = "Regard" if not collection.regard.ok else "ANDPRO"
+            err = collection.regard.error or collection.andpro.error or "store failed"
+            result.skipped_alerts_delivery = True
+            if last_run_path is not None:
+                try:
+                    write_collection_diagnostic(collection, last_run_path)
+                except Exception:
+                    pass
+            _record_run(
+                db_path,
+                run_id,
+                result,
+                status=PIPELINE_STATUS_PARTIAL,
+                error_stage="collection",
+                error_message=(
+                    f"{failed} collection failed; production snapshot unchanged; "
+                    f"alerts/delivery skipped. {err}"
+                ),
+                started=started,
+            )
+            return finish(PIPELINE_STATUS_PARTIAL, EXIT_PARTIAL)
+
+        # Full collection only — persist both stores together.
         try:
             persist_collection(
                 collection,
@@ -192,23 +225,6 @@ def run_pipeline(
                 started=started,
             )
             return finish(PIPELINE_STATUS_FAILED, EXIT_FAILED)
-
-        if not collection.both_ok:
-            failed = "Regard" if not collection.regard.ok else "ANDPRO"
-            err = collection.regard.error or collection.andpro.error or "store failed"
-            result.skipped_alerts_delivery = True
-            _record_run(
-                db_path,
-                run_id,
-                result,
-                status=PIPELINE_STATUS_PARTIAL,
-                error_stage="collection",
-                error_message=(
-                    f"{failed} collection failed; alerts/delivery skipped. {err}"
-                ),
-                started=started,
-            )
-            return finish(PIPELINE_STATUS_PARTIAL, EXIT_PARTIAL)
 
         # --- IDENTITY ---
         try:
@@ -279,16 +295,17 @@ def run_pipeline(
                 result.messages_sent = int(stats.get("sent", 0))
                 result.messages_failed = int(stats.get("failed", 0))
             except Exception as exc:
+                # Alerts already created; keep them for retry → PARTIAL.
                 _record_run(
                     db_path,
                     run_id,
                     result,
-                    status=PIPELINE_STATUS_FAILED,
+                    status=PIPELINE_STATUS_PARTIAL,
                     error_stage="delivery",
                     error_message=_safe_error_text(exc),
                     started=started,
                 )
-                return finish(PIPELINE_STATUS_FAILED, EXIT_FAILED)
+                return finish(PIPELINE_STATUS_PARTIAL, EXIT_PARTIAL)
 
             if (result.messages_failed or 0) > 0:
                 status = PIPELINE_STATUS_PARTIAL
@@ -431,9 +448,8 @@ def run_status(
     *,
     limit: int = 10,
 ) -> list[dict]:
-    with open_db(db_path) as conn:
-        init_db(conn)
-        return list_pipeline_runs(conn, limit=limit)
+    """Read-only: never creates DB/schema or mutates data."""
+    return read_pipeline_runs_readonly(db_path, limit=limit)
 
 
 def print_status(runs: list[dict]) -> None:

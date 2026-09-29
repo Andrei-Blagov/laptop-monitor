@@ -39,6 +39,7 @@ from storage import (
     save_products,
 )
 from telegram_sender import FakeTelegramSender
+from alerts import EVENT_PRICE_DROP
 
 
 PRODUCTION_DB = Path(DEFAULT_DB_PATH).resolve()
@@ -151,12 +152,36 @@ class PipelineTests(unittest.TestCase):
             rows = list_pipeline_runs(conn, limit=1)
             self.assertEqual(rows[0]["status"], PIPELINE_STATUS_SUCCESS)
 
+    def _product_price(self, store: str, external_id: str) -> int | None:
+        with open_db(self.db_path) as conn:
+            row = conn.execute(
+                "SELECT price FROM products WHERE store=? AND external_id=?",
+                (store, external_id),
+            ).fetchone()
+            return int(row["price"]) if row and row["price"] is not None else None
+
+    def _history_prices(self, store: str, external_id: str) -> list[int]:
+        with open_db(self.db_path) as conn:
+            rows = conn.execute(
+                """
+                SELECT ph.price
+                FROM price_history ph
+                JOIN products p ON p.id = ph.product_id
+                WHERE p.store=? AND p.external_id=?
+                ORDER BY ph.id
+                """,
+                (store, external_id),
+            ).fetchall()
+            return [int(r["price"]) for r in rows if r["price"] is not None]
+
     def test_regard_failed_andpro_ok_partial(self) -> None:
         self._seed_history()
         before_alerts = 0
         with open_db(self.db_path) as conn:
             init_db(conn)
             before_alerts = count_alert_events(conn)
+        before_price = self._product_price("regard", "1")
+        before_hist = self._history_prices("regard", "1")
 
         def regard_fail():
             raise RuntimeError("regard down")
@@ -174,6 +199,11 @@ class PipelineTests(unittest.TestCase):
         self.assertEqual(result.andpro_status, "ok")
         self.assertTrue(result.skipped_alerts_delivery)
         self.assertEqual(sender.calls, 0)
+        self.assertEqual(self._product_price("regard", "1"), before_price)
+        self.assertEqual(self._product_price("andpro", "a1"), 290_000)
+        self.assertEqual(self._history_prices("regard", "1"), before_hist)
+        self.assertNotIn(240_000, self._history_prices("andpro", "a1"))
+        self.assertFalse(self.lock_path.exists())
         with open_db(self.db_path) as conn:
             self.assertEqual(count_alert_events(conn), before_alerts)
             self.assertEqual(
@@ -183,11 +213,12 @@ class PipelineTests(unittest.TestCase):
 
     def test_andpro_failed_regard_ok_partial(self) -> None:
         self._seed_history()
+        before_hist = self._history_prices("regard", "1")
 
         def andpro_fail():
             raise RuntimeError("andpro down")
 
-        regard, _ = self._fetchers()
+        regard, _ = self._fetchers(regard_price=250_000)
         sender = FakeTelegramSender()
         result = self._run(
             fetch_regard=regard,
@@ -198,6 +229,10 @@ class PipelineTests(unittest.TestCase):
         self.assertEqual(result.exit_code, EXIT_PARTIAL)
         self.assertEqual(result.andpro_status, "failed")
         self.assertEqual(sender.calls, 0)
+        self.assertEqual(self._product_price("regard", "1"), 300_000)
+        self.assertEqual(self._history_prices("regard", "1"), before_hist)
+        self.assertNotIn(250_000, self._history_prices("regard", "1"))
+        self.assertFalse(self.lock_path.exists())
 
     def test_both_stores_failed(self) -> None:
         def boom():
@@ -422,15 +457,224 @@ class PipelineTests(unittest.TestCase):
             before = list_pipeline_runs(conn, limit=100)
             before_alerts = count_alert_events(conn)
             before_delivery = get_delivery_stats(conn)
+            schema_before = {
+                r["name"]
+                for r in conn.execute(
+                    "SELECT name FROM sqlite_master WHERE type='table'"
+                ).fetchall()
+            }
         runs = run_status(self.db_path, limit=10)
         self.assertEqual(len(runs), len(before))
-        # print_status is pure stdout
         print_status(runs)
         with open_db(self.db_path) as conn:
             after = list_pipeline_runs(conn, limit=100)
             self.assertEqual(before, after)
             self.assertEqual(count_alert_events(conn), before_alerts)
             self.assertEqual(get_delivery_stats(conn), before_delivery)
+            schema_after = {
+                r["name"]
+                for r in conn.execute(
+                    "SELECT name FROM sqlite_master WHERE type='table'"
+                ).fetchall()
+            }
+            self.assertEqual(schema_before, schema_after)
+
+    def test_status_missing_db_does_not_create_file(self) -> None:
+        missing = self.root / "does_not_exist.db"
+        self.assertFalse(missing.exists())
+        runs = run_status(missing, limit=10)
+        self.assertEqual(runs, [])
+        self.assertFalse(missing.exists())
+
+    def test_status_db_without_pipeline_runs_table(self) -> None:
+        bare = self.root / "bare.db"
+        import sqlite3
+
+        conn = sqlite3.connect(bare)
+        conn.execute("CREATE TABLE products (id INTEGER PRIMARY KEY)")
+        conn.commit()
+        conn.close()
+        tables_before = {"products"}
+        runs = run_status(bare, limit=10)
+        self.assertEqual(runs, [])
+        conn = sqlite3.connect(bare)
+        tables_after = {
+            r[0]
+            for r in conn.execute(
+                "SELECT name FROM sqlite_master WHERE type='table'"
+            ).fetchall()
+        }
+        conn.close()
+        self.assertEqual(tables_before, tables_after)
+        self.assertNotIn("pipeline_runs", tables_after)
+
+    def test_status_reads_existing_pipeline_runs(self) -> None:
+        self._seed_history()
+        self._run()
+        runs = run_status(self.db_path, limit=10)
+        self.assertGreaterEqual(len(runs), 1)
+        self.assertEqual(runs[0]["status"], PIPELINE_STATUS_SUCCESS)
+
+    def test_telegram_exception_is_partial_keeps_alerts(self) -> None:
+        self._seed_history()
+        with patch(
+            "run_pipeline.deliver_alert_events",
+            side_effect=RuntimeError("telegram network down"),
+        ):
+            result = self._run()
+        self.assertEqual(result.status, PIPELINE_STATUS_PARTIAL)
+        self.assertEqual(result.exit_code, EXIT_PARTIAL)
+        self.assertEqual(result.error_stage, "delivery")
+        self.assertFalse(self.lock_path.exists())
+        with open_db(self.db_path) as conn:
+            self.assertGreater(count_alert_events(conn), 0)
+            self.assertEqual(
+                list_pipeline_runs(conn, limit=1)[0]["status"],
+                PIPELINE_STATUS_PARTIAL,
+            )
+        # Retry delivery without new alerts.
+        sender = FakeTelegramSender()
+        second = self._run(sender=sender)
+        self.assertEqual(second.alerts_created, 0)
+        self.assertGreaterEqual(second.messages_sent or 0, 1)
+        self.assertEqual(second.status, PIPELINE_STATUS_SUCCESS)
+
+    def test_partial_collection_preserves_price_drop_for_next_full_run(self) -> None:
+        """
+        full (300k) → partial (250k + ANDPRO fail) → full (250k)
+        must still create PRICE_DROP and send Telegram.
+        """
+        # A. Initial full baseline at 300k / 290k via seed + no-op... 
+        # Use full pipeline to establish baseline at 300k/290k.
+        def regard_high():
+            return [
+                _product(
+                    store="regard",
+                    external_id="1",
+                    sku="SKU-1",
+                    price=300_000,
+                    checked_at=_now(1),
+                )
+            ]
+
+        def andpro_high():
+            return [
+                _product(
+                    store="andpro",
+                    external_id="a1",
+                    sku="SKU-1",
+                    price=290_000,
+                    checked_at=_now(1),
+                )
+            ]
+
+        sender = FakeTelegramSender()
+        first = self._run(
+            fetch_regard=regard_high,
+            fetch_andpro=andpro_high,
+            sender=sender,
+        )
+        self.assertEqual(first.status, PIPELINE_STATUS_SUCCESS)
+        self.assertEqual(self._product_price("regard", "1"), 300_000)
+        alerts_after_baseline = 0
+        with open_db(self.db_path) as conn:
+            alerts_after_baseline = count_alert_events(conn)
+        hist_after_baseline = self._history_prices("regard", "1")
+
+        # B. Partial: Regard drops to 250k, ANDPRO fails — snapshot frozen.
+        def regard_drop():
+            return [
+                _product(
+                    store="regard",
+                    external_id="1",
+                    sku="SKU-1",
+                    price=250_000,
+                    checked_at=_now(20),
+                )
+            ]
+
+        def andpro_fail():
+            raise RuntimeError("andpro unavailable")
+
+        partial = self._run(
+            fetch_regard=regard_drop,
+            fetch_andpro=andpro_fail,
+            sender=FakeTelegramSender(),
+        )
+        self.assertEqual(partial.status, PIPELINE_STATUS_PARTIAL)
+        self.assertEqual(partial.exit_code, EXIT_PARTIAL)
+        self.assertEqual(self._product_price("regard", "1"), 300_000)
+        self.assertEqual(self._history_prices("regard", "1"), hist_after_baseline)
+        self.assertNotIn(250_000, self._history_prices("regard", "1"))
+        with open_db(self.db_path) as conn:
+            self.assertEqual(count_alert_events(conn), alerts_after_baseline)
+        self.assertEqual(partial.alerts_created, None)
+        self.assertFalse(self.lock_path.exists())
+
+        # C. Full run with 250k — PRICE_DROP must fire and Telegram send.
+        def andpro_ok():
+            return [
+                _product(
+                    store="andpro",
+                    external_id="a1",
+                    sku="SKU-1",
+                    price=255_000,
+                    checked_at=_now(30),
+                )
+            ]
+
+        sender2 = FakeTelegramSender()
+        full = self._run(
+            fetch_regard=regard_drop,
+            fetch_andpro=andpro_ok,
+            sender=sender2,
+        )
+        self.assertEqual(full.status, PIPELINE_STATUS_SUCCESS)
+        self.assertEqual(self._product_price("regard", "1"), 250_000)
+        self.assertIn(250_000, self._history_prices("regard", "1"))
+        self.assertGreaterEqual(full.alerts_created or 0, 1)
+        self.assertGreaterEqual(sender2.calls, 1)
+        with open_db(self.db_path) as conn:
+            from storage import get_alert_events
+
+            drops = [
+                e
+                for e in get_alert_events(conn, event_type=EVENT_PRICE_DROP)
+                if e.get("new_price") == 250_000
+            ]
+            self.assertGreaterEqual(len(drops), 1)
+            alerts_after_drop = count_alert_events(conn)
+
+        # Identical re-run — no duplicate alerts / no resend.
+        sender3 = FakeTelegramSender()
+        again = self._run(
+            fetch_regard=regard_drop,
+            fetch_andpro=andpro_ok,
+            sender=sender3,
+        )
+        self.assertEqual(again.alerts_created, 0)
+        self.assertEqual(sender3.calls, 0)
+        with open_db(self.db_path) as conn:
+            self.assertEqual(count_alert_events(conn), alerts_after_drop)
+
+    def test_lock_released_after_partial(self) -> None:
+        self._seed_history()
+
+        def boom():
+            raise RuntimeError("x")
+
+        _, andpro = self._fetchers()
+        result = self._run(fetch_regard=boom, fetch_andpro=andpro)
+        self.assertEqual(result.status, PIPELINE_STATUS_PARTIAL)
+        self.assertFalse(self.lock_path.exists())
+
+    def test_lock_released_after_failed(self) -> None:
+        def boom():
+            raise RuntimeError("x")
+
+        result = self._run(fetch_regard=boom, fetch_andpro=boom)
+        self.assertEqual(result.status, PIPELINE_STATUS_FAILED)
+        self.assertFalse(self.lock_path.exists())
 
     def test_uses_temp_db_not_production(self) -> None:
         self.assertNotEqual(self.db_path.resolve(), PRODUCTION_DB)

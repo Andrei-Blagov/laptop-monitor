@@ -439,6 +439,42 @@ def list_pipeline_runs(
     return [dict(r) for r in rows]
 
 
+def read_pipeline_runs_readonly(
+    db_path: Path | str,
+    *,
+    limit: int = 10,
+) -> list[dict]:
+    """
+    Strictly read-only listing of pipeline_runs.
+
+    - missing DB file → []
+    - missing pipeline_runs table → []
+    - never CREATE/ALTER/INSERT/UPDATE/DELETE
+    """
+    path = Path(db_path)
+    if not path.exists():
+        return []
+    uri = path.resolve().as_uri() + "?mode=ro"
+    conn = sqlite3.connect(uri, uri=True)
+    conn.row_factory = sqlite3.Row
+    try:
+        row = conn.execute(
+            """
+            SELECT 1 AS ok
+            FROM sqlite_master
+            WHERE type='table' AND name='pipeline_runs'
+            LIMIT 1
+            """
+        ).fetchone()
+        if row is None:
+            return []
+        return list_pipeline_runs(conn, limit=limit)
+    except sqlite3.Error:
+        return []
+    finally:
+        conn.close()
+
+
 def count_products(conn: sqlite3.Connection) -> int:
     row = conn.execute("SELECT COUNT(*) AS cnt FROM products").fetchone()
     return int(row["cnt"])
