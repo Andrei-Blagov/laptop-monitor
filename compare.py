@@ -77,54 +77,72 @@ def _load_specs_by_key() -> dict[tuple[str, str], ProductIdentity]:
     return result
 
 
-def main() -> None:
-    products = get_all_products(DEFAULT_DB_PATH)
-    identifiers = get_all_identifiers(DEFAULT_DB_PATH)
+def build_comparison(
+    db_path: Path | str = DEFAULT_DB_PATH,
+    *,
+    write_artifacts: bool = True,
+    data_dir: Path | str | None = None,
+):
+    """
+    Matching Regard↔ANDPRO.
+
+    Returns comparison.MatchResult (matches, unmatched, stats, ...).
+    """
+    products = get_all_products(db_path)
+    identifiers = get_all_identifiers(db_path)
     specs_by_key = _load_specs_by_key()
-    overlap = analyze_sku_overlap(products)
     result = match_products(
         products,
         identifiers,
         specs_by_key=specs_by_key,
     )
 
-    Path("data").mkdir(parents=True, exist_ok=True)
-    Path("data/comparison.json").write_text(
-        json.dumps(
-            [m.to_dict() for m in result.matches],
-            ensure_ascii=False,
-            indent=2,
-        ),
-        encoding="utf-8",
-    )
-    Path("data/unmatched_products.json").write_text(
-        json.dumps(
-            [
-                {
-                    "store": o.store,
-                    "external_id": o.external_id,
-                    "sku": o.sku,
-                    "normalized_sku": normalize_sku(o.sku),
-                    "name": o.name,
-                    "price": o.price,
-                    "available": o.available,
-                    "url": o.url,
-                }
-                for o in result.unmatched
-            ],
-            ensure_ascii=False,
-            indent=2,
-        ),
-        encoding="utf-8",
-    )
-    Path("data/identity_conflicts.json").write_text(
-        json.dumps(
-            list(result.ambiguous) + list(result.conflicts),
-            ensure_ascii=False,
-            indent=2,
-        ),
-        encoding="utf-8",
-    )
+    if write_artifacts:
+        out = Path(data_dir) if data_dir is not None else Path("data")
+        out.mkdir(parents=True, exist_ok=True)
+        (out / "comparison.json").write_text(
+            json.dumps(
+                [m.to_dict() for m in result.matches],
+                ensure_ascii=False,
+                indent=2,
+            ),
+            encoding="utf-8",
+        )
+        (out / "unmatched_products.json").write_text(
+            json.dumps(
+                [
+                    {
+                        "store": o.store,
+                        "external_id": o.external_id,
+                        "sku": o.sku,
+                        "normalized_sku": normalize_sku(o.sku),
+                        "name": o.name,
+                        "price": o.price,
+                        "available": o.available,
+                        "url": o.url,
+                    }
+                    for o in result.unmatched
+                ],
+                ensure_ascii=False,
+                indent=2,
+            ),
+            encoding="utf-8",
+        )
+        (out / "identity_conflicts.json").write_text(
+            json.dumps(
+                list(result.ambiguous) + list(result.conflicts),
+                ensure_ascii=False,
+                indent=2,
+            ),
+            encoding="utf-8",
+        )
+    return result
+
+
+def main() -> None:
+    products = get_all_products(DEFAULT_DB_PATH)
+    overlap = analyze_sku_overlap(products)
+    result = build_comparison(DEFAULT_DB_PATH, write_artifacts=True)
 
     print("Диагностика SKU:")
     print(f"  SKU Regard: {overlap['regard_sku_count']}")

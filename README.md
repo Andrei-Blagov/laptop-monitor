@@ -2,8 +2,8 @@
 
 Мониторинг цен на игровые ноутбуки (Regard + ANDPRO) с матчингом одной физической модели между магазинами, генерацией alert-событий и доставкой в Telegram.
 
-**Статус:** collection → matching → alerts → Telegram delivery (с grouping и rate limits).  
-Scheduler / n8n / третий магазин / единый `run_pipeline.py` — пока **не** входят в scope.
+**Статус:** collection → identity → matching → alerts → Telegram delivery.  
+Единый оркестратор: `run_pipeline.py`. Scheduler / n8n / третий магазин — пока **не** входят в scope.
 
 ---
 
@@ -17,6 +17,7 @@ Scheduler / n8n / третий магазин / единый `run_pipeline.py` �
 | **Alerts** | `PRICE_DROP`, `NEW_HISTORICAL_LOW`, `TARGET_PRICE`, `CROSS_STORE_SAVING` |
 | **Noise filter** | Исторический минимум только при ≥2% **или** ≥3000 ₽; приоритет PRICE_DROP |
 | **Telegram** | Группировка уведомлений по matched model, pacing ~1.1 с, обработка 429 `retry_after` |
+| **Pipeline** | `run_pipeline.py`: lock, история запусков, partial при сбое одного магазина |
 
 ---
 
@@ -87,9 +88,64 @@ TELEGRAM_CHAT_ID=123456789
 
 ---
 
-## Типичный рабочий цикл
+## Full pipeline
 
-Команды запускаются **по отдельности** (единого pipeline пока нет).
+Обычный production-запуск одной командой:
+
+```bash
+python run_pipeline.py
+```
+
+### Порядок стадий
+
+1. **Collection** — Regard, затем ANDPRO  
+2. **Storage** — сохранение только успешно собранных магазинов  
+3. **Identity sync** — strong identifiers  
+4. **Comparison / matching**  
+5. **Alert generation** (`monitor`)  
+6. **Telegram delivery** (grouping + pacing)
+
+Отдельные CLI (`main.py`, `identity_sync.py`, `compare.py`, `monitor.py`, `deliver.py`) по-прежнему работают самостоятельно.
+
+### Pipeline status
+
+```bash
+python run_pipeline.py --status
+```
+
+Показывает последние ~10 запусков (`pipeline_runs`): status, Regard/ANDPRO, alerts, Telegram sent/failed, duration, error stage. **Не** запускает pipeline и не меняет очередь alerts.
+
+### Exit codes
+
+| Code | Meaning |
+|------|---------|
+| `0` | success |
+| `1` | failed |
+| `2` | partial |
+| `3` | already running (lock занят) |
+
+### Process lock
+
+Файл `data/laptop_monitor.lock` (PID + `started_at`). Второй параллельный запуск завершается с кодом `3` и сообщением `Pipeline already running`, без изменений DB и без Telegram. После нормального завершения или exception lock снимается. Stale lock удаляется только если PID достоверно мёртв.
+
+### Partial collection (критично)
+
+Если **один** магазин упал:
+
+- успешные данные другого магазина можно сохранить;
+- availability упавшего магазина **не** помечается unavailable;
+- alerts и Telegram delivery в этом run **пропускаются** (статус `partial`, exit `2`);
+- так нельзя сравнить свежую цену одного магазина со stale-снимком другого и получить ложный `CROSS_STORE_SAVING`.
+
+Если **оба** магазина упали → `failed` (exit `1`), alerts/delivery не выполняются.
+
+Если Telegram отправил часть сообщений, а часть failed → `partial`; alert_events и retryable delivery state сохраняются.
+
+---
+
+## Пошаговый цикл (отдельные CLI)
+
+Команды ниже можно запускать по отдельности (удобно для отладки).
 
 ### 1. Сбор цен
 
@@ -221,6 +277,7 @@ python deliver.py --baseline-existing
 | `price_history` | История цен / availability |
 | `product_identifiers` | Strong IDs для матчинга |
 | `alert_events` | Бизнес/audit события (не группируются в БД) |
+| `pipeline_runs` | История запусков orchestrator |
 | `notification_deliveries` | Одна Telegram-попытка/сообщение (+ `provider_message_id`) |
 | `notification_delivery_events` | M:N связь delivery ↔ alert_events |
 
@@ -232,6 +289,9 @@ python deliver.py --baseline-existing
 
 ```
 laptop-monitor/
+├── run_pipeline.py         # единый production orchestrator
+├── collection.py           # сбор магазинов (ok/failed per store)
+├── pipeline_lock.py        # process lock
 ├── main.py                 # сбор Regard + ANDPRO → SQLite
 ├── identity_sync.py        # синхронизация identifiers
 ├── compare.py              # отчёт матчинга
@@ -271,7 +331,7 @@ laptop-monitor/
 python -m unittest discover -s tests -v
 ```
 
-Покрыты: парсеры, storage, matching, monitor/alerts, formatters, delivery (pacing, 429, grouping, dry-run, migration, baseline).
+Покрыты: парсеры, storage, matching, monitor/alerts, formatters, delivery, **pipeline orchestrator** (lock, partial collection, idempotency).
 
 ---
 
@@ -286,7 +346,6 @@ python -m unittest discover -s tests -v
 
 ## Что пока не сделано (намеренно)
 
-- Единый `run_pipeline.py`
 - Scheduler / cron / Windows Task Scheduler
 - n8n
 - Третий магазин
@@ -303,9 +362,11 @@ python -m unittest discover -s tests -v
 | Dry-run показывает 0 сообщений | Нет unsent events — смотрите `deliver.py --status` |
 | События «пропали» после baseline | `skipped` — так и задумано; новые alerts появятся после следующего `monitor.py` |
 | Частые 429 | Pacing 1.1s + `retry_after`; не запускайте несколько `deliver.py` параллельно |
+| Pipeline already running (exit 3) | Уже идёт другой `run_pipeline.py`; дождитесь окончания или проверьте stale lock |
+| Partial без alerts | Упал один магазин — так и задумано, дождитесь полного collection |
 
 ---
 
 ## Лицензия
 
-Private project (все права сохранены за автором репозитория), если не указано иное.
+All rights reserved unless otherwise stated.

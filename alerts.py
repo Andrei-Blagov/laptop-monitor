@@ -113,6 +113,19 @@ def _product_gpu(
     return get_target_gpu(product)
 
 
+def price_drop_applies(
+    conn,
+    product: Mapping[str, Any],
+) -> bool:
+    """True если текущее изменение цены квалифицируется как PRICE_DROP."""
+    new_price = product.get("price")
+    old_price = get_previous_price(conn, int(product["id"]))
+    if new_price is None or old_price is None:
+        return False
+    percent = price_drop_percent(int(old_price), int(new_price))
+    return percent is not None and percent >= float(config.PRICE_DROP_PERCENT)
+
+
 def evaluate_price_drop(
     conn,
     product: Mapping[str, Any],
@@ -343,10 +356,11 @@ def run_monitor(
         for product in products:
             gpu = _product_gpu(product, specs)
             # PRICE_DROP имеет приоритет над NEW_HISTORICAL_LOW для одного изменения.
+            # Даже если PRICE_DROP уже есть (dedupe → None), hist не создаём.
             drop_event = evaluate_price_drop(conn, product)
             if drop_event is not None:
                 created.append(drop_event)
-            else:
+            elif not price_drop_applies(conn, product):
                 hist_event = evaluate_historical_low(conn, product)
                 if hist_event is not None:
                     created.append(hist_event)

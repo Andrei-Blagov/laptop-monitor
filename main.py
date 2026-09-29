@@ -1,57 +1,40 @@
 from __future__ import annotations
 
 import logging
-from dataclasses import asdict
-import json
 from pathlib import Path
 
-from parsers.andpro import fetch_target_laptops as fetch_andpro
-from parsers.regard import fetch_target_laptops as fetch_regard
-from storage import DEFAULT_DB_PATH, save_products
+from collection import collect_products, persist_collection
+from storage import DEFAULT_DB_PATH
 
 
 logger = logging.getLogger(__name__)
 
 
-def _safe_fetch(store_name: str, fetcher):
-    try:
-        products = fetcher()
-        print(f"{store_name}:")
-        print(f"  найдено: {len(products)}")
-        return products
-    except Exception:
-        logger.exception("Сбой магазина %s", store_name)
-        print(f"{store_name}:")
-        print("  ошибка сбора (магазин пропущен)")
-        return []
-
-
 def main() -> None:
-    regard_products = _safe_fetch("Regard", fetch_regard)
-    andpro_products = _safe_fetch("ANDPRO", fetch_andpro)
+    collection = collect_products()
+    if collection.regard.ok:
+        print("Regard:")
+        print(f"  найдено: {collection.regard.count}")
+    else:
+        print("Regard:")
+        print("  ошибка сбора (магазин пропущен)")
+    if collection.andpro.ok:
+        print("ANDPRO:")
+        print(f"  найдено: {collection.andpro.count}")
+    else:
+        print("ANDPRO:")
+        print("  ошибка сбора (магазин пропущен)")
 
-    products = regard_products + andpro_products
-    if not products:
+    if collection.none_ok:
         print("Товары не получены ни из одного магазина")
         return
 
     Path("data").mkdir(parents=True, exist_ok=True)
-    Path("data/last_run.json").write_text(
-        json.dumps(
-            {
-                "regard_count": len(regard_products),
-                "andpro_count": len(andpro_products),
-                "count": len(products),
-                "products": [asdict(p) for p in products],
-            },
-            ensure_ascii=False,
-            indent=2,
-            default=str,
-        ),
-        encoding="utf-8",
+    stats = persist_collection(
+        collection,
+        DEFAULT_DB_PATH,
+        last_run_path=Path("data") / "last_run.json",
     )
-
-    stats = save_products(products, DEFAULT_DB_PATH)
 
     print(f"Всего получено: {stats.found}")
     print(f"Новых товаров: {stats.inserted}")

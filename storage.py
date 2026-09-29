@@ -153,9 +153,32 @@ def init_db(conn: sqlite3.Connection) -> None:
 
         CREATE INDEX IF NOT EXISTS idx_notification_delivery_events_alert
             ON notification_delivery_events(alert_event_id);
+
+        CREATE TABLE IF NOT EXISTS pipeline_runs (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            started_at TEXT NOT NULL,
+            finished_at TEXT,
+            status TEXT NOT NULL,
+            regard_status TEXT,
+            regard_products INTEGER,
+            andpro_status TEXT,
+            andpro_products INTEGER,
+            identifiers_added INTEGER,
+            matched_models INTEGER,
+            alerts_created INTEGER,
+            messages_sent INTEGER,
+            messages_failed INTEGER,
+            error_stage TEXT,
+            error_message TEXT,
+            duration_seconds REAL
+        );
+
+        CREATE INDEX IF NOT EXISTS idx_pipeline_runs_started
+            ON pipeline_runs(started_at DESC);
         """
     )
     _migrate_notification_schema(conn)
+    _migrate_pipeline_runs(conn)
     conn.commit()
 
 
@@ -312,6 +335,108 @@ def _migrate_notification_schema(conn: sqlite3.Connection) -> None:
     else:
         # Cleanup leftover from interrupted migration attempts.
         conn.execute("DROP TABLE IF EXISTS notification_deliveries_v2")
+
+
+def _migrate_pipeline_runs(conn: sqlite3.Connection) -> None:
+    """Безопасное создание pipeline_runs на существующих DB."""
+    conn.executescript(
+        """
+        CREATE TABLE IF NOT EXISTS pipeline_runs (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            started_at TEXT NOT NULL,
+            finished_at TEXT,
+            status TEXT NOT NULL,
+            regard_status TEXT,
+            regard_products INTEGER,
+            andpro_status TEXT,
+            andpro_products INTEGER,
+            identifiers_added INTEGER,
+            matched_models INTEGER,
+            alerts_created INTEGER,
+            messages_sent INTEGER,
+            messages_failed INTEGER,
+            error_stage TEXT,
+            error_message TEXT,
+            duration_seconds REAL
+        );
+        CREATE INDEX IF NOT EXISTS idx_pipeline_runs_started
+            ON pipeline_runs(started_at DESC);
+        """
+    )
+
+
+PIPELINE_STATUS_RUNNING = "running"
+PIPELINE_STATUS_SUCCESS = "success"
+PIPELINE_STATUS_PARTIAL = "partial"
+PIPELINE_STATUS_FAILED = "failed"
+
+
+def create_pipeline_run(
+    conn: sqlite3.Connection,
+    *,
+    started_at: str,
+    status: str = PIPELINE_STATUS_RUNNING,
+) -> int:
+    cur = conn.execute(
+        """
+        INSERT INTO pipeline_runs (started_at, status)
+        VALUES (?, ?)
+        """,
+        (started_at, status),
+    )
+    return int(cur.lastrowid)
+
+
+def update_pipeline_run(
+    conn: sqlite3.Connection,
+    run_id: int,
+    **fields: object,
+) -> None:
+    allowed = {
+        "finished_at",
+        "status",
+        "regard_status",
+        "regard_products",
+        "andpro_status",
+        "andpro_products",
+        "identifiers_added",
+        "matched_models",
+        "alerts_created",
+        "messages_sent",
+        "messages_failed",
+        "error_stage",
+        "error_message",
+        "duration_seconds",
+    }
+    updates = {k: v for k, v in fields.items() if k in allowed}
+    if not updates:
+        return
+    # Не логируем потенциальные секреты — обрезаем error_message.
+    if "error_message" in updates and updates["error_message"] is not None:
+        updates["error_message"] = str(updates["error_message"])[:1000]
+    sets = ", ".join(f"{k} = ?" for k in updates)
+    params = list(updates.values()) + [run_id]
+    conn.execute(
+        f"UPDATE pipeline_runs SET {sets} WHERE id = ?",
+        params,
+    )
+
+
+def list_pipeline_runs(
+    conn: sqlite3.Connection,
+    *,
+    limit: int = 10,
+) -> list[dict]:
+    rows = conn.execute(
+        """
+        SELECT *
+        FROM pipeline_runs
+        ORDER BY id DESC
+        LIMIT ?
+        """,
+        (int(limit),),
+    ).fetchall()
+    return [dict(r) for r in rows]
 
 
 def count_products(conn: sqlite3.Connection) -> int:
