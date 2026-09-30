@@ -1,423 +1,237 @@
-# Laptop Monitor
+﻿# Laptop Monitor
 
-Мониторинг цен на игровые ноутбуки (Regard + ANDPRO) с матчингом одной физической модели между магазинами, генерацией alert-событий и доставкой в Telegram.
+Мониторинг цен на игровые ноутбуки (RTX 5070 Ti / RTX 5080 Laptop) с multi-store adapter architecture, матчингом моделей, ranking, Telegram alerts и remote control.
 
-**Статус:** collection → identity → matching → alerts → Telegram delivery.  
-Единый оркестратор: `run_pipeline.py`. Scheduler / n8n / третий магазин — пока **не** входят в scope.
+**Version:** `0.2.0`  
+**Production target:** Linux VPS (Docker + systemd)  
+**Windows:** только development / testing
 
 ---
 
-## Что умеет
+## Что умеет (v0.2.0)
 
-| Этап | Описание |
-|------|----------|
-| **Collection** | Парсинг Regard и ANDPRO (целевые GPU: RTX 5070 Ti / RTX 5080) |
-| **Storage** | SQLite: товары, история цен, strong identifiers, alert events, deliveries |
-| **Matching** | L1 по SKU + L2 по strong ID (MPN / alternative PN) с проверкой конфигурации |
-| **Alerts** | `PRICE_DROP`, `NEW_HISTORICAL_LOW`, `TARGET_PRICE`, `CROSS_STORE_SAVING` |
-| **Noise filter** | Исторический минимум только при ≥2% **или** ≥3000 ₽; приоритет PRICE_DROP |
-| **Telegram** | Группировка уведомлений по matched model, pacing ~1.1 с, обработка 429 `retry_after` |
-| **Pipeline** | `run_pipeline.py`: lock, история запусков, partial при сбое одного магазина |
+| Область | Описание |
+|---------|----------|
+| **Multi-store** | Единый `StoreAdapter` registry (`stores/`). Enabled: Regard, ANDPRO. DNS/Citilink зарегистрированы, но **disabled** (anti-bot) |
+| **Independent snapshots** | Успешный store сохраняется независимо; failed store не помечает каталог unavailable |
+| **Matching** | L1 exact SKU + L2 strong ID (MPN / alt PN) + config compatibility; N магазинов |
+| **CROSS_STORE** | Только между **fresh** stores текущего run (≥2 успешных) |
+| **Ranking** | Explainable `priority_score` (`deal_ranking.py`), TOP N, сортировка Telegram |
+| **Telegram control** | Long-polling bot: Run / TOP / Status / Version; admin allowlist |
+| **Pipeline** | `run_pipeline.py`: lock, `store_runs`, `app_version`, `instance_id`, ops alerts |
+| **Deploy** | Docker image, compose, systemd timer (2h), daily SQLite backup |
 
 ---
 
 ## Архитектура
 
 ```
-Regard ──┐
-         ├──► SQLite (products, price_history, identifiers)
-ANDPRO ──┘              │
-                        ▼
-                 match_products()
-                        │
-                        ▼
-                   alert engine
-                        │
-                        ▼
-              alert_events (audit, по одному)
-                        │
-                        ▼
-         notification grouping (только delivery layer)
-                        │
-                        ▼
-              Telegram sendMessage + delivery state
+stores/registry
+  Regard ──┐
+  ANDPRO ──┼──► collect (per-store) ──► store_runs + products (success only)
+  DNS* ────┤
+  Citilink*┘              │
+                          ▼
+                   identity sync
+                          │
+                          ▼
+              match_products (N-store clusters)
+                          │
+                          ▼
+         alerts (local + fresh-only CROSS_STORE)
+                          │
+                          ▼
+         deal ranking → Telegram (priority DESC)
+                          │
+              control_bot (polling, admin only)
 ```
 
-**Важно:** `alert_events` в БД не сливаются. Grouping происходит только при формировании Telegram-сообщений. Связь delivery ↔ events — через таблицу `notification_delivery_events`.
+\* DNS / Citilink adapters present but `enabled=False` until a stable public source exists.
+
+**Правила snapshot:**
+
+| Исход store | Поведение |
+|-------------|-----------|
+| SUCCESS | цены + history + local alerts |
+| FAILED | snapshot не трогаем; ошибка в `store_runs` |
+
+**Pipeline status:**
+
+- `SUCCESS` — все enabled stores OK
+- `PARTIAL` — ≥1 OK и ≥1 failed (local alerts работают; cross-store только среди fresh)
+- `FAILED` — ни один store не собран / критический сбой
 
 ---
 
-## Требования
+## Stores
 
-- Python 3.11+ (рекомендуется 3.12+)
-- Windows / macOS / Linux
-- Telegram Bot Token и Chat ID (для реальной доставки)
+| Store | Status | Notes |
+|-------|--------|-------|
+| Regard | **enabled** | HTML catalog parser |
+| ANDPRO | **enabled** | HTML catalog parser |
+| DNS | disabled | Live: 401 challenge / API 403 |
+| Citilink | disabled | Live: 429 JS challenge |
+| OnlineTrade / M.Video / Eldorado / XCOM | not connected | unstable / protected in probes |
+
+Добавление магазина: новый файл в `stores/`, реализовать `StoreAdapter`, зарегистрировать в `stores/registry.py`, fixtures + tests. Без обхода CAPTCHA/anti-bot.
 
 ---
 
-## Быстрый старт
+## Ranking
+
+Модуль `deal_ranking.py`. Веса в `config.py` (`RANK_*`).
+
+Учитывает: цена vs target / бюджет ~200k ₽, GPU (5080 / 5070 Ti), RAM, SSD, диагональ, cross-store saving, historical low.
+
+Каждый deal показывает score + reasons («Почему: …»).
+
+TOP: кнопка Telegram / `format_top_deals_message` (по умолчанию 10).
+
+---
+
+## Telegram
+
+### Price alerts
+Группировка по matched model (delivery-layer). Сортировка групп по `priority_score` DESC. `alert_events` в DB не сливаются.
+
+### Control bot (`control_bot.py`)
+Long polling, **без** публичного HTTP-порта.
+
+Кнопки: `Запустить проверку` | `Топ предложений` | `Статус` | `Версия`
+
+Env:
+
+```
+TELEGRAM_BOT_TOKEN=
+TELEGRAM_CHAT_ID=
+TELEGRAM_ADMIN_CHAT_ID=   # allowlist, comma-separated; fallback = CHAT_ID
+LAPTOP_MONITOR_INSTANCE=vps-prod
+```
+
+Не-admin не видит кнопки управления и не запускает pipeline. Только predefined actions (без shell).
+
+### Ops notifications
+При CLI/scheduled `PARTIAL`/`FAILED` — короткое admin-сообщение (не путать с price alerts).
+
+---
+
+## Versioning
+
+Единый source of truth: файл `VERSION` → `version.get_version()`.
 
 ```bash
-# 1. Клонировать и окружение
+python run_pipeline.py --version
+# Laptop Monitor 0.2.0
+```
+
+Пишется в logs, `pipeline_runs.app_version`, Telegram status, Docker label.
+
+---
+
+## Быстрый старт (dev)
+
+```bash
 git clone https://github.com/Andrei-Blagov/laptop-monitor.git
 cd laptop-monitor
-
 python -m venv .venv
-
-# Windows PowerShell
-.\.venv\Scripts\Activate.ps1
-
-# Linux / macOS
-source .venv/bin/activate
-
+# Windows: .\.venv\Scripts\Activate.ps1
+# Linux:   source .venv/bin/activate
 pip install -r requirements.txt
-
-# 2. Секреты Telegram (не коммитить)
-copy .env.example .env   # Windows
-# cp .env.example .env   # Linux/macOS
+cp .env.example .env   # заполнить токены
 ```
-
-Заполните `.env`:
-
-```env
-TELEGRAM_BOT_TOKEN=123456:ABC...
-TELEGRAM_CHAT_ID=123456789
-```
-
-> `TELEGRAM_CHAT_ID` должен быть ID **чата/пользователя**, куда бот может писать (не ID другого бота).
-
----
-
-## Full pipeline
-
-Обычный production-запуск одной командой:
 
 ```bash
-python run_pipeline.py
-```
-
-### Порядок стадий
-
-1. **Collection** — Regard, затем ANDPRO  
-2. **Storage** — только при полном успешном collection обоих магазинов  
-3. **Identity sync** — strong identifiers  
-4. **Comparison / matching**  
-5. **Alert generation** (`monitor`)  
-6. **Telegram delivery** (grouping + pacing)
-
-Отдельные CLI (`main.py`, `identity_sync.py`, `compare.py`, `monitor.py`, `deliver.py`) по-прежнему работают самостоятельно.
-
-### Pipeline status
-
-```bash
+python run_pipeline.py --version
 python run_pipeline.py --status
+# Полный pipeline (локально, не VPS production):
+# python run_pipeline.py
 ```
 
-Показывает последние ~10 запусков (`pipeline_runs`): status, Regard/ANDPRO, alerts, Telegram sent/failed, duration, error stage. **Не** запускает pipeline и не меняет очередь alerts.
-
-### Exit codes
-
-| Code | Meaning |
-|------|---------|
-| `0` | success |
-| `1` | failed |
-| `2` | partial |
-| `3` | already running (lock занят) |
-
-### Automatic Windows scheduling
-
-Для автозапуска на Windows подготовлены скрипты (задача **ещё не устанавливается** автоматически — только вручную через install-скрипт).
-
-| Script | Назначение |
-|--------|------------|
-| `scripts\run_pipeline.ps1` | Wrapper: корень проекта от пути скрипта, только `.venv\Scripts\python.exe`, лог, тот же exit code |
-| `scripts\pipeline_status.ps1` | Read-only: pipeline + Telegram + lock + последний log |
-| `scripts\install_scheduled_task.ps1` | Создаёт задачу **Laptop Monitor Pipeline** (не запускайте, пока не готовы) |
-| `scripts\uninstall_scheduled_task.ps1` | Удаляет только эту задачу (DB/logs/.env не трогает) |
-
-Ручной запуск wrapper:
-
-```powershell
-powershell -ExecutionPolicy Bypass -File scripts\run_pipeline.ps1
-```
-
-Логи: `logs\pipeline-YYYYMMDD-HHMMSS.log` (stdout+stderr, exit code, длительность).  
-Retention: логи старше **30 дней** удаляются после запуска (ошибка очистки не ломает pipeline).  
-`logs/` в `.gitignore`.
-
-Рекомендуемое расписание (install-скрипт):
-
-- каждые **2 часа**;
-- `StartWhenAvailable = true`;
-- `MultipleInstances = IgnoreNew`;
-- `ExecutionTimeLimit = 30 minutes`;
-- батарея: не останавливать задачу при переходе на батарею (если ОС позволяет);
-- Telegram credentials **только** в локальном `.env`, не в Task Scheduler.
-
-Exit codes wrapper = exit codes `run_pipeline.py` (`0/1/2/3`).
-
-Проверка статуса после установки задачи:
-
-```powershell
-powershell -ExecutionPolicy Bypass -File scripts\pipeline_status.ps1
-```
-
-### Process lock
-
-Файл `data/laptop_monitor.lock` (PID + `started_at`). Второй параллельный запуск завершается с кодом `3` и сообщением `Pipeline already running`, без изменений DB и без Telegram. После нормального завершения или exception lock снимается. Stale lock удаляется только если PID достоверно мёртв.
-
-### Partial collection (критично)
-
-Если **один** магазин упал:
-
-- production DB (**products** / **price_history**) **не** обновляется;
-- identity / comparison / alerts / Telegram в этом run **пропускаются**;
-- статус `partial`, exit `2`;
-- в `pipeline_runs` пишется запись; diagnostic `last_run.json` можно обновить без изменения ценового snapshot.
-
-Incomplete collection does not advance the production price snapshot.  
-This prevents losing price alerts while another store is unavailable.
-
-Пример: Regard упал с 300 000 → 250 000, а ANDPRO недоступен.  
-Цена 250 000 **не** попадёт в history; следующий полный run с 250 000 всё ещё сможет создать `PRICE_DROP`.
-
-Если **оба** магазина упали → `failed` (exit `1`), snapshot не меняется.
-
-Ошибка / exception на стадии Telegram (после успешных alerts) → `partial` (exit `2`): alert_events сохраняются для retry.
-
-Если Telegram отправил часть сообщений, а часть failed → тоже `partial`; retryable delivery state сохраняется.
-
----
-
-## Пошаговый цикл (отдельные CLI)
-
-Команды ниже можно запускать по отдельности (удобно для отладки).
-
-### 1. Сбор цен
+Tests (temp DB):
 
 ```bash
-python main.py
+python -m unittest discover -s tests
 ```
 
-Сохраняет офферы Regard + ANDPRO в `data/laptop_monitor.db`, пишет `data/last_run.json`.
+Windows helpers (dev only): `scripts/windows/` — **не** для production, Task Scheduler не устанавливается.
 
-### 2. Синхронизация идентификаторов
+---
+
+## Production = VPS
+
+| Instance | Role |
+|----------|------|
+| `vps-prod` | единственный production monitor |
+| `local-dev` / Windows | development / testing only |
+
+После cutover Windows **не** должен слать Telegram alerts (иначе duplicate из двух SQLite).
+
+Подробности: [`deploy/README.md`](deploy/README.md).
+
+### Docker
+
+```
+deploy/
+  Dockerfile
+  docker-compose.yml
+  systemd/          # timer 2h, control-bot, daily backup
+  README.md
+```
+
+Volumes: `data/` (SQLite + backups), `logs/`. `.env` только на хосте.
+
+Control bot: `docker compose up -d control-bot`  
+Pipeline: systemd timer → `docker compose run --rm pipeline`
+
+### Backup
 
 ```bash
-python identity_sync.py
+python scripts/backup_db.py
 ```
 
-Достаёт/нормализует strong identifiers для матчинга.
-
-### 3. Сравнение магазинов (отчёт)
-
-```bash
-python compare.py
-```
-
-Пишет `data/comparison.json` и сводку matched / unmatched.
-
-### 4. Alert engine
-
-```bash
-python monitor.py
-python monitor.py --deals   # текущие выгодные офферы без создания alerts
-```
-
-Создаёт новые `alert_events` с дедупликацией по `dedupe_key`.
-
-### 5. Telegram delivery
-
-```bash
-# Статус очереди (без отправки)
-python deliver.py --status
-
-# Предпросмотр с той же grouping logic (без отправки и без мутации DB)
-python deliver.py --dry-run
-
-# Тестовое сообщение (проверка токена/чата)
-python deliver.py --test
-
-# Реальная отправка unsent alerts
-python deliver.py
-
-# Одноразово: пометить уже существующие events как skipped (baseline)
-python deliver.py --baseline-existing
-```
-
-**Рекомендация перед первой реальной отправкой:** всегда смотреть `--status` и `--dry-run`.
+SQLite Online Backup API + `PRAGMA integrity_check`, retention 30 дней, каталог `data/backups/` (не в git).
 
 ---
 
-## Типы alert events
+## Migration Windows → VPS (подготовка)
 
-| Тип | Когда |
-|-----|--------|
-| `PRICE_DROP` | Падение цены ≥ `PRICE_DROP_PERCENT` (по умолчанию 5%) |
-| `NEW_HISTORICAL_LOW` | Новый минимум истории, если drop ≥ 2% **или** ≥ 3000 ₽; не дублируется отдельным сообщением, если уже есть `PRICE_DROP` с `is_historical_low` |
-| `TARGET_PRICE` | Цена ≤ порога для GPU (`RTX 5070 Ti` → 230 000 ₽, `RTX 5080` → 300 000 ₽) |
-| `CROSS_STORE_SAVING` | Разница между магазинами ≥ 10 000 ₽ на matched model |
+1. Backup Windows DB (SQLite backup API) + SHA256
+2. Transfer на VPS + verify SHA256
+3. Backup на VPS
+4. Schema migration (`init_db`)
+5. `integrity_check`
+6. Read-only `--status`
+7. First **manual** VPS run
+8. Verify Telegram
+9. Enable systemd timer + control-bot
+10. Disable Windows production monitoring
 
-Пороги настраиваются в `config.py`.
-
----
-
-## Matching моделей
-
-1. **L1 — SKU:** нормализованный артикул совпадает между магазинами.
-2. **L2 — strong ID:** `manufacturer_part_number` / `alternative_part_number` / связанные идентификаторы.
-3. **Config check:** при strong-ID матче сверяются GPU/CPU/RAM/SSD и т.п.; конфликт конфигурации → не match.
-
-Группировка Telegram использует **matched model key** из comparison (`matched_identifier` / `normalized_sku`), а не «сырой» текст названия.
+**Этот репозиторий готов к cutover; сам transfer / enable пока не выполняется.**
 
 ---
 
-## Telegram: grouping, pacing, 429
-
-### Grouping (delivery layer)
-
-Если в unsent batch для одной matched model есть, например:
-
-- `PRICE_DROP` Regard  
-- `PRICE_DROP` ANDPRO  
-- `CROSS_STORE_SAVING`  
-
-→ **одно** сообщение `PRICE UPDATE` (с блоками магазинов, note «Новый исторический минимум», cross-store блоком и URL).
-
-Правила:
-
-- `CROSS_STORE` без `PRICE_DROP` той же модели → отдельное сообщение.
-- `TARGET_PRICE` не теряется: либо секция в PRICE UPDATE той же модели, либо standalone.
-- `alert_events` в БД остаются отдельными; связь через `notification_delivery_events`.
-
-### Pacing
-
-Между последовательными `sendMessage` в один chat — минимум ~**1.1 с** (`TELEGRAM_MIN_SEND_INTERVAL_SECONDS`). Sleep после последнего сообщения не делается.
-
-### Flood control (429)
-
-Если Telegram вернул `error_code=429` и `parameters.retry_after`:
-
-1. ждём **именно** `retry_after`;
-2. повторяем отправку;
-3. каждая попытка увеличивает `attempts` в delivery state;
-4. при превышении `MAX_DELIVERY_ATTEMPTS` (5) → `failed`;
-5. token в логи не попадает.
-
-### Delivery statuses
-
-| status | смысл |
-|--------|--------|
-| `pending` | создан, ещё не успешно отправлен |
-| `sent` | успешно; `provider_message_id` сохранён |
-| `failed` | ошибка, можно retry пока `attempts < MAX` |
-| `skipped` | baseline / сознательно не слать |
-
----
-
-## Схема SQLite (ключевые таблицы)
-
-| Таблица | Назначение |
-|--------|------------|
-| `products` | Текущие офферы по магазинам |
-| `price_history` | История цен / availability |
-| `product_identifiers` | Strong IDs для матчинга |
-| `alert_events` | Бизнес/audit события (не группируются в БД) |
-| `pipeline_runs` | История запусков orchestrator |
-| `notification_deliveries` | Одна Telegram-попытка/сообщение (+ `provider_message_id`) |
-| `notification_delivery_events` | M:N связь delivery ↔ alert_events |
-
-Путь БД по умолчанию: `data/laptop_monitor.db` (в git не коммитится).
-
----
-
-## Структура проекта
+## Структура
 
 ```
-laptop-monitor/
-├── run_pipeline.py         # единый production orchestrator
-├── collection.py           # сбор магазинов (ok/failed per store)
-├── pipeline_lock.py        # process lock
-├── main.py                 # сбор Regard + ANDPRO → SQLite
-├── identity_sync.py        # синхронизация identifiers
-├── compare.py              # отчёт матчинга
-├── monitor.py              # alert engine
-├── deliver.py              # Telegram delivery CLI
-├── alerts.py               # создание / дедуп alert_events
-├── comparison.py           # match_products
-├── notification_groups.py  # grouping для delivery
-├── notifications.py        # HTML-форматтеры сообщений
-├── telegram_sender.py      # Bot API client + pacing
-├── storage.py              # SQLite + миграции
-├── config.py               # пороги и Telegram settings
-├── models.py
-├── enrichment.py
-├── product_identity.py
-├── target_gpu.py
-├── parsers/
-│   ├── regard.py
-│   └── andpro.py
-├── scripts/
-│   ├── run_pipeline.ps1
-│   ├── pipeline_status.ps1
-│   ├── install_scheduled_task.ps1
-│   ├── uninstall_scheduled_task.ps1
-│   ├── rebuild_unsent_alerts.py
-│   └── cleanup_test_history.py
-├── tests/
-├── data/                   # локальные артефакты (.gitkeep)
-├── logs/                   # pipeline logs (.gitkeep; runtime ignored)
-├── .env.example
-├── requirements.txt
-└── README.md
+stores/           # adapters + registry
+parsers/          # Regard/ANDPRO HTML parsers
+deal_ranking.py
+control_bot.py
+admin_notify.py
+run_pipeline.py
+scripts/backup_db.py
+scripts/windows/  # local PowerShell helpers
+deploy/           # Docker + systemd
+VERSION
 ```
 
 ---
 
-## Тесты
+## Что не входит в этот этап
 
-Все тесты используют **временную** SQLite БД. Реальных HTTP-запросов в Telegram нет.
-
-```bash
-python -m unittest discover -s tests -v
-```
-
-Покрыты: парсеры, storage, matching, monitor/alerts, formatters, delivery, **pipeline orchestrator** (lock, partial collection, idempotency).
-
----
-
-## Безопасность
-
-- Секреты только в `.env` / переменных окружения (см. `.env.example`).
-- `.env`, `.venv/`, `data/*.db` в `.gitignore`.
-- В логах ошибок Telegram **не** печатается bot token.
-- Не коммитьте дампы чатов и production DB.
-
----
-
-## Что пока не сделано (намеренно)
-
-- Реальная установка Windows Task Scheduler (скрипт `install_scheduled_task.ps1` подготовлен, задача ещё не создана)
-- n8n
-- Третий магазин
-- Публичный веб-UI
-
----
-
-## Troubleshooting
-
-| Проблема | Что проверить |
-|----------|----------------|
-| `bot can't initiate conversation` / Forbidden | Напишите боту `/start`, проверьте `TELEGRAM_CHAT_ID` |
-| `chat not found` | Неверный chat id (часто путают user id и bot id) |
-| Dry-run показывает 0 сообщений | Нет unsent events — смотрите `deliver.py --status` |
-| События «пропали» после baseline | `skipped` — так и задумано; новые alerts появятся после следующего `monitor.py` |
-| Частые 429 | Pacing 1.1s + `retry_after`; не запускайте несколько `deliver.py` параллельно |
-| Pipeline already running (exit 3) | Уже идёт другой `run_pipeline.py`; дождитесь окончания или проверьте stale lock |
-| Partial без alerts | Упал один магазин — так и задумано, дождитесь полного collection |
-
----
-
-## Лицензия
-
-All rights reserved unless otherwise stated.
+- Реальный deploy на VPS / enable systemd
+- Перенос production DB
+- Обход CAPTCHA / anti-bot
+- Агрессивный fuzzy matching
+- Marketplaces (Ozon/WB) как priority
+- Изменения n8n / Caddy / других контейнеров на VPS

@@ -348,27 +348,21 @@ def _level2_strong_identifier_matches(
             )
             continue
 
-        # Exactly one product per participating store.
-        if "regard" not in by_store or "andpro" not in by_store:
+        # Exactly one product per participating store; need ≥2 stores.
+        if len(by_store) < 2:
             continue
         if any(len(v) != 1 for v in by_store.values()):
             continue
 
-        regard_entry = next(iter(by_store["regard"].values()))
-        andpro_entry = next(iter(by_store["andpro"].values()))
-        pair_key = frozenset(
-            {
-                _offer_key(regard_entry["offer"]),
-                _offer_key(andpro_entry["offer"]),
-            }
-        )
-        pair_identifiers.setdefault(pair_key, set()).add(normalized)
-        pair_offers[pair_key] = {
-            "regard": regard_entry["offer"],
-            "andpro": andpro_entry["offer"],
+        offers_map: dict[str, Offer] = {
+            store: next(iter(entries.values()))["offer"]
+            for store, entries in by_store.items()
         }
+        cluster_key = frozenset(_offer_key(o) for o in offers_map.values())
+        pair_identifiers.setdefault(cluster_key, set()).add(normalized)
+        pair_offers[cluster_key] = offers_map
 
-    # One-to-one: each product may belong to at most one counterpart pair.
+    # One-to-one: each product may belong to at most one counterpart cluster.
     product_to_pairs: dict[tuple[str, str], list[frozenset[tuple[str, str]]]] = {}
     for pair_key in pair_offers:
         for key in pair_key:
@@ -402,49 +396,71 @@ def _level2_strong_identifier_matches(
     matches: list[ProductMatch] = []
     matched_now: set[tuple[str, str]] = set()
 
-    for pair_key, offers_map in pair_offers.items():
-        if pair_key in blocked_pairs:
+    for cluster_key, offers_map in pair_offers.items():
+        if cluster_key in blocked_pairs:
             continue
-        regard_offer = offers_map["regard"]
-        andpro_offer = offers_map["andpro"]
-        identifiers_hit = sorted(pair_identifiers[pair_key])
+        offer_list = list(offers_map.values())
+        identifiers_hit = sorted(pair_identifiers[cluster_key])
         matched_id = identifiers_hit[0]
 
-        left_spec = _specs_for_offer(regard_offer, specs_by_product_id, specs_by_key)
-        right_spec = _specs_for_offer(andpro_offer, specs_by_product_id, specs_by_key)
-        if left_spec is not None and right_spec is not None:
-            diffs = find_config_conflicts(left_spec, right_spec)
-            if diffs:
-                conflicts.append(
-                    {
-                        "status": "CONFLICT",
-                        "reason": "Strong identifier совпал, но конфигурация противоречит",
-                        "matched_identifier": matched_id,
-                        "different_fields": diffs,
-                        "regard": {
-                            "external_id": regard_offer.external_id,
-                            "sku": regard_offer.sku,
-                            "name": regard_offer.name,
-                        },
-                        "andpro": {
-                            "external_id": andpro_offer.external_id,
-                            "sku": andpro_offer.sku,
-                            "name": andpro_offer.name,
-                        },
-                    }
-                )
-                continue
+        # Pairwise config check across all offers that have specs.
+        specs = [
+            (_offer_key(o), o, _specs_for_offer(o, specs_by_product_id, specs_by_key))
+            for o in offer_list
+        ]
+        conflicted = False
+        for i in range(len(specs)):
+            for j in range(i + 1, len(specs)):
+                left_spec = specs[i][2]
+                right_spec = specs[j][2]
+                if left_spec is None or right_spec is None:
+                    continue
+                diffs = find_config_conflicts(left_spec, right_spec)
+                if diffs:
+                    conflicts.append(
+                        {
+                            "status": "CONFLICT",
+                            "reason": (
+                                "Strong identifier совпал, но конфигурация "
+                                "противоречит"
+                            ),
+                            "matched_identifier": matched_id,
+                            "different_fields": diffs,
+                            "offers": [
+                                {
+                                    "store": specs[i][1].store,
+                                    "external_id": specs[i][1].external_id,
+                                    "sku": specs[i][1].sku,
+                                    "name": specs[i][1].name,
+                                },
+                                {
+                                    "store": specs[j][1].store,
+                                    "external_id": specs[j][1].external_id,
+                                    "sku": specs[j][1].sku,
+                                    "name": specs[j][1].name,
+                                },
+                            ],
+                        }
+                    )
+                    conflicted = True
+                    break
+            if conflicted:
+                break
+        if conflicted:
+            continue
 
-        display_normalized = normalize_sku(regard_offer.sku) or matched_id
+        display_normalized = (
+            normalize_sku(offer_list[0].sku) or matched_id
+        )
         match = _build_match(
             display_normalized,
-            [regard_offer, andpro_offer],
+            offer_list,
             match_method="strong_identifier",
             matched_identifier=matched_id,
         )
         matches.append(match)
-        matched_now.add(_offer_key(regard_offer))
-        matched_now.add(_offer_key(andpro_offer))
+        for o in offer_list:
+            matched_now.add(_offer_key(o))
 
     still_unmatched = [o for o in remaining if _offer_key(o) not in matched_now]
     return matches, still_unmatched, ambiguous, conflicts

@@ -1,0 +1,15 @@
+[Unit]
+Description=Laptop Monitor Telegram control bot (Docker Compose)
+Requires=docker.service
+After=docker.service network-online.target
+
+[Service]
+Type=simple
+WorkingDirectory=/opt/laptop-monitor
+ExecStart=/usr/bin/docker compose -f deploy/docker-compose.yml up control-bot
+ExecStop=/usr/bin/docker compose -f deploy/docker-compose.yml stop control-bot
+Restart=on-failure
+RestartSec=10
+
+[Install]
+WantedBy=multi-user.target

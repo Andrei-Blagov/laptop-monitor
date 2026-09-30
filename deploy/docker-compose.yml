@@ -1,0 +1,42 @@
+services:
+  pipeline:
+    build:
+      context: ..
+      dockerfile: deploy/Dockerfile
+    image: laptop-monitor:0.2.0
+    container_name: laptop-monitor-pipeline
+    env_file:
+      - ../.env
+    environment:
+      LAPTOP_MONITOR_INSTANCE: vps-prod
+    volumes:
+      - ../data:/app/data
+      - ../logs:/app/logs
+    working_dir: /app
+    profiles: ["manual"]
+
+  control-bot:
+    image: laptop-monitor:0.2.0
+    container_name: laptop-monitor-control
+    depends_on: []
+    env_file:
+      - ../.env
+    environment:
+      LAPTOP_MONITOR_INSTANCE: vps-prod
+    volumes:
+      - ../data:/app/data
+      - ../logs:/app/logs
+    working_dir: /app
+    command: ["python", "control_bot.py"]
+    restart: unless-stopped
+
+  backup:
+    image: laptop-monitor:0.2.0
+    container_name: laptop-monitor-backup
+    env_file:
+      - ../.env
+    volumes:
+      - ../data:/app/data
+    working_dir: /app
+    command: ["python", "scripts/backup_db.py"]
+    profiles: ["manual"]

@@ -25,8 +25,8 @@ function Write-LogLine {
 }
 
 try {
-    $ProjectRoot = Resolve-Path -LiteralPath (Join-Path $PSScriptRoot "..")
-    Set-Location -LiteralPath $ProjectRoot
+$ProjectRoot = Resolve-Path -LiteralPath (Join-Path $PSScriptRoot "..\..")
+Set-Location -LiteralPath $ProjectRoot
 
     $PythonExe = Join-Path $ProjectRoot ".venv\Scripts\python.exe"
     $PipelinePy = Join-Path $ProjectRoot "run_pipeline.py"

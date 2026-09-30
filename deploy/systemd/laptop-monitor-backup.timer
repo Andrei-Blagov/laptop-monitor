@@ -1,0 +1,10 @@
+[Unit]
+Description=Daily Laptop Monitor SQLite backup timer
+
+[Timer]
+OnCalendar=*-*-* 03:15:00
+Persistent=true
+Unit=laptop-monitor-backup.service
+
+[Install]
+WantedBy=timers.target

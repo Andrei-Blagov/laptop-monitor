@@ -21,6 +21,20 @@ TARGET_PRICES: dict[str, int] = {
 # Минимальная разница между магазинами для CROSS_STORE_SAVING (руб.).
 CROSS_STORE_DIFFERENCE_RUB: int = 10_000
 
+# --- Deal ranking weights (explainable, config-driven) ---
+RANK_GPU_5080_BONUS: float = 25.0
+RANK_GPU_5070TI_BONUS: float = 18.0
+RANK_RAM_32_BONUS: float = 12.0
+RANK_RAM_16_BONUS: float = 4.0
+RANK_SSD_1TB_BONUS: float = 8.0
+RANK_SCREEN_17_BONUS: float = 10.0
+RANK_SCREEN_16_BONUS: float = 4.0
+RANK_BUDGET_ANCHOR_RUB: int = 200_000
+RANK_BUDGET_UNDER_BONUS: float = 15.0
+RANK_BUDGET_NEAR_BONUS: float = 6.0
+RANK_HISTORICAL_LOW_BONUS: float = 8.0
+TOP_DEALS_LIMIT: int = 10
+
 # Telegram delivery
 CHANNEL_TELEGRAM = "telegram"
 # Стабильный ключ destination в DB (chat_id используется только API-клиентом).
@@ -28,6 +42,22 @@ TELEGRAM_DESTINATION = "default"
 MAX_DELIVERY_ATTEMPTS: int = 5
 # Минимальный интервал между sendMessage в один chat (сек).
 TELEGRAM_MIN_SEND_INTERVAL_SECONDS: float = 1.1
+
+
+def get_instance_id() -> str:
+    load_dotenv_if_present()
+    return (os.environ.get("LAPTOP_MONITOR_INSTANCE") or "local-dev").strip()
+
+
+def get_telegram_admin_chat_ids() -> set[str]:
+    """Allowlist of Telegram chat/user ids that may control the bot."""
+    load_dotenv_if_present()
+    raw = (os.environ.get("TELEGRAM_ADMIN_CHAT_ID") or "").strip()
+    if not raw:
+        # Fallback: primary destination chat is admin if not overridden.
+        chat = (os.environ.get("TELEGRAM_CHAT_ID") or "").strip()
+        return {chat} if chat else set()
+    return {part.strip() for part in raw.split(",") if part.strip()}
 
 
 def load_dotenv_if_present() -> None:

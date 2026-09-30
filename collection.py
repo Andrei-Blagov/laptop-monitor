@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-"""Сбор офферов Regard / ANDPRO без ложных unavailable при сбое магазина."""
+"""Multi-store collection via StoreAdapter registry."""
 
 import json
 import logging
@@ -9,17 +9,20 @@ from pathlib import Path
 from typing import Callable, Sequence
 
 from models import Product
-from parsers.andpro import fetch_target_laptops as fetch_andpro_default
-from parsers.regard import fetch_target_laptops as fetch_regard_default
 from storage import DEFAULT_DB_PATH, SaveStats, save_products
+from stores.base import StoreAdapter, StoreCollectOutcome
+from stores.registry import enabled_adapters
 
 logger = logging.getLogger(__name__)
 
+# Back-compat alias used by older call sites / tests.
 StoreFetcher = Callable[[], Sequence[Product]]
 
 
 @dataclass
 class StoreCollectResult:
+    """Совместимый wrapper над StoreCollectOutcome."""
+
     store: str
     ok: bool
     products: list[Product] = field(default_factory=list)
@@ -29,20 +32,52 @@ class StoreCollectResult:
     def count(self) -> int:
         return len(self.products)
 
+    @classmethod
+    def from_outcome(cls, outcome: StoreCollectOutcome) -> StoreCollectResult:
+        return cls(
+            store=outcome.store,
+            ok=outcome.ok,
+            products=list(outcome.products),
+            error=outcome.error,
+        )
+
 
 @dataclass
 class CollectionResult:
-    regard: StoreCollectResult
-    andpro: StoreCollectResult
+    stores: dict[str, StoreCollectResult] = field(default_factory=dict)
     save_stats: SaveStats | None = None
+
+    # Back-compat for Regard/ANDPRO-era pipeline tests.
+    @property
+    def regard(self) -> StoreCollectResult:
+        return self.stores.get(
+            "regard",
+            StoreCollectResult(store="regard", ok=False, error="not collected"),
+        )
+
+    @property
+    def andpro(self) -> StoreCollectResult:
+        return self.stores.get(
+            "andpro",
+            StoreCollectResult(store="andpro", ok=False, error="not collected"),
+        )
+
+    @property
+    def successful_stores(self) -> list[str]:
+        return [s for s, r in self.stores.items() if r.ok]
+
+    @property
+    def failed_stores(self) -> list[str]:
+        return [s for s, r in self.stores.items() if not r.ok]
 
     @property
     def both_ok(self) -> bool:
-        return self.regard.ok and self.andpro.ok
+        """Все участвующие stores успешны (для enabled set)."""
+        return bool(self.stores) and all(r.ok for r in self.stores.values())
 
     @property
     def any_ok(self) -> bool:
-        return self.regard.ok or self.andpro.ok
+        return any(r.ok for r in self.stores.values())
 
     @property
     def none_ok(self) -> bool:
@@ -51,10 +86,9 @@ class CollectionResult:
     @property
     def products(self) -> list[Product]:
         out: list[Product] = []
-        if self.regard.ok:
-            out.extend(self.regard.products)
-        if self.andpro.ok:
-            out.extend(self.andpro.products)
+        for result in self.stores.values():
+            if result.ok:
+                out.extend(result.products)
         return out
 
 
@@ -62,16 +96,11 @@ def collect_store(
     store_name: str,
     fetcher: StoreFetcher,
 ) -> StoreCollectResult:
-    """
-    Собирает один магазин.
-
-    При исключении возвращает ok=False и пустой список products —
-    caller НЕ должен трактовать это как «0 товаров в наличии».
-    """
+    """Legacy helper: collect one store via callable fetcher."""
     try:
         products = list(fetcher())
         return StoreCollectResult(store=store_name, ok=True, products=products)
-    except Exception as exc:
+    except Exception as exc:  # noqa: BLE001
         logger.exception("Сбой магазина %s", store_name)
         return StoreCollectResult(
             store=store_name,
@@ -85,24 +114,66 @@ def collect_products(
     *,
     fetch_regard: StoreFetcher | None = None,
     fetch_andpro: StoreFetcher | None = None,
+    adapters: Sequence[StoreAdapter] | None = None,
+    fetchers: dict[str, StoreFetcher] | None = None,
 ) -> CollectionResult:
-    """Собирает Regard и ANDPRO независимо."""
-    regard = collect_store("regard", fetch_regard or fetch_regard_default)
-    andpro = collect_store("andpro", fetch_andpro or fetch_andpro_default)
-    return CollectionResult(regard=regard, andpro=andpro)
+    """
+    Собирает enabled stores независимо.
+
+    Back-compat: fetch_regard / fetch_andpro override adapters for those slugs.
+    """
+    result = CollectionResult()
+    override: dict[str, StoreFetcher] = dict(fetchers or {})
+    if fetch_regard is not None:
+        override["regard"] = fetch_regard
+    if fetch_andpro is not None:
+        override["andpro"] = fetch_andpro
+
+    if adapters is None and (fetch_regard is not None or fetch_andpro is not None):
+        # Test / legacy path: only run stores that have fetchers provided,
+        # plus defaults if one side missing.
+        from parsers.andpro import fetch_target_laptops as fetch_andpro_default
+        from parsers.regard import fetch_target_laptops as fetch_regard_default
+
+        pairs = [
+            ("regard", override.get("regard", fetch_regard_default)),
+            ("andpro", override.get("andpro", fetch_andpro_default)),
+        ]
+        # If only one override intended for failure tests that still pass both...
+        # Always collect both for back-compat with existing pipeline tests.
+        for slug, fetcher in pairs:
+            result.stores[slug] = collect_store(slug, fetcher)
+        return result
+
+    for adapter in adapters if adapters is not None else enabled_adapters():
+        if adapter.slug in override:
+            result.stores[adapter.slug] = collect_store(
+                adapter.slug, override[adapter.slug]
+            )
+        else:
+            outcome = adapter.collect_safe()
+            result.stores[adapter.slug] = StoreCollectResult.from_outcome(outcome)
+    return result
 
 
 def write_collection_diagnostic(
     collection: CollectionResult,
     last_run_path: Path | str,
 ) -> None:
-    """Пишет diagnostic JSON без изменения production DB."""
     path = Path(last_run_path)
     path.parent.mkdir(parents=True, exist_ok=True)
-    products = collection.products
+    stores_payload = {
+        slug: {
+            "ok": r.ok,
+            "count": r.count if r.ok else None,
+            "error": r.error,
+        }
+        for slug, r in collection.stores.items()
+    }
     path.write_text(
         json.dumps(
             {
+                "stores": stores_payload,
                 "regard_ok": collection.regard.ok,
                 "andpro_ok": collection.andpro.ok,
                 "regard_count": (
@@ -111,9 +182,9 @@ def write_collection_diagnostic(
                 "andpro_count": (
                     collection.andpro.count if collection.andpro.ok else None
                 ),
-                "count": len(products),
+                "count": len(collection.products),
                 "incomplete": not collection.both_ok,
-                "products": [asdict(p) for p in products],
+                "products": [asdict(p) for p in collection.products],
             },
             ensure_ascii=False,
             indent=2,
@@ -128,14 +199,17 @@ def persist_collection(
     db_path: Path | str = DEFAULT_DB_PATH,
     *,
     last_run_path: Path | str | None = None,
+    only_successful: bool = True,
 ) -> SaveStats:
     """
-    Сохраняет продукты успешно собранных магазинов в production DB.
+    Сохраняет продукты успешных магазинов.
 
-    Для неполного collection вызывающий код (pipeline) не должен
-    вызывать эту функцию — иначе можно потерять PRICE_DROP.
+    only_successful=True (default): failed stores не пишутся → snapshot stale.
     """
-    products = collection.products
+    products = collection.products if only_successful else []
+    if not only_successful:
+        for r in collection.stores.values():
+            products.extend(r.products)
     if last_run_path is not None:
         write_collection_diagnostic(collection, last_run_path)
     stats = save_products(products, db_path)

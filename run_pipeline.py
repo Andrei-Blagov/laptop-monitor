@@ -31,11 +31,15 @@ from storage import (
     PIPELINE_STATUS_SUCCESS,
     create_pipeline_run,
     init_db,
+    insert_store_run,
     open_db,
     read_pipeline_runs_readonly,
     update_pipeline_run,
 )
+from admin_notify import maybe_notify_ops_failure
 from telegram_sender import MessageSender
+from version import APP_NAME, get_version
+import config
 
 
 EXIT_SUCCESS = 0
@@ -127,11 +131,15 @@ def run_pipeline(
         with open_db(db_path) as conn:
             init_db(conn)
             run_id = create_pipeline_run(
-                conn, started_at=started_at, status=PIPELINE_STATUS_RUNNING
+                conn,
+                started_at=started_at,
+                status=PIPELINE_STATUS_RUNNING,
+                app_version=get_version(),
+                instance_id=config.get_instance_id(),
             )
             result.run_id = run_id
 
-        # --- COLLECTION ---
+        # --- COLLECTION (independent per store) ---
         try:
             collection = collect_products(
                 fetch_regard=fetch_regard,
@@ -157,63 +165,38 @@ def run_pipeline(
         result.andpro_products = (
             collection.andpro.count if collection.andpro.ok else None
         )
+        fresh_stores = set(collection.successful_stores)
+        collection_partial = bool(collection.failed_stores) and bool(
+            collection.successful_stores
+        )
 
-        if collection.none_ok:
-            msg = "Both Regard and ANDPRO collection failed"
-            errors = []
-            if collection.regard.error:
-                errors.append(f"regard: {collection.regard.error}")
-            if collection.andpro.error:
-                errors.append(f"andpro: {collection.andpro.error}")
-            if errors:
-                msg = msg + " | " + "; ".join(errors)
-            if last_run_path is not None:
-                try:
-                    write_collection_diagnostic(collection, last_run_path)
-                except Exception:
-                    pass
-            _record_run(
-                db_path,
-                run_id,
-                result,
-                status=PIPELINE_STATUS_FAILED,
-                error_stage="collection",
-                error_message=msg,
-                started=started,
-            )
-            return finish(PIPELINE_STATUS_FAILED, EXIT_FAILED)
-
-        if not collection.both_ok:
-            # Incomplete collection: do NOT advance production price snapshot.
-            failed = "Regard" if not collection.regard.ok else "ANDPRO"
-            err = collection.regard.error or collection.andpro.error or "store failed"
-            result.skipped_alerts_delivery = True
-            if last_run_path is not None:
-                try:
-                    write_collection_diagnostic(collection, last_run_path)
-                except Exception:
-                    pass
-            _record_run(
-                db_path,
-                run_id,
-                result,
-                status=PIPELINE_STATUS_PARTIAL,
-                error_stage="collection",
-                error_message=(
-                    f"{failed} collection failed; production snapshot unchanged; "
-                    f"alerts/delivery skipped. {err}"
-                ),
-                started=started,
-            )
-            return finish(PIPELINE_STATUS_PARTIAL, EXIT_PARTIAL)
-
-        # Full collection only — persist both stores together.
+        # Persist store_runs + successful store snapshots only.
+        now_iso = _iso_now()
         try:
-            persist_collection(
-                collection,
-                db_path,
-                last_run_path=last_run_path,
-            )
+            with open_db(db_path) as conn:
+                init_db(conn)
+                for slug, store_res in collection.stores.items():
+                    insert_store_run(
+                        conn,
+                        pipeline_run_id=run_id,
+                        store=slug,
+                        attempted_at=started_at,
+                        finished_at=now_iso,
+                        status="ok" if store_res.ok else "failed",
+                        products_count=(
+                            store_res.count if store_res.ok else None
+                        ),
+                        error_message=store_res.error,
+                    )
+            if collection.any_ok:
+                persist_collection(
+                    collection,
+                    db_path,
+                    last_run_path=last_run_path,
+                    only_successful=True,
+                )
+            elif last_run_path is not None:
+                write_collection_diagnostic(collection, last_run_path)
         except Exception as exc:
             _record_run(
                 db_path,
@@ -222,6 +205,26 @@ def run_pipeline(
                 status=PIPELINE_STATUS_FAILED,
                 error_stage="storage",
                 error_message=_safe_error_text(exc),
+                started=started,
+            )
+            return finish(PIPELINE_STATUS_FAILED, EXIT_FAILED)
+
+        if collection.none_ok:
+            msg = "All stores failed collection"
+            errors = [
+                f"{s}: {collection.stores[s].error}"
+                for s in collection.failed_stores
+                if collection.stores[s].error
+            ]
+            if errors:
+                msg = msg + " | " + "; ".join(errors)
+            _record_run(
+                db_path,
+                run_id,
+                result,
+                status=PIPELINE_STATUS_FAILED,
+                error_stage="collection",
+                error_message=msg,
                 started=started,
             )
             return finish(PIPELINE_STATUS_FAILED, EXIT_FAILED)
@@ -266,7 +269,10 @@ def run_pipeline(
 
         # --- MONITOR / ALERTS ---
         try:
-            mon_kwargs: dict[str, Any] = {}
+            mon_kwargs: dict[str, Any] = {
+                "fresh_stores": fresh_stores,
+                "product_store_filter": fresh_stores,
+            }
             if specs_path is not None:
                 mon_kwargs["specs_path"] = specs_path
             monitor = run_monitor(db_path, **mon_kwargs)
@@ -315,14 +321,33 @@ def run_pipeline(
                     f"Telegram partial: sent={result.messages_sent} "
                     f"failed={result.messages_failed}"
                 )
+            elif collection_partial:
+                status = PIPELINE_STATUS_PARTIAL
+                exit_code = EXIT_PARTIAL
+                result.error_stage = result.error_stage or "collection"
+                result.error_message = result.error_message or (
+                    "Partial collection: "
+                    + ",".join(sorted(collection.failed_stores))
+                    + " failed; local alerts for successful stores applied"
+                )
             else:
                 status = PIPELINE_STATUS_SUCCESS
                 exit_code = EXIT_SUCCESS
         else:
             result.messages_sent = 0
             result.messages_failed = 0
-            status = PIPELINE_STATUS_SUCCESS
-            exit_code = EXIT_SUCCESS
+            if collection_partial:
+                status = PIPELINE_STATUS_PARTIAL
+                exit_code = EXIT_PARTIAL
+                result.error_stage = "collection"
+                result.error_message = (
+                    "Partial collection: "
+                    + ",".join(sorted(collection.failed_stores))
+                    + " failed"
+                )
+            else:
+                status = PIPELINE_STATUS_SUCCESS
+                exit_code = EXIT_SUCCESS
 
         _record_run(
             db_path,
@@ -494,7 +519,16 @@ def main(argv: list[str] | None = None) -> int:
         action="store_true",
         help="Показать последние pipeline runs (без запуска)",
     )
+    parser.add_argument(
+        "--version",
+        action="store_true",
+        help="Показать версию приложения",
+    )
     args = parser.parse_args(argv)
+
+    if args.version:
+        print(f"{APP_NAME} {get_version()}")
+        return EXIT_SUCCESS
 
     if args.status:
         runs = run_status(DEFAULT_DB_PATH)
@@ -512,6 +546,9 @@ def main(argv: list[str] | None = None) -> int:
         print("Pipeline already running")
         return EXIT_LOCKED
     print_pipeline_summary(result)
+    # Ops alert only for scheduled/CLI runs — not unit tests.
+    if result.status in {PIPELINE_STATUS_PARTIAL, PIPELINE_STATUS_FAILED}:
+        maybe_notify_ops_failure(result)
     return result.exit_code
 
 

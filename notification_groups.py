@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 from dataclasses import dataclass, field
-from typing import Any, Mapping, Sequence
+from typing import Any, Mapping, Sequence  # Any used by priority helpers
 
 from alerts import (
     EVENT_CROSS_STORE,
@@ -10,6 +10,7 @@ from alerts import (
     EVENT_TARGET_PRICE,
 )
 from comparison import normalize_sku
+from deal_ranking import score_offer
 from product_identity import normalize_identifier
 
 
@@ -192,6 +193,60 @@ def group_alert_events_for_delivery(
                 )
             )
 
-    # Stable order by min event id in group.
-    groups.sort(key=lambda g: min(g.event_ids) if g.event_ids else 0)
+    # Highest priority first (explainable deal ranking), then event id.
+    groups.sort(
+        key=lambda g: (-_group_priority_score(g), min(g.event_ids) if g.event_ids else 0)
+    )
     return groups
+
+
+def _group_priority_score(group: NotificationGroup) -> float:
+    """Best score among events in the group (for Telegram send order)."""
+    best = 0.0
+    for event in group.events:
+        meta = _meta(event)
+        price = meta.get("new_price") or meta.get("price") or meta.get("cheapest_price")
+        try:
+            price_i = int(price) if price is not None else None
+        except (TypeError, ValueError):
+            price_i = None
+        saving = meta.get("saving") or meta.get("price_difference")
+        try:
+            saving_i = int(saving) if saving is not None else None
+        except (TypeError, ValueError):
+            saving_i = None
+        gpu = meta.get("gpu") or meta.get("normalized_gpu")
+        score, _ = score_offer(
+            price=price_i,
+            gpu=str(gpu) if gpu else None,
+            ram_gb=_as_int(meta.get("ram_gb")),
+            ssd_gb=_as_int(meta.get("ssd_gb")),
+            screen_inch=_as_float(meta.get("screen_inch")),
+            saving_vs_next=saving_i,
+            is_historical_low=event.get("event_type") == EVENT_HISTORICAL_LOW
+            or bool(meta.get("is_historical_low")),
+        )
+        # Mild boost by event type when metadata is sparse.
+        et = event.get("event_type")
+        if et == EVENT_CROSS_STORE:
+            score += 5.0
+        elif et == EVENT_PRICE_DROP:
+            score += 3.0
+        elif et == EVENT_TARGET_PRICE:
+            score += 2.0
+        best = max(best, score)
+    return best
+
+
+def _as_int(value: Any) -> int | None:
+    try:
+        return int(value) if value is not None else None
+    except (TypeError, ValueError):
+        return None
+
+
+def _as_float(value: Any) -> float | None:
+    try:
+        return float(value) if value is not None else None
+    except (TypeError, ValueError):
+        return None

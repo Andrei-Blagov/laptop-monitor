@@ -262,7 +262,14 @@ def evaluate_target_price(
 def evaluate_cross_store(
     conn,
     matches: Sequence[Any],
+    *,
+    fresh_stores: set[str] | None = None,
 ) -> list[dict]:
+    """
+    CROSS_STORE только между fresh stores текущего run.
+
+    fresh_stores=None → legacy behaviour (все offers в match).
+    """
     created: list[dict] = []
     threshold = int(config.CROSS_STORE_DIFFERENCE_RUB)
 
@@ -270,7 +277,9 @@ def evaluate_cross_store(
         available = [
             o
             for o in match.offers
-            if o.available and o.price is not None
+            if o.available
+            and o.price is not None
+            and (fresh_stores is None or o.store in fresh_stores)
         ]
         if len(available) < 2:
             continue
@@ -293,7 +302,6 @@ def evaluate_cross_store(
             f"{EVENT_CROSS_STORE}|{identity}|{'|'.join(price_parts)}"
         )
 
-        # Prefer product_id of cheapest offer when available.
         product_id = cheapest.product_id
         event = save_alert_event(
             conn,
@@ -318,6 +326,7 @@ def evaluate_cross_store(
                 "other_sku": other.sku,
                 "difference": difference,
                 "threshold": threshold,
+                "fresh_stores": sorted(fresh_stores) if fresh_stores else None,
                 "offers": [
                     {
                         "store": o.store,
@@ -327,7 +336,7 @@ def evaluate_cross_store(
                         "url": o.url,
                         "external_id": o.external_id,
                     }
-                    for o in match.offers
+                    for o in ordered
                 ],
             },
         )
@@ -340,12 +349,25 @@ def run_monitor(
     db_path: Path | str = DEFAULT_DB_PATH,
     *,
     specs_path: Path | str | None = None,
+    fresh_stores: set[str] | None = None,
+    product_store_filter: set[str] | None = None,
 ) -> MonitorResult:
+    """
+    Alert engine.
+
+    fresh_stores: stores successfully collected this run (for CROSS_STORE).
+    product_store_filter: if set, only evaluate local alerts for these stores'
+      products (successful snapshots). CROSS_STORE still uses fresh_stores.
+    """
     products = get_all_products(db_path)
+    if product_store_filter is not None:
+        products = [
+            p for p in products if str(p.get("store")) in product_store_filter
+        ]
     identifiers = get_all_identifiers(db_path)
     specs = _specs_index(specs_path)
     comparison = match_products(
-        products,
+        products if product_store_filter is None else get_all_products(db_path),
         identifiers,
         specs_by_key=specs,
     )
@@ -355,8 +377,6 @@ def run_monitor(
         init_db(conn)
         for product in products:
             gpu = _product_gpu(product, specs)
-            # PRICE_DROP имеет приоритет над NEW_HISTORICAL_LOW для одного изменения.
-            # Даже если PRICE_DROP уже есть (dedupe → None), hist не создаём.
             drop_event = evaluate_price_drop(conn, product)
             if drop_event is not None:
                 created.append(drop_event)
@@ -369,7 +389,15 @@ def run_monitor(
             if target_event is not None:
                 created.append(target_event)
 
-        created.extend(evaluate_cross_store(conn, comparison.matches))
+        # Cross-store: only among fresh successful stores this run.
+        cross_fresh = fresh_stores
+        if cross_fresh is not None and len(cross_fresh) < 2:
+            cross_events: list[dict] = []
+        else:
+            cross_events = evaluate_cross_store(
+                conn, comparison.matches, fresh_stores=cross_fresh
+            )
+        created.extend(cross_events)
 
     counts = {
         EVENT_PRICE_DROP: 0,

@@ -175,6 +175,21 @@ def init_db(conn: sqlite3.Connection) -> None:
 
         CREATE INDEX IF NOT EXISTS idx_pipeline_runs_started
             ON pipeline_runs(started_at DESC);
+
+        CREATE TABLE IF NOT EXISTS store_runs (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            pipeline_run_id INTEGER,
+            store TEXT NOT NULL,
+            attempted_at TEXT NOT NULL,
+            finished_at TEXT,
+            status TEXT NOT NULL,
+            products_count INTEGER,
+            error_message TEXT,
+            FOREIGN KEY(pipeline_run_id) REFERENCES pipeline_runs(id)
+        );
+
+        CREATE INDEX IF NOT EXISTS idx_store_runs_store_time
+            ON store_runs(store, attempted_at DESC);
         """
     )
     _migrate_notification_schema(conn)
@@ -338,7 +353,7 @@ def _migrate_notification_schema(conn: sqlite3.Connection) -> None:
 
 
 def _migrate_pipeline_runs(conn: sqlite3.Connection) -> None:
-    """Безопасное создание pipeline_runs на существующих DB."""
+    """Безопасное создание pipeline_runs / store_runs + новые колонки."""
     conn.executescript(
         """
         CREATE TABLE IF NOT EXISTS pipeline_runs (
@@ -357,12 +372,33 @@ def _migrate_pipeline_runs(conn: sqlite3.Connection) -> None:
             messages_failed INTEGER,
             error_stage TEXT,
             error_message TEXT,
-            duration_seconds REAL
+            duration_seconds REAL,
+            app_version TEXT,
+            instance_id TEXT
         );
         CREATE INDEX IF NOT EXISTS idx_pipeline_runs_started
             ON pipeline_runs(started_at DESC);
+        CREATE TABLE IF NOT EXISTS store_runs (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            pipeline_run_id INTEGER,
+            store TEXT NOT NULL,
+            attempted_at TEXT NOT NULL,
+            finished_at TEXT,
+            status TEXT NOT NULL,
+            products_count INTEGER,
+            error_message TEXT,
+            FOREIGN KEY(pipeline_run_id) REFERENCES pipeline_runs(id)
+        );
+        CREATE INDEX IF NOT EXISTS idx_store_runs_store_time
+            ON store_runs(store, attempted_at DESC);
         """
     )
+    cols = _column_names(conn, "pipeline_runs")
+    if cols:
+        if "app_version" not in cols:
+            conn.execute("ALTER TABLE pipeline_runs ADD COLUMN app_version TEXT")
+        if "instance_id" not in cols:
+            conn.execute("ALTER TABLE pipeline_runs ADD COLUMN instance_id TEXT")
 
 
 PIPELINE_STATUS_RUNNING = "running"
@@ -376,13 +412,15 @@ def create_pipeline_run(
     *,
     started_at: str,
     status: str = PIPELINE_STATUS_RUNNING,
+    app_version: str | None = None,
+    instance_id: str | None = None,
 ) -> int:
     cur = conn.execute(
         """
-        INSERT INTO pipeline_runs (started_at, status)
-        VALUES (?, ?)
+        INSERT INTO pipeline_runs (started_at, status, app_version, instance_id)
+        VALUES (?, ?, ?, ?)
         """,
-        (started_at, status),
+        (started_at, status, app_version, instance_id),
     )
     return int(cur.lastrowid)
 
@@ -407,6 +445,8 @@ def update_pipeline_run(
         "error_stage",
         "error_message",
         "duration_seconds",
+        "app_version",
+        "instance_id",
     }
     updates = {k: v for k, v in fields.items() if k in allowed}
     if not updates:
@@ -473,6 +513,62 @@ def read_pipeline_runs_readonly(
         return []
     finally:
         conn.close()
+
+
+def insert_store_run(
+    conn: sqlite3.Connection,
+    *,
+    pipeline_run_id: int | None,
+    store: str,
+    attempted_at: str,
+    finished_at: str | None,
+    status: str,
+    products_count: int | None = None,
+    error_message: str | None = None,
+) -> int:
+    cur = conn.execute(
+        """
+        INSERT INTO store_runs (
+            pipeline_run_id, store, attempted_at, finished_at,
+            status, products_count, error_message
+        )
+        VALUES (?, ?, ?, ?, ?, ?, ?)
+        """,
+        (
+            pipeline_run_id,
+            store,
+            attempted_at,
+            finished_at,
+            status,
+            products_count,
+            (error_message or None) and str(error_message)[:1000],
+        ),
+    )
+    return int(cur.lastrowid)
+
+
+def get_latest_store_runs(
+    conn: sqlite3.Connection,
+    *,
+    limit_per_store: int = 1,
+) -> dict[str, dict]:
+    """Последний store_run на каждый store."""
+    rows = conn.execute(
+        """
+        SELECT *
+        FROM store_runs
+        ORDER BY id DESC
+        """
+    ).fetchall()
+    out: dict[str, dict] = {}
+    for row in rows:
+        store = str(row["store"])
+        if store in out:
+            continue
+        out[store] = dict(row)
+        if len(out) >= 50:
+            break
+    return out
 
 
 def count_products(conn: sqlite3.Connection) -> int:

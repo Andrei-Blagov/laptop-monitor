@@ -17,8 +17,8 @@ param(
 
 $ErrorActionPreference = "Stop"
 
-$ProjectRoot = Resolve-Path -LiteralPath (Join-Path $PSScriptRoot "..")
-$Wrapper = Join-Path $ProjectRoot "scripts\run_pipeline.ps1"
+$ProjectRoot = Resolve-Path -LiteralPath (Join-Path $PSScriptRoot "..\..")
+$Wrapper = Join-Path $ProjectRoot "scripts\windows\run_pipeline.ps1"
 
 if (-not (Test-Path -LiteralPath $Wrapper)) {
     throw "Missing wrapper: $Wrapper"
