@@ -109,11 +109,30 @@ TOP uses only stores whose **latest** `store_runs` row is `ok` and within
 
 Units call `/opt/laptop-monitor/deploy/compose.sh ...`.
 
+**Do not enable** `laptop-monitor.service` directly — the timer invokes it.
+
+After a successful **manual** production pipeline run:
+
 ```bash
-# AFTER successful manual run only:
-# sudo systemctl enable --now laptop-monitor.timer
-# sudo systemctl enable --now laptop-monitor-control.service
-# sudo systemctl enable --now laptop-monitor-backup.timer
+sudo systemctl enable --now laptop-monitor-control.service
+sudo systemctl enable --now laptop-monitor.timer
+sudo systemctl enable --now laptop-monitor-backup.timer
+```
+
+Semantics:
+
+| Unit | Behavior |
+|------|----------|
+| `laptop-monitor-control.service` | `Type=oneshot` + `RemainAfterExit=yes`: starts detached `control-bot`, then systemd shows **active (exited)**. Docker `restart: unless-stopped` recovers container crashes. `systemctl stop` runs `compose stop control-bot`. |
+| `laptop-monitor.timer` | Schedules pipeline every 2h (`Persistent=true`). **`enable --now` does not start an immediate pipeline** — next run is the next `OnCalendar` elapse. No `Requires=` on the oneshot service. |
+| `laptop-monitor-backup.timer` | Daily 03:15; same pattern (no immediate backup on enable). |
+
+Verify after enable:
+
+```bash
+systemctl list-timers laptop-monitor.timer laptop-monitor-backup.timer
+systemctl status laptop-monitor-control.service
+docker ps --filter name=laptop-monitor-control
 ```
 
 ## n8n (optional OPS layer)
@@ -174,9 +193,13 @@ Do **not** mount `/var/run/docker.sock` into n8n.
     - test webhook with valid signature → accept;
     - test deliberately bad signature → reject;
     - only then set `N8N_WEBHOOK_URL` + `N8N_WEBHOOK_SECRET` and re-run or wait for next pipeline
-21. Enable pipeline timer
-22. Enable backup timer
-23. Confirm next scheduled run
+21. Enable systemd (order):
+    `enable --now laptop-monitor-control.service`,
+    then `laptop-monitor.timer`,
+    then `laptop-monitor-backup.timer`
+    (`enable --now` on the pipeline timer must **not** fire an immediate run)
+22. Confirm timers / control status / `docker ps --filter name=laptop-monitor-control`
+23. Confirm next scheduled pipeline elapse
 24. After confirmation: create git tag `v0.2.0` (not before)
 
 ## DNS / disabled stores

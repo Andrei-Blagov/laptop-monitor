@@ -1,6 +1,5 @@
 [Unit]
 Description=Laptop Monitor pipeline timer (every 2 hours)
-Requires=laptop-monitor.service
 
 [Timer]
 OnCalendar=*-*-* 00/2:00:00

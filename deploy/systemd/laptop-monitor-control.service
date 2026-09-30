@@ -4,12 +4,11 @@ Requires=docker.service
 After=docker.service network-online.target
 
 [Service]
-Type=simple
+Type=oneshot
+RemainAfterExit=yes
 WorkingDirectory=/opt/laptop-monitor
 ExecStart=/opt/laptop-monitor/deploy/compose.sh up -d control-bot
 ExecStop=/opt/laptop-monitor/deploy/compose.sh stop control-bot
-Restart=on-failure
-RestartSec=10
 
 [Install]
 WantedBy=multi-user.target
