@@ -6,8 +6,8 @@ After=docker.service network-online.target
 [Service]
 Type=simple
 WorkingDirectory=/opt/laptop-monitor
-ExecStart=/usr/bin/docker compose -f deploy/docker-compose.yml up control-bot
-ExecStop=/usr/bin/docker compose -f deploy/docker-compose.yml stop control-bot
+ExecStart=/opt/laptop-monitor/deploy/compose.sh up -d control-bot
+ExecStop=/opt/laptop-monitor/deploy/compose.sh stop control-bot
 Restart=on-failure
 RestartSec=10
 

@@ -2,8 +2,8 @@
 
 Мониторинг цен на игровые ноутбуки (RTX 5070 Ti / RTX 5080 Laptop) с multi-store adapter architecture, матчингом моделей, ranking, Telegram alerts и remote control.
 
-**Version:** `0.2.0`  
-**Production target:** Linux VPS (Docker + systemd)  
+**Version:** читается из файла `VERSION` (сейчас `0.2.0`) — единственный source of truth.
+**Production target:** Linux VPS через **clean release bundle** + Docker + systemd
 **Windows:** только development / testing
 
 ---
@@ -12,54 +12,34 @@
 
 | Область | Описание |
 |---------|----------|
-| **Multi-store** | Единый `StoreAdapter` registry (`stores/`). Enabled: Regard, ANDPRO. DNS/Citilink зарегистрированы, но **disabled** (anti-bot) |
-| **Independent snapshots** | Успешный store сохраняется независимо; failed store не помечает каталог unavailable |
-| **Matching** | L1 exact SKU + L2 strong ID (MPN / alt PN) + config compatibility; N магазинов |
-| **CROSS_STORE** | Только между **fresh** stores текущего run (≥2 успешных) |
-| **Ranking** | Explainable `priority_score` (`deal_ranking.py`), TOP N, сортировка Telegram |
-| **Telegram control** | Long-polling bot: Run / TOP / Status / Version; admin allowlist |
-| **Pipeline** | `run_pipeline.py`: lock, `store_runs`, `app_version`, `instance_id`, ops alerts |
-| **Deploy** | Docker image, compose, systemd timer (2h), daily SQLite backup |
+| **Multi-store** | `StoreAdapter` registry. Enabled: Regard, ANDPRO. DNS/Citilink registered, **disabled** |
+| **Independent snapshots** | Успешный store сохраняется отдельно; failed не делает каталог unavailable |
+| **Fresh TOP** | TOP / current deals только по stores с последней попыткой `ok` и age <= `STORE_FRESHNESS_MAX_MINUTES` (180) |
+| **Matching** | L1 SKU + L2 strong ID + config conflict; N магазинов |
+| **CROSS_STORE** | Только между fresh stores текущего pipeline run |
+| **Ranking** | Explainable `priority_score`, Telegram sort DESC |
+| **Control bot** | Long polling; Run / TOP / Status / Version; admin allowlist; **не** мигрирует schema |
+| **Migration** | Явная команда `python -m scripts.migrate_db` |
+| **Deploy** | Clean tar.gz bundle -> `/opt/laptop-monitor` (без `.git` / tests) |
 
 ---
 
-## Архитектура
+## Version (single source of truth)
+
+Файл:
 
 ```
-stores/registry
-  Regard ──┐
-  ANDPRO ──┼──► collect (per-store) ──► store_runs + products (success only)
-  DNS* ────┤
-  Citilink*┘              │
-                          ▼
-                   identity sync
-                          │
-                          ▼
-              match_products (N-store clusters)
-                          │
-                          ▼
-         alerts (local + fresh-only CROSS_STORE)
-                          │
-                          ▼
-         deal ranking → Telegram (priority DESC)
-                          │
-              control_bot (polling, admin only)
+VERSION
 ```
 
-\* DNS / Citilink adapters present but `enabled=False` until a stable public source exists.
+Docker / compose **не** содержат захардкоженный номер:
 
-**Правила snapshot:**
+```bash
+./deploy/compose.sh build
+./deploy/compose.sh run --rm pipeline python run_pipeline.py --version
+```
 
-| Исход store | Поведение |
-|-------------|-----------|
-| SUCCESS | цены + history + local alerts |
-| FAILED | snapshot не трогаем; ошибка в `store_runs` |
-
-**Pipeline status:**
-
-- `SUCCESS` — все enabled stores OK
-- `PARTIAL` — ≥1 OK и ≥1 failed (local alerts работают; cross-store только среди fresh)
-- `FAILED` — ни один store не собран / критический сбой
+`deploy/compose.sh` читает `VERSION`, экспортирует `LAPTOP_MONITOR_VERSION`, передаёт `APP_VERSION` в Docker build args.
 
 ---
 
@@ -67,171 +47,122 @@ stores/registry
 
 | Store | Status | Notes |
 |-------|--------|-------|
-| Regard | **enabled** | HTML catalog parser |
-| ANDPRO | **enabled** | HTML catalog parser |
-| DNS | disabled | Live: 401 challenge / API 403 |
-| Citilink | disabled | Live: 429 JS challenge |
-| OnlineTrade / M.Video / Eldorado / XCOM | not connected | unstable / protected in probes |
+| Regard | enabled | HTML catalog |
+| ANDPRO | enabled | HTML catalog |
+| DNS | disabled | Live: HTTP 401 challenge / API 403 |
+| Citilink | disabled | Live: HTTP 429 JS challenge |
 
-Добавление магазина: новый файл в `stores/`, реализовать `StoreAdapter`, зарегистрировать в `stores/registry.py`, fixtures + tests. Без обхода CAPTCHA/anti-bot.
-
----
-
-## Ranking
-
-Модуль `deal_ranking.py`. Веса в `config.py` (`RANK_*`).
-
-Учитывает: цена vs target / бюджет ~200k ₽, GPU (5080 / 5070 Ti), RAM, SSD, диагональ, cross-store saving, historical low.
-
-Каждый deal показывает score + reasons («Почему: …»).
-
-TOP: кнопка Telegram / `format_top_deals_message` (по умолчанию 10).
+DNS/Citilink **не** блокируют v0.2.0 cutover. Включение — отдельный этап (официальный feed/API), без обхода anti-bot.
 
 ---
 
-## Telegram
+## Fresh TOP semantics
 
-### Price alerts
-Группировка по matched model (delivery-layer). Сортировка групп по `priority_score` DESC. `alert_events` в DB не сливаются.
+Store **fresh**, если:
 
-### Control bot (`control_bot.py`)
-Long polling, **без** публичного HTTP-порта.
+1. самая последняя запись в `store_runs` имеет `status=ok`;
+2. `finished_at` не старше `STORE_FRESHNESS_MAX_MINUTES` (по умолчанию 180 мин).
 
-Кнопки: `Запустить проверку` | `Топ предложений` | `Статус` | `Версия`
+Если последняя попытка **failed** — store stale для TOP (даже при молодом старом success).
 
-Env:
+Stale данные остаются в DB/history, не помечаются unavailable, но **не** участвуют в TOP и в отображаемом cross-store saving.
 
-```
-TELEGRAM_BOT_TOKEN=
-TELEGRAM_CHAT_ID=
-TELEGRAM_ADMIN_CHAT_ID=   # allowlist, comma-separated; fallback = CHAT_ID
-LAPTOP_MONITOR_INSTANCE=vps-prod
-```
-
-Не-admin не видит кнопки управления и не запускает pipeline. Только predefined actions (без shell).
-
-### Ops notifications
-При CLI/scheduled `PARTIAL`/`FAILED` — короткое admin-сообщение (не путать с price alerts).
+Нет fresh stores -> «Нет свежих данных. Запустите проверку.»
 
 ---
 
-## Versioning
-
-Единый source of truth: файл `VERSION` → `version.get_version()`.
+## Database migration
 
 ```bash
-python run_pipeline.py --version
-# Laptop Monitor 0.2.0
+python -m scripts.migrate_db --db data/laptop_monitor.db
 ```
 
-Пишется в logs, `pipeline_runs.app_version`, Telegram status, Docker label.
+Только schema / `init_db` + `PRAGMA integrity_check`.
+Не собирает магазины, не создаёт alerts, не шлёт Telegram.
+
+Control bot при старте **проверяет** schema и завершается с ошибкой, если migrate ещё не выполнен.
 
 ---
 
-## Быстрый старт (dev)
+## Telegram control
+
+Кнопки: Запустить проверку | Топ | Статус | Версия
+
+Env: `TELEGRAM_BOT_TOKEN`, `TELEGRAM_CHAT_ID`, `TELEGRAM_ADMIN_CHAT_ID`, `LAPTOP_MONITOR_INSTANCE`.
+
+HTTP ошибки Telegram логируются без URL с token.
+
+---
+
+## Dev quick start
 
 ```bash
-git clone https://github.com/Andrei-Blagov/laptop-monitor.git
-cd laptop-monitor
 python -m venv .venv
-# Windows: .\.venv\Scripts\Activate.ps1
-# Linux:   source .venv/bin/activate
+# activate
 pip install -r requirements.txt
-cp .env.example .env   # заполнить токены
-```
-
-```bash
+cp .env.example .env
 python run_pipeline.py --version
-python run_pipeline.py --status
-# Полный pipeline (локально, не VPS production):
-# python run_pipeline.py
-```
-
-Tests (temp DB):
-
-```bash
 python -m unittest discover -s tests
 ```
 
-Windows helpers (dev only): `scripts/windows/` — **не** для production, Task Scheduler не устанавливается.
+Windows helpers: `scripts/windows/` (не production).
 
 ---
 
-## Production = VPS
+## Production deploy (clean bundle)
+
+GitHub = source repo. VPS получает **release artifact**, не `git clone`.
+
+### На Windows / CI
+
+```bash
+python -m scripts.backup_db --db data/laptop_monitor.db
+python -m scripts.build_deploy_bundle
+# -> dist/laptop-monitor-<VERSION>.tar.gz
+# -> dist/laptop-monitor-<VERSION>.tar.gz.sha256
+```
+
+### На VPS
+
+```
+/opt/laptop-monitor/
+  VERSION, *.py, parsers/, stores/, scripts/, deploy/
+  .env, data/, logs/
+```
+
+Без `.git`, tests, Windows scripts.
+
+```bash
+./deploy/compose.sh build
+python -m scripts.migrate_db --db data/laptop_monitor.db
+./deploy/compose.sh up -d control-bot
+./deploy/compose.sh run --rm pipeline python run_pipeline.py
+```
+
+Полная cutover-последовательность: [`deploy/README.md`](deploy/README.md).
+
+Backup:
+
+```bash
+python -m scripts.backup_db
+# или
+./deploy/compose.sh run --rm backup
+```
+
+---
+
+## Production instance
 
 | Instance | Role |
 |----------|------|
-| `vps-prod` | единственный production monitor |
-| `local-dev` / Windows | development / testing only |
-
-После cutover Windows **не** должен слать Telegram alerts (иначе duplicate из двух SQLite).
-
-Подробности: [`deploy/README.md`](deploy/README.md).
-
-### Docker
-
-```
-deploy/
-  Dockerfile
-  docker-compose.yml
-  systemd/          # timer 2h, control-bot, daily backup
-  README.md
-```
-
-Volumes: `data/` (SQLite + backups), `logs/`. `.env` только на хосте.
-
-Control bot: `docker compose up -d control-bot`  
-Pipeline: systemd timer → `docker compose run --rm pipeline`
-
-### Backup
-
-```bash
-python scripts/backup_db.py
-```
-
-SQLite Online Backup API + `PRAGMA integrity_check`, retention 30 дней, каталог `data/backups/` (не в git).
+| `vps-prod` | единственный production |
+| `local-dev` / Windows | development only |
 
 ---
 
-## Migration Windows → VPS (подготовка)
+## Что не входит в pre-cutover hardening
 
-1. Backup Windows DB (SQLite backup API) + SHA256
-2. Transfer на VPS + verify SHA256
-3. Backup на VPS
-4. Schema migration (`init_db`)
-5. `integrity_check`
-6. Read-only `--status`
-7. First **manual** VPS run
-8. Verify Telegram
-9. Enable systemd timer + control-bot
-10. Disable Windows production monitoring
-
-**Этот репозиторий готов к cutover; сам transfer / enable пока не выполняется.**
-
----
-
-## Структура
-
-```
-stores/           # adapters + registry
-parsers/          # Regard/ANDPRO HTML parsers
-deal_ranking.py
-control_bot.py
-admin_notify.py
-run_pipeline.py
-scripts/backup_db.py
-scripts/windows/  # local PowerShell helpers
-deploy/           # Docker + systemd
-VERSION
-```
-
----
-
-## Что не входит в этот этап
-
-- Реальный deploy на VPS / enable systemd
-- Перенос production DB
-- Обход CAPTCHA / anti-bot
-- Агрессивный fuzzy matching
-- Marketplaces (Ozon/WB) как priority
-- Изменения n8n / Caddy / других контейнеров на VPS
+- Подключение к VPS / SCP / перенос DB
+- enable systemd / tag `v0.2.0`
+- Обход CAPTCHA / включение DNS/Citilink
+- Изменения n8n / Caddy / других контейнеров

@@ -3,6 +3,9 @@
 .env.local
 *.pem
 
+# Release artifacts (built locally / CI; not committed)
+dist/
+
 # Python
 .venv/
 venv/

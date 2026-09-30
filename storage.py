@@ -571,6 +571,99 @@ def get_latest_store_runs(
     return out
 
 
+def get_store_runs_for_pipeline(
+    conn: sqlite3.Connection,
+    pipeline_run_id: int,
+) -> list[dict]:
+    rows = conn.execute(
+        """
+        SELECT *
+        FROM store_runs
+        WHERE pipeline_run_id = ?
+        ORDER BY store ASC, id ASC
+        """,
+        (int(pipeline_run_id),),
+    ).fetchall()
+    return [dict(r) for r in rows]
+
+
+REQUIRED_SCHEMA_TABLES = (
+    "products",
+    "price_history",
+    "alert_events",
+    "pipeline_runs",
+    "store_runs",
+)
+
+
+def schema_is_ready(db_path: Path | str) -> tuple[bool, list[str]]:
+    """
+    Read-only check that required tables exist.
+
+    Does not CREATE/ALTER. Missing file → not ready.
+    """
+    path = Path(db_path)
+    if not path.exists():
+        return False, list(REQUIRED_SCHEMA_TABLES)
+    uri = path.resolve().as_uri() + "?mode=ro"
+    conn = sqlite3.connect(uri, uri=True)
+    conn.row_factory = sqlite3.Row
+    try:
+        names = {
+            str(r[0])
+            for r in conn.execute(
+                "SELECT name FROM sqlite_master WHERE type='table'"
+            ).fetchall()
+        }
+        missing = [t for t in REQUIRED_SCHEMA_TABLES if t not in names]
+        return (not missing), missing
+    except sqlite3.Error:
+        return False, list(REQUIRED_SCHEMA_TABLES)
+    finally:
+        conn.close()
+
+
+def require_schema_ready(db_path: Path | str) -> None:
+    ok, missing = schema_is_ready(db_path)
+    if not ok:
+        raise RuntimeError(
+            "Run database migration first "
+            f"(missing: {', '.join(missing) or 'database'}). "
+            "Use: python -m scripts.migrate_db"
+        )
+
+
+def open_db_readonly(db_path: Path | str) -> sqlite3.Connection:
+    path = Path(db_path)
+    if not path.exists():
+        raise FileNotFoundError(f"DB not found: {path}")
+    uri = path.resolve().as_uri() + "?mode=ro"
+    conn = sqlite3.connect(uri, uri=True)
+    conn.row_factory = sqlite3.Row
+    return conn
+
+
+def get_latest_store_runs_readonly(db_path: Path | str) -> dict[str, dict]:
+    try:
+        conn = open_db_readonly(db_path)
+    except FileNotFoundError:
+        return {}
+    try:
+        row = conn.execute(
+            """
+            SELECT 1 AS ok FROM sqlite_master
+            WHERE type='table' AND name='store_runs' LIMIT 1
+            """
+        ).fetchone()
+        if row is None:
+            return {}
+        return get_latest_store_runs(conn)
+    except sqlite3.Error:
+        return {}
+    finally:
+        conn.close()
+
+
 def count_products(conn: sqlite3.Connection) -> int:
     row = conn.execute("SELECT COUNT(*) AS cnt FROM products").fetchone()
     return int(row["cnt"])
@@ -902,31 +995,62 @@ def get_all_products(db_path: Path | str = DEFAULT_DB_PATH) -> list[dict]:
     """Возвращает текущие товары из products как список dict."""
     with open_db(db_path) as conn:
         init_db(conn)
-        rows = conn.execute(
-            """
-            SELECT
-                id,
-                store,
-                external_id,
-                sku,
-                name,
-                url,
-                price,
-                available,
-                first_seen_at,
-                last_seen_at,
-                last_checked_at
-            FROM products
-            ORDER BY store, id
-            """
-        ).fetchall()
-        return [
-            {
-                **dict(row),
-                "available": bool(row["available"]),
-            }
-            for row in rows
-        ]
+        return _fetch_all_products(conn)
+
+
+def get_all_products_readonly(db_path: Path | str = DEFAULT_DB_PATH) -> list[dict]:
+    """Read-only product listing (no schema mutation)."""
+    try:
+        conn = open_db_readonly(db_path)
+    except FileNotFoundError:
+        return []
+    try:
+        return _fetch_all_products(conn)
+    except sqlite3.Error:
+        return []
+    finally:
+        conn.close()
+
+
+def _fetch_all_products(conn: sqlite3.Connection) -> list[dict]:
+    rows = conn.execute(
+        """
+        SELECT
+            id,
+            store,
+            external_id,
+            sku,
+            name,
+            url,
+            price,
+            available,
+            first_seen_at,
+            last_seen_at,
+            last_checked_at
+        FROM products
+        ORDER BY store, id
+        """
+    ).fetchall()
+    return [
+        {
+            **dict(row),
+            "available": bool(row["available"]),
+        }
+        for row in rows
+    ]
+
+
+def get_all_identifiers_readonly(db_path: Path | str = DEFAULT_DB_PATH) -> list[dict]:
+    try:
+        conn = open_db_readonly(db_path)
+    except FileNotFoundError:
+        return []
+    try:
+        return get_product_identifiers(conn)
+    except sqlite3.Error:
+        return []
+    finally:
+        conn.close()
 
 
 def save_products(

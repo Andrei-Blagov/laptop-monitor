@@ -6,7 +6,7 @@ After=docker.service
 [Service]
 Type=oneshot
 WorkingDirectory=/opt/laptop-monitor
-ExecStart=/usr/bin/docker compose -f deploy/docker-compose.yml run --rm --no-deps backup
+ExecStart=/opt/laptop-monitor/deploy/compose.sh run --rm --no-deps backup
 
 [Install]
 WantedBy=multi-user.target

@@ -1,120 +1,139 @@
-# Laptop Monitor — VPS deployment
+﻿# Laptop Monitor — VPS deployment
 
-Production target: **Ubuntu VPS** via Docker Compose + systemd timers.
+Production: **Ubuntu VPS** via clean release bundle + Docker Compose + systemd timers.
 
-Windows Task Scheduler is **not** used for production.
-Do **not** enable these units until the first manual VPS run succeeds.
+- Windows Task Scheduler is **not** used.
+- VPS does **not** use `git clone` of the full repo.
+- Do **not** enable systemd until the first manual pipeline succeeds.
 
-Isolate from other VPS workloads (n8n, Caddy, PostgreSQL, other compose projects).
-Prefer a dedicated directory, e.g. `/opt/laptop-monitor`. No public HTTP port required
-(Telegram control uses long polling).
+Isolate from other VPS workloads (n8n, Caddy, PostgreSQL). Dedicated directory:
+`/opt/laptop-monitor`. No public HTTP port (Telegram long polling).
 
-## Layout
+## Version
 
-```
-deploy/
-  Dockerfile
-  docker-compose.yml
-  systemd/
-    laptop-monitor.service
-    laptop-monitor.timer          # every 2 hours
-    laptop-monitor-control.service
-    laptop-monitor-backup.service
-    laptop-monitor-backup.timer   # daily
-  README.md
-```
+Single source of truth: project root `VERSION`.
 
-## Image contents
-
-Runtime image includes application Python modules, `parsers/`, `stores/`, `VERSION`,
-and `scripts/backup_db.py`.
-
-Excluded via `.dockerignore`: `.git`, tests, local DBs, logs, screenshots, `.venv`,
-IDE files, Windows scripts (`scripts/windows/`), caches, backups.
-
-Labels: `org.opencontainers.image.version=0.2.0`.
-
-## Volumes
-
-| Path | Purpose |
-|------|---------|
-| `data/` | SQLite DB + `data/backups/` |
-| `logs/` | pipeline / control-bot logs |
-| `.env` | secrets on host only (never baked into image) |
-
-## Services
-
-| Service | Role |
-|---------|------|
-| `pipeline` | oneshot `python run_pipeline.py` (manual profile / systemd) |
-| `control-bot` | long-polling Telegram admin bot (`restart: unless-stopped`) |
-| `backup` | `python scripts/backup_db.py` |
+Always use the wrapper:
 
 ```bash
-cd /opt/laptop-monitor
-docker compose -f deploy/docker-compose.yml build
-docker compose -f deploy/docker-compose.yml up -d control-bot
-docker compose -f deploy/docker-compose.yml run --rm pipeline python run_pipeline.py
-docker compose -f deploy/docker-compose.yml run --rm backup
+./deploy/compose.sh build
+./deploy/compose.sh run --rm pipeline python run_pipeline.py --version
+./deploy/compose.sh up -d control-bot
+./deploy/compose.sh run --rm backup
 ```
 
-## Systemd (prepare only — do not enable yet)
+`compose.sh` exports `LAPTOP_MONITOR_VERSION` from `VERSION` and passes
+`APP_VERSION` into the Dockerfile build arg / image tag.
 
-Copy units from `deploy/systemd/` to `/etc/systemd/system/`, adjust `WorkingDirectory`
-if needed, then **after** successful first manual run:
+Never hardcode `0.x.y` in Dockerfile / compose / systemd.
+
+## Layout on VPS
+
+```
+/opt/laptop-monitor/
+  VERSION
+  *.py
+  parsers/
+  stores/
+  scripts/          # backup_db, migrate_db only (+ __init__)
+  deploy/           # Dockerfile, compose.yml, compose.sh, systemd/
+  .env              # host secrets only
+  data/             # SQLite + backups/
+  logs/
+```
+
+No `.git`, no `tests/`, no `scripts/windows/`.
+
+## Build release bundle (dev/CI machine)
+
+```bash
+python -m scripts.build_deploy_bundle
+# dist/laptop-monitor-<VERSION>.tar.gz
+# dist/laptop-monitor-<VERSION>.tar.gz.sha256
+```
+
+Allowlist-only. Excludes: `.git`, tests, Windows scripts, local DB, logs, `.env`, caches.
+
+## Volumes / services
+
+| Path / service | Purpose |
+|----------------|---------|
+| `data/` | SQLite + `data/backups/` |
+| `logs/` | application logs |
+| `.env` | secrets on host |
+| `pipeline` | oneshot via systemd / manual |
+| `control-bot` | long-polling admin bot |
+| `backup` | `python -m scripts.backup_db` |
+
+## Explicit DB migration
+
+```bash
+# host python or container:
+python -m scripts.migrate_db --db data/laptop_monitor.db
+# or
+./deploy/compose.sh run --rm --no-deps pipeline python -m scripts.migrate_db --db data/laptop_monitor.db
+```
+
+Schema only + integrity_check. Idempotent. No collection / alerts / Telegram.
+
+Control bot refuses to start if schema is missing (`Run database migration first`).
+
+## Fresh TOP
+
+TOP uses only stores whose **latest** `store_runs` row is `ok` and within
+`STORE_FRESHNESS_MAX_MINUTES` (default 180). Failed latest attempt => stale for TOP.
+
+## Systemd (prepare only)
+
+Units call `/opt/laptop-monitor/deploy/compose.sh ...`.
 
 ```bash
 # AFTER successful manual run only:
-# sudo systemctl daemon-reload
 # sudo systemctl enable --now laptop-monitor.timer
 # sudo systemctl enable --now laptop-monitor-control.service
 # sudo systemctl enable --now laptop-monitor-backup.timer
 ```
 
-Timer: `OnCalendar` every 2 hours, `Persistent=true`. Pipeline process lock is a second
-guard against parallel runs.
+## Cutover checklist
 
-## Logging
+### Windows
 
-Write under `logs/` with timestamp, `app_version`, `instance_id`, run id, stage,
-store status, errors, duration. Never log bot token / `.env`. Retain ~30 days
-(host logrotate or manual prune).
+1. `python -m scripts.backup_db` on production DB
+2. SHA256 of DB backup
+3. `python -m scripts.build_deploy_bundle`
+4. SHA256 of bundle
 
-## SQLite backup
+### VPS
 
-`scripts/backup_db.py` uses the SQLite backup API (not a live file copy), runs
-`PRAGMA integrity_check`, stores files in `data/backups/`, prunes after 30 days.
+5. Create `/opt/laptop-monitor`
+6. Upload bundle
+7. Verify SHA256
+8. Extract clean tree
+9. Create `.env` (`LAPTOP_MONITOR_INSTANCE=vps-prod`, Telegram admin allowlist)
+10. Upload DB into `data/`
+11. Verify DB SHA256
+12. Backup imported DB on VPS
+13. `./deploy/compose.sh build`
+14. `python -m scripts.migrate_db --db data/laptop_monitor.db`
+15. integrity_check OK
+16. Read-only: `./deploy/compose.sh run --rm pipeline python run_pipeline.py --status`
+17. Start control bot: `./deploy/compose.sh up -d control-bot`
+18. Check Version / Status / TOP in Telegram
+19. Manual pipeline run
+20. Verify alerts / Telegram
+21. Enable pipeline timer
+22. Enable backup timer
+23. Confirm next scheduled run
+24. After confirmation: create git tag `v0.2.0` (not before)
 
-## Migration: Windows → VPS
+## DNS / Citilink
 
-Preserve the existing production SQLite (history, products, identifiers, alerts,
-deliveries, pipeline_runs). Do **not** start from an empty DB.
+Registered adapters remain **disabled**:
 
-1. On Windows: `python scripts/backup_db.py` → note path  
-2. Compute SHA256 of the backup  
-3. Transfer backup to VPS (scp/sftp) into staging  
-4. Verify SHA256 on VPS  
-5. Place as `/opt/laptop-monitor/data/laptop_monitor.db` (or configured path)  
-6. Run another backup on VPS before first write  
-7. Start container once so `init_db` applies schema migrations (`store_runs`,
-   `app_version`, `instance_id`, …)  
-8. `PRAGMA integrity_check`  
-9. Read-only: `docker compose … run --rm pipeline python run_pipeline.py --status`  
-10. First **manual** pipeline run  
-11. Verify Telegram price + ops messages; `control_bot` status/TOP  
-12. Enable systemd timer + control-bot + backup timer  
-13. Stop any Windows production monitoring (`LAPTOP_MONITOR_INSTANCE` must be unique;
-    only `vps-prod` sends production alerts)  
-14. Tag `v0.2.0` after successful cutover (not part of this prep commit)
+- DNS: 401 challenge / API 403
+- Citilink: 429 JS challenge
 
-## Env on VPS
-
-```
-TELEGRAM_BOT_TOKEN=...
-TELEGRAM_CHAT_ID=...
-TELEGRAM_ADMIN_CHAT_ID=...
-LAPTOP_MONITOR_INSTANCE=vps-prod
-```
+Do not bypass anti-bot. Not a blocker for cutover.
 
 ## Single production instance
 
@@ -122,5 +141,3 @@ LAPTOP_MONITOR_INSTANCE=vps-prod
 |----------|------|
 | `vps-prod` | production |
 | `local-dev` / Windows | development only |
-
-Running two independent SQLite copies against the same Telegram chat creates duplicate alerts.

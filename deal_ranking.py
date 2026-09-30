@@ -156,14 +156,24 @@ def rank_clusters(
     *,
     specs_by_key: Mapping[tuple[str, str], Any] | None = None,
     limit: int | None = None,
+    fresh_stores: set[str] | None = None,
+    allowed_stores: set[str] | None = None,
 ) -> list[RankedDeal]:
     """
     Rank cheapest available offer per matched model cluster.
+
+    fresh_stores / allowed_stores: if set, only those stores participate
+    in cheapest / second-cheapest / saving calculation.
     """
+    allowed = fresh_stores if fresh_stores is not None else allowed_stores
     ranked: list[RankedDeal] = []
     for match in matches:
         available = [
-            o for o in match.offers if o.available and o.price is not None
+            o
+            for o in match.offers
+            if o.available
+            and o.price is not None
+            and (allowed is None or o.store in allowed)
         ]
         if not available:
             continue
@@ -185,7 +195,9 @@ def rank_clusters(
                 gpu = getattr(spec, "gpu", None) or getattr(spec, "normalized_gpu", None)
                 ram_gb = getattr(spec, "ram_gb", None)
                 ssd_gb = getattr(spec, "ssd_gb", None)
-                screen_inch = getattr(spec, "screen_inch", None)
+                screen_inch = getattr(spec, "screen_inch", None) or getattr(
+                    spec, "screen_size_inch", None
+                )
 
         score, reasons = score_offer(
             price=int(best.price),
@@ -227,8 +239,19 @@ def rank_clusters(
     return ranked
 
 
-def format_top_deals_message(deals: Sequence[RankedDeal], *, limit: int = 10) -> str:
-    lines = ["<b>ТОП ПРЕДЛОЖЕНИЙ</b>", ""]
+def format_top_deals_message(
+    deals: Sequence[RankedDeal],
+    *,
+    limit: int = 10,
+    max_age_minutes: int | None = None,
+    empty_message: str = "Нет доступных предложений.",
+) -> str:
+    if not deals:
+        return empty_message
+    lines = ["<b>ТОП ПРЕДЛОЖЕНИЙ</b>"]
+    if max_age_minutes is not None:
+        lines.append(f"Данные не старше: {max_age_minutes} мин.")
+    lines.append("")
     for i, deal in enumerate(deals[:limit], start=1):
         price = f"{deal.price:,}".replace(",", " ") if deal.price else "?"
         lines.append(f"<b>{i}. {deal.cluster_name}</b>")
@@ -243,10 +266,15 @@ def format_top_deals_message(deals: Sequence[RankedDeal], *, limit: int = 10) ->
             cfg.append(f'{deal.screen_inch:g}"')
         if cfg:
             lines.append(" / ".join(cfg))
-        lines.append(f"{deal.store.upper() if deal.store=='andpro' else deal.store.capitalize()}: {price} ₽")
+        store_label = (
+            deal.store.upper() if deal.store == "andpro" else deal.store.capitalize()
+        )
+        lines.append(f"{store_label}: {price} ₽")
         if deal.saving_vs_next and deal.next_store:
             lines.append(
-                f"Экономия vs {deal.next_store}: {deal.saving_vs_next:,} ₽".replace(",", " ")
+                f"Экономия vs {deal.next_store}: {deal.saving_vs_next:,} ₽".replace(
+                    ",", " "
+                )
             )
         lines.append(f"Priority score: {deal.score:g}")
         if deal.reasons:
@@ -256,4 +284,4 @@ def format_top_deals_message(deals: Sequence[RankedDeal], *, limit: int = 10) ->
         lines.append("")
     while lines and lines[-1] == "":
         lines.pop()
-    return "\n".join(lines) if len(lines) > 1 else "Нет доступных предложений."
+    return "\n".join(lines)

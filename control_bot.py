@@ -4,6 +4,7 @@ from __future__ import annotations
 Telegram control bot (long polling).
 
 Admin-only buttons: run pipeline / top deals / status / version.
+Does NOT run schema migrations — require migrate_db first.
 """
 
 import logging
@@ -17,23 +18,34 @@ import httpx
 import config
 from comparison import match_products
 from deal_ranking import format_top_deals_message, rank_clusters
-from deliver import run_status as deliver_status
 from identity_sync import identity_from_cache, load_specs_cache
 from pipeline_lock import DEFAULT_LOCK_PATH, read_lock_info
 from run_pipeline import (
     EXIT_LOCKED,
+    PipelineResult,
     run_pipeline,
     run_status as pipeline_status,
 )
+from store_freshness import freshness_age_minutes, get_fresh_store_slugs
 from storage import (
     DEFAULT_DB_PATH,
-    get_all_identifiers,
-    get_all_products,
-    get_latest_store_runs,
-    init_db,
-    open_db,
+    count_alert_events,
+    count_unsent_alert_events,
+    get_all_identifiers_readonly,
+    get_all_products_readonly,
+    get_delivery_stats,
+    get_latest_store_runs_readonly,
+    get_store_runs_for_pipeline,
+    open_db_readonly,
+    require_schema_ready,
 )
 from stores.registry import all_adapters
+from telegram_safe import (
+    parse_telegram_response,
+    redact_secrets,
+    safe_exc_message,
+    telegram_http_error_summary,
+)
 from version import APP_NAME, get_version
 
 logger = logging.getLogger(__name__)
@@ -67,6 +79,59 @@ def _keyboard() -> dict[str, Any]:
     }
 
 
+def _post_telegram(
+    client: httpx.Client,
+    token: str,
+    method: str,
+    payload: dict[str, Any],
+    *,
+    timeout: float = 30.0,
+) -> dict[str, Any] | None:
+    try:
+        resp = client.post(_api(token, method), json=payload, timeout=timeout)
+    except httpx.TimeoutException:
+        logger.error("Telegram %s timeout", method)
+        return None
+    except httpx.HTTPError as exc:
+        logger.error("%s", telegram_http_error_summary(method=method, description=safe_exc_message(exc)))
+        return None
+    try:
+        data = resp.json()
+    except ValueError:
+        logger.error(
+            "%s",
+            telegram_http_error_summary(
+                method=method, status_code=_http_status(resp), description="invalid JSON"
+            ),
+        )
+        return None
+    except Exception:
+        # Defensive: mock/test doubles may not provide json()
+        data = None
+    ok, err = parse_telegram_response(data)
+    status = _http_status(resp)
+    if (status is not None and status >= 400) or not ok:
+        logger.error(
+            "%s",
+            telegram_http_error_summary(
+                method=method,
+                status_code=status,
+                api_ok=ok,
+                description=err,
+            ),
+        )
+        return None
+    return data if isinstance(data, dict) else None
+
+
+def _http_status(resp: Any) -> int | None:
+    raw = getattr(resp, "status_code", None)
+    try:
+        return int(raw) if raw is not None else None
+    except (TypeError, ValueError):
+        return None
+
+
 def send_message(
     client: httpx.Client,
     token: str,
@@ -74,7 +139,7 @@ def send_message(
     text: str,
     *,
     with_keyboard: bool = True,
-) -> None:
+) -> bool:
     payload: dict[str, Any] = {
         "chat_id": chat_id,
         "text": text,
@@ -83,23 +148,109 @@ def send_message(
     }
     if with_keyboard:
         payload["reply_markup"] = _keyboard()
-    client.post(_api(token, "sendMessage"), json=payload, timeout=30.0)
+    return _post_telegram(client, token, "sendMessage", payload) is not None
 
 
 def answer_callback(
     client: httpx.Client, token: str, callback_id: str, text: str | None = None
-) -> None:
+) -> bool:
     payload: dict[str, Any] = {"callback_query_id": callback_id}
     if text:
         payload["text"] = text[:180]
-    client.post(_api(token, "answerCallbackQuery"), json=payload, timeout=15.0)
+    return (
+        _post_telegram(client, token, "answerCallbackQuery", payload, timeout=15.0)
+        is not None
+    )
+
+
+def _deliver_status_readonly(db_path: Path | str) -> dict[str, int]:
+    try:
+        conn = open_db_readonly(db_path)
+    except FileNotFoundError:
+        return {"unsent_alert_events": 0, "alert_events_total": 0}
+    try:
+        delivery = get_delivery_stats(conn, channel=config.CHANNEL_TELEGRAM)
+        unsent = count_unsent_alert_events(
+            conn,
+            channel=config.CHANNEL_TELEGRAM,
+            destination=config.TELEGRAM_DESTINATION,
+            max_attempts=int(config.MAX_DELIVERY_ATTEMPTS),
+        )
+        return {
+            **delivery,
+            "unsent_alert_events": unsent,
+            "alert_events_total": count_alert_events(conn),
+        }
+    except Exception:
+        return {"unsent_alert_events": 0, "alert_events_total": 0}
+    finally:
+        conn.close()
+
+
+def format_store_summary_lines(
+    *,
+    store_rows: list[dict[str, Any]] | None = None,
+    store_statuses: dict[str, dict[str, Any]] | None = None,
+) -> list[str]:
+    """Dynamic N-store summary lines (no Regard/ANDPRO hardcode)."""
+    lines: list[str] = []
+    by_slug: dict[str, dict[str, Any]] = {}
+    if store_rows:
+        for row in store_rows:
+            by_slug[str(row["store"])] = row
+    elif store_statuses:
+        by_slug = {k: dict(v) for k, v in store_statuses.items()}
+
+    adapters = {a.slug: a for a in all_adapters()}
+    seen: set[str] = set()
+    for slug in sorted(by_slug.keys()):
+        seen.add(slug)
+        row = by_slug[slug]
+        name = adapters[slug].display_name if slug in adapters else slug
+        status = str(row.get("status") or "?").upper()
+        if status == "OK":
+            status = "OK"
+        count = row.get("products_count")
+        if count is None and "products" in row:
+            count = row.get("products")
+        suffix = f" ({count})" if count is not None else ""
+        lines.append(f"{name}: {status}{suffix}")
+    for adapter in all_adapters():
+        if adapter.slug in seen:
+            continue
+        flag = "disabled" if not adapter.enabled else "no runs"
+        lines.append(f"{adapter.display_name}: {flag}")
+    return lines
+
+
+def format_pipeline_result_message(result: PipelineResult) -> str:
+    lines = [
+        f"<b>{APP_NAME}</b> {get_version()}",
+        f"Instance: {config.get_instance_id()}",
+        f"Pipeline: {result.status.upper()}",
+        f"Duration: {result.duration_seconds}s",
+        "",
+        "Stores:",
+    ]
+    store_lines = format_store_summary_lines(store_statuses=result.store_statuses)
+    lines.extend(f"  {line}" for line in store_lines)
+    lines.append("")
+    lines.append(f"New alerts: {result.alerts_created}")
+    lines.append(
+        f"Telegram: {result.messages_sent or 0}/{result.messages_failed or 0}"
+    )
+    if result.error_message:
+        lines.append(f"Error: {redact_secrets(result.error_message)}")
+    return "\n".join(lines)
 
 
 def build_status_text(db_path: Path | str = DEFAULT_DB_PATH) -> str:
+    # Read-only: never mutate schema.
     runs = pipeline_status(db_path, limit=1)
     last = runs[0] if runs else None
-    tg = deliver_status(db_path)
+    tg = _deliver_status_readonly(db_path)
     lock = read_lock_info(DEFAULT_LOCK_PATH)
+    latest = get_latest_store_runs_readonly(db_path)
     lines = [
         f"<b>{APP_NAME}</b>",
         f"Version: {get_version()}",
@@ -111,7 +262,32 @@ def build_status_text(db_path: Path | str = DEFAULT_DB_PATH) -> str:
         if last.get("duration_seconds") is not None:
             lines.append(f"Duration: {last.get('duration_seconds')}s")
         lines.append("Stores:")
-        lines.extend(_store_status_lines(db_path, last))
+        run_id = last.get("id")
+        store_rows: list[dict[str, Any]] | None = None
+        if run_id is not None:
+            try:
+                conn = open_db_readonly(db_path)
+                try:
+                    store_rows = get_store_runs_for_pipeline(conn, int(run_id))
+                finally:
+                    conn.close()
+            except Exception:
+                store_rows = None
+        if store_rows:
+            for line in format_store_summary_lines(store_rows=store_rows):
+                lines.append(f"  {line}")
+        elif latest:
+            for line in format_store_summary_lines(
+                store_statuses={
+                    s: {"status": r.get("status"), "products_count": r.get("products_count")}
+                    for s, r in latest.items()
+                }
+            ):
+                lines.append(f"  {line}")
+        else:
+            for adapter in all_adapters():
+                flag = "enabled" if adapter.enabled else "disabled"
+                lines.append(f"  {adapter.display_name}: {flag}")
         lines.append(f"New alerts: {last.get('alerts_created')}")
         lines.append(
             f"Telegram sent/failed: {last.get('messages_sent')}/"
@@ -130,45 +306,13 @@ def build_status_text(db_path: Path | str = DEFAULT_DB_PATH) -> str:
     return "\n".join(lines)
 
 
-def _store_status_lines(db_path: Path | str, last: dict[str, Any]) -> list[str]:
-    """Prefer store_runs; fall back to legacy regard/andpro columns."""
-    out: list[str] = []
-    try:
-        with open_db(db_path) as conn:
-            init_db(conn)
-            latest = get_latest_store_runs(conn)
-    except Exception:
-        latest = {}
-    if latest:
-        by_slug = {a.slug: a for a in all_adapters()}
-        for slug, row in sorted(latest.items()):
-            name = by_slug[slug].display_name if slug in by_slug else slug
-            status = row.get("status") or "?"
-            count = row.get("products_count")
-            suffix = f" ({count})" if count is not None else ""
-            out.append(f"  {name}: {status}{suffix}")
-        for adapter in all_adapters():
-            if adapter.slug not in latest:
-                flag = "disabled" if not adapter.enabled else "no runs"
-                out.append(f"  {adapter.display_name}: {flag}")
-        return out
-    out.append(
-        f"  Regard: {last.get('regard_status')} ({last.get('regard_products')})"
-    )
-    out.append(
-        f"  ANDPRO: {last.get('andpro_status')} ({last.get('andpro_products')})"
-    )
-    for adapter in all_adapters():
-        if adapter.slug in {"regard", "andpro"}:
-            continue
-        flag = "disabled" if not adapter.enabled else "no runs"
-        out.append(f"  {adapter.display_name}: {flag}")
-    return out
-
-
 def build_top_text(db_path: Path | str = DEFAULT_DB_PATH) -> str:
-    products = get_all_products(db_path)
-    identifiers = get_all_identifiers(db_path)
+    latest = get_latest_store_runs_readonly(db_path)
+    fresh = get_fresh_store_slugs(latest)
+    if not fresh:
+        return "Нет свежих данных. Запустите проверку."
+    products = get_all_products_readonly(db_path)
+    identifiers = get_all_identifiers_readonly(db_path)
     comparison = match_products(products, identifiers)
     cache = load_specs_cache()
     specs_by_key = {}
@@ -180,8 +324,15 @@ def build_top_text(db_path: Path | str = DEFAULT_DB_PATH) -> str:
         comparison.matches,
         specs_by_key=specs_by_key,
         limit=int(config.TOP_DEALS_LIMIT),
+        fresh_stores=fresh,
     )
-    return format_top_deals_message(deals, limit=int(config.TOP_DEALS_LIMIT))
+    age = freshness_age_minutes(latest, fresh)
+    return format_top_deals_message(
+        deals,
+        limit=int(config.TOP_DEALS_LIMIT),
+        max_age_minutes=age,
+        empty_message="Нет свежих данных. Запустите проверку.",
+    )
 
 
 def handle_run(client: httpx.Client, token: str, chat_id: str | int) -> None:
@@ -202,19 +353,7 @@ def handle_run(client: httpx.Client, token: str, chat_id: str | int) -> None:
     if result.exit_code == EXIT_LOCKED:
         send_message(client, token, chat_id, "Проверка уже выполняется.")
         return
-    text = (
-        f"<b>{APP_NAME}</b> {get_version()}\n"
-        f"Instance: {config.get_instance_id()}\n"
-        f"Pipeline: {result.status.upper()}\n"
-        f"Duration: {result.duration_seconds}s\n"
-        f"Regard: {result.regard_status} ({result.regard_products})\n"
-        f"ANDPRO: {result.andpro_status} ({result.andpro_products})\n"
-        f"New alerts: {result.alerts_created}\n"
-        f"Telegram sent/failed: {result.messages_sent}/{result.messages_failed}"
-    )
-    if result.error_message:
-        text += f"\nError: {result.error_message}"
-    send_message(client, token, chat_id, text)
+    send_message(client, token, chat_id, format_pipeline_result_message(result))
 
 
 def process_update(client: httpx.Client, token: str, update: dict[str, Any]) -> None:
@@ -292,29 +431,77 @@ def run_polling(*, timeout: int = 25) -> None:
                     _api(token, "getUpdates"),
                     params={"timeout": timeout, "offset": offset},
                 )
-                data = resp.json()
-                if not data.get("ok"):
-                    time.sleep(2)
-                    continue
-                for update in data.get("result") or []:
-                    offset = max(offset, int(update["update_id"]) + 1)
-                    try:
-                        process_update(client, token, update)
-                    except Exception:
-                        logger.exception("Failed to process update")
-            except Exception:
-                logger.exception("Polling error")
+            except httpx.TimeoutException:
+                logger.error("Telegram getUpdates timeout")
+                time.sleep(2)
+                continue
+            except httpx.HTTPError as exc:
+                logger.error(
+                    "%s",
+                    telegram_http_error_summary(
+                        method="getUpdates", description=safe_exc_message(exc)
+                    ),
+                )
                 time.sleep(3)
+                continue
+            try:
+                data = resp.json()
+            except ValueError:
+                logger.error(
+                    "%s",
+                    telegram_http_error_summary(
+                        method="getUpdates",
+                        status_code=resp.status_code,
+                        description="invalid JSON",
+                    ),
+                )
+                time.sleep(2)
+                continue
+            ok, err = parse_telegram_response(data)
+            if resp.status_code >= 400 or not ok:
+                logger.error(
+                    "%s",
+                    telegram_http_error_summary(
+                        method="getUpdates",
+                        status_code=resp.status_code,
+                        api_ok=ok,
+                        description=err,
+                    ),
+                )
+                time.sleep(2)
+                continue
+            for update in data.get("result") or []:
+                offset = max(offset, int(update["update_id"]) + 1)
+                try:
+                    process_update(client, token, update)
+                except Exception as exc:
+                    logger.error(
+                        "Failed to process update: %s",
+                        safe_exc_message(exc),
+                    )
 
 
 def main() -> int:
     logging.basicConfig(
         level=logging.INFO,
-        format="%(asctime)s %(levelname)s %(name)s %(message)s",
+        format="%(asctime)s %(levelname)s [v=%(version)s i=%(instance)s] %(name)s %(message)s",
     )
-    # Ensure schema exists for status queries.
-    with open_db(DEFAULT_DB_PATH) as conn:
-        init_db(conn)
+
+    class _ContextFilter(logging.Filter):
+        def filter(self, record: logging.LogRecord) -> bool:
+            record.version = get_version()  # type: ignore[attr-defined]
+            record.instance = config.get_instance_id()  # type: ignore[attr-defined]
+            return True
+
+    for handler in logging.getLogger().handlers:
+        handler.addFilter(_ContextFilter())
+
+    try:
+        require_schema_ready(DEFAULT_DB_PATH)
+    except RuntimeError as exc:
+        logger.error("%s", exc)
+        print(str(exc), file=sys.stderr)
+        return 1
     run_polling()
     return 0
 

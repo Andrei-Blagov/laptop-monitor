@@ -21,6 +21,8 @@ screenshots
 scripts/windows
 scripts/cleanup_test_history.py
 scripts/rebuild_unsent_alerts.py
+scripts/build_deploy_bundle.py
+dist
 *.md
 !deploy/README.md
 !README.md

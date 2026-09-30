@@ -6,7 +6,7 @@ After=docker.service network-online.target
 [Service]
 Type=oneshot
 WorkingDirectory=/opt/laptop-monitor
-ExecStart=/usr/bin/docker compose -f deploy/docker-compose.yml run --rm --no-deps pipeline python run_pipeline.py
+ExecStart=/opt/laptop-monitor/deploy/compose.sh run --rm --no-deps pipeline python run_pipeline.py
 TimeoutStartSec=1800
 
 [Install]

@@ -1,8 +1,9 @@
 # syntax=docker/dockerfile:1
 FROM python:3.12-slim
 
+ARG APP_VERSION=unknown
 LABEL org.opencontainers.image.title="laptop-monitor" \
-      org.opencontainers.image.version="0.2.0"
+      org.opencontainers.image.version="${APP_VERSION}"
 
 WORKDIR /app
 
@@ -17,8 +18,9 @@ COPY VERSION .
 COPY *.py ./
 COPY parsers/ ./parsers/
 COPY stores/ ./stores/
-COPY scripts/backup_db.py ./scripts/backup_db.py
 COPY scripts/__init__.py ./scripts/__init__.py
+COPY scripts/backup_db.py ./scripts/backup_db.py
+COPY scripts/migrate_db.py ./scripts/migrate_db.py
 
 RUN mkdir -p /app/data /app/logs \
     && useradd --create-home --uid 10001 appuser \

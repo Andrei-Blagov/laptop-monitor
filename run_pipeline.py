@@ -69,6 +69,7 @@ class PipelineResult:
     regard_products: int | None = None
     andpro_status: str = "skipped"
     andpro_products: int | None = None
+    store_statuses: dict[str, dict[str, Any]] = field(default_factory=dict)
     identifiers_added: int | None = None
     matched_models: int | None = None
     alerts_created: int | None = None
@@ -79,7 +80,8 @@ class PipelineResult:
     duration_seconds: float = 0.0
     run_id: int | None = None
     skipped_alerts_delivery: bool = False
-
+    app_version: str | None = None
+    instance_id: str | None = None
 
 def run_pipeline(
     db_path: Path | str = DEFAULT_DB_PATH,
@@ -165,6 +167,16 @@ def run_pipeline(
         result.andpro_products = (
             collection.andpro.count if collection.andpro.ok else None
         )
+        result.store_statuses = {
+            slug: {
+                "status": "ok" if store_res.ok else "failed",
+                "products_count": store_res.count if store_res.ok else None,
+                "error": store_res.error,
+            }
+            for slug, store_res in collection.stores.items()
+        }
+        result.app_version = get_version()
+        result.instance_id = config.get_instance_id()
         fresh_stores = set(collection.successful_stores)
         collection_partial = bool(collection.failed_stores) and bool(
             collection.successful_stores
@@ -429,18 +441,29 @@ def print_pipeline_summary(result: PipelineResult) -> None:
         PIPELINE_STATUS_RUNNING: "RUNNING",
     }.get(result.status, result.status.upper())
     print(f"Pipeline run: {label}")
-    regard_n = (
-        str(result.regard_products)
-        if result.regard_status == "ok"
-        else result.regard_status
-    )
-    andpro_n = (
-        str(result.andpro_products)
-        if result.andpro_status == "ok"
-        else result.andpro_status
-    )
-    print(f"Regard: {regard_n} products" if result.regard_status == "ok" else f"Regard: {result.regard_status}")
-    print(f"ANDPRO: {andpro_n} products" if result.andpro_status == "ok" else f"ANDPRO: {result.andpro_status}")
+    print(f"Version: {result.app_version or get_version()}")
+    print(f"Instance: {result.instance_id or config.get_instance_id()}")
+    if result.store_statuses:
+        print("Stores:")
+        for slug, info in sorted(result.store_statuses.items()):
+            status = str(info.get("status") or "?")
+            count = info.get("products_count")
+            if status == "ok" and count is not None:
+                print(f"  {slug}: OK ({count})")
+            else:
+                print(f"  {slug}: {status.upper()}")
+    else:
+        # Legacy fallback
+        print(
+            f"Regard: {result.regard_products} products"
+            if result.regard_status == "ok"
+            else f"Regard: {result.regard_status}"
+        )
+        print(
+            f"ANDPRO: {result.andpro_products} products"
+            if result.andpro_status == "ok"
+            else f"ANDPRO: {result.andpro_status}"
+        )
     if result.identifiers_added is not None:
         print(f"Identifiers: +{result.identifiers_added}")
     if result.matched_models is not None:
@@ -477,30 +500,52 @@ def run_status(
     return read_pipeline_runs_readonly(db_path, limit=limit)
 
 
-def print_status(runs: list[dict]) -> None:
+def print_status(runs: list[dict], db_path: Path | str = DEFAULT_DB_PATH) -> None:
     if not runs:
         print("No pipeline runs yet.")
         return
     print("Recent pipeline runs:")
+    from storage import get_store_runs_for_pipeline, open_db_readonly
+
     for row in runs:
         rid = row.get("id")
         started = row.get("started_at")
         status = row.get("status")
-        regard = row.get("regard_status")
-        rp = row.get("regard_products")
-        andpro = row.get("andpro_status")
-        ap = row.get("andpro_products")
         alerts = row.get("alerts_created")
         sent = row.get("messages_sent")
         failed = row.get("messages_failed")
         dur = row.get("duration_seconds")
         err_stage = row.get("error_stage")
-        regard_s = f"{regard}/{rp}" if regard else "-"
-        andpro_s = f"{andpro}/{ap}" if andpro else "-"
+        ver = row.get("app_version") or "-"
         tg = f"{sent or 0}/{failed or 0}"
+        store_bits: list[str] = []
+        if rid is not None:
+            try:
+                conn = open_db_readonly(db_path)
+                try:
+                    for sr in get_store_runs_for_pipeline(conn, int(rid)):
+                        st = sr.get("status")
+                        cnt = sr.get("products_count")
+                        bit = f"{sr.get('store')}={st}"
+                        if cnt is not None:
+                            bit += f"/{cnt}"
+                        store_bits.append(bit)
+                finally:
+                    conn.close()
+            except Exception:
+                store_bits = []
+        if not store_bits:
+            regard = row.get("regard_status")
+            rp = row.get("regard_products")
+            andpro = row.get("andpro_status")
+            ap = row.get("andpro_products")
+            store_bits = [
+                f"regard={regard}/{rp}" if regard else "regard=-",
+                f"andpro={andpro}/{ap}" if andpro else "andpro=-",
+            ]
         line = (
-            f"  #{rid} {started} [{status}] "
-            f"Regard={regard_s} ANDPRO={andpro_s} "
+            f"  #{rid} {started} [{status}] v={ver} "
+            f"stores[{', '.join(store_bits)}] "
             f"alerts={alerts if alerts is not None else '-'} "
             f"tg_sent/failed={tg} "
             f"dur={dur if dur is not None else '-'}s"
@@ -508,7 +553,6 @@ def print_status(runs: list[dict]) -> None:
         if err_stage:
             line += f" error_stage={err_stage}"
         print(line)
-
 
 def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(
@@ -532,7 +576,7 @@ def main(argv: list[str] | None = None) -> int:
 
     if args.status:
         runs = run_status(DEFAULT_DB_PATH)
-        print_status(runs)
+        print_status(runs, DEFAULT_DB_PATH)
         return EXIT_SUCCESS
 
     result = run_pipeline(

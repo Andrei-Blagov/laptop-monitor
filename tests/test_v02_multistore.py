@@ -367,7 +367,10 @@ class ControlAuthUnit(unittest.TestCase):
             self.assertFalse(_is_admin(111))
             self.assertTrue(_is_admin(999))
             client = MagicMock()
-            client.post.return_value = MagicMock()
+            resp = MagicMock()
+            resp.status_code = 200
+            resp.json.return_value = {"ok": True, "result": True}
+            client.post.return_value = resp
             process_update(
                 client,
                 "fake-token",

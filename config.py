@@ -35,6 +35,10 @@ RANK_BUDGET_NEAR_BONUS: float = 6.0
 RANK_HISTORICAL_LOW_BONUS: float = 8.0
 TOP_DEALS_LIMIT: int = 10
 
+# Store is fresh for TOP / current deals if latest attempt is ok and within TTL.
+# Schedule is every 2 hours → default ~3 hours.
+STORE_FRESHNESS_MAX_MINUTES: int = 180
+
 # Telegram delivery
 CHANNEL_TELEGRAM = "telegram"
 # Стабильный ключ destination в DB (chat_id используется только API-клиентом).
