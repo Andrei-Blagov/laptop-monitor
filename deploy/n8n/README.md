@@ -46,6 +46,9 @@ controlled cutover stage.
 2. `daily-digest.json` — skeleton
 3. `failure-alert.json` — operational notification skeleton
 
+**HMAC setup:** see [`HMAC.md`](HMAC.md) for the exact verification recipe
+to wire into the receiver before import.
+
 ## Payload sketch
 
 See `integrations/n8n.py` → `build_pipeline_completed_payload`.

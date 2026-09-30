@@ -188,51 +188,65 @@ def fetch_target_laptops(
     products: list[Product] = []
     seen: set[str] = set()
     with sync_playwright() as p:
-        browser = p.chromium.launch(headless=True)
-        context = browser.new_context(
-            locale="ru-RU",
-            user_agent=(
-                "Mozilla/5.0 (Windows NT 10.0; Win64; x64) "
-                "AppleWebKit/537.36 (KHTML, like Gecko) "
-                "Chrome/128.0.0.0 Safari/537.36"
-            ),
+        # Docker-friendly: small /dev/shm; headless Linux needs no GUI/X.
+        browser = p.chromium.launch(
+            headless=True,
+            args=["--disable-dev-shm-usage", "--no-sandbox"],
         )
-        page = context.new_page()
-        links: list[str] = []
-        for query in SEARCH_QUERIES:
-            url = f"{BASE_URL}/search/?text={query.replace(' ', '+')}"
-            page.goto(url, wait_until="domcontentloaded", timeout=60000)
-            page.wait_for_timeout(4000)
-            html = page.content()
-            if looks_like_challenge_page(html) and "noutbuk" not in html.lower():
-                raise RuntimeError("Citilink search blocked by challenge")
-            links.extend(extract_product_links(html))
-        uniq_links: list[str] = []
-        seen_links: set[str] = set()
-        for link in links:
-            if link in seen_links:
-                continue
-            seen_links.add(link)
-            uniq_links.append(link)
-        for link in uniq_links[:max_products]:
-            try:
-                page.goto(link, wait_until="domcontentloaded", timeout=45000)
-                page.wait_for_timeout(2500)
+        try:
+            context = browser.new_context(
+                locale="ru-RU",
+                user_agent=(
+                    "Mozilla/5.0 (X11; Linux x86_64) "
+                    "AppleWebKit/537.36 (KHTML, like Gecko) "
+                    "Chrome/128.0.0.0 Safari/537.36"
+                ),
+            )
+            page = context.new_page()
+            page.set_default_timeout(60_000)
+            links: list[str] = []
+            for query in SEARCH_QUERIES:
+                url = f"{BASE_URL}/search/?text={query.replace(' ', '+')}"
+                page.goto(url, wait_until="domcontentloaded", timeout=60_000)
+                page.wait_for_timeout(4000)
                 html = page.content()
-                product = parse_citilink_product_html(html, link)
-                if (
-                    product is None
-                    or product.external_id in seen
-                    or product.price is None
-                    or product.price < 10_000
-                ):
+                if looks_like_challenge_page(html) and "noutbuk" not in html.lower():
+                    raise RuntimeError("Citilink search blocked by challenge")
+                links.extend(extract_product_links(html))
+            uniq_links: list[str] = []
+            seen_links: set[str] = set()
+            for link in links:
+                if link in seen_links:
                     continue
-                seen.add(product.external_id)
-                products.append(product)
-            except Exception as exc:  # noqa: BLE001
-                logger.warning(
-                    "Citilink product failed %s: %s", link, type(exc).__name__
-                )
-                continue
-        browser.close()
+                seen_links.add(link)
+                uniq_links.append(link)
+            for link in uniq_links[:max_products]:
+                try:
+                    page.goto(link, wait_until="domcontentloaded", timeout=45_000)
+                    page.wait_for_timeout(2500)
+                    html = page.content()
+                    product = parse_citilink_product_html(html, link)
+                    if (
+                        product is None
+                        or product.external_id in seen
+                        or product.price is None
+                        or product.price < 10_000
+                    ):
+                        continue
+                    seen.add(product.external_id)
+                    products.append(product)
+                except Exception as exc:  # noqa: BLE001
+                    logger.warning(
+                        "Citilink product failed %s: %s", link, type(exc).__name__
+                    )
+                    continue
+            try:
+                context.close()
+            except Exception:  # noqa: BLE001
+                pass
+        finally:
+            try:
+                browser.close()
+            except Exception:  # noqa: BLE001
+                logger.warning("Citilink browser.close() failed", exc_info=False)
     return products

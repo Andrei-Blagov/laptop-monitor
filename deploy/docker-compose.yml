@@ -14,6 +14,8 @@ services:
     volumes:
       - ../data:/app/data
       - ../logs:/app/logs
+    # Chromium (Citilink experimental) needs more than default 64MB /dev/shm
+    shm_size: "256mb"
     working_dir: /app
     profiles: ["manual"]
 
@@ -28,6 +30,8 @@ services:
     volumes:
       - ../data:/app/data
       - ../logs:/app/logs
+    # Manual Telegram Run executes pipeline in-process (may launch Chromium)
+    shm_size: "256mb"
     working_dir: /app
     command: ["python", "control_bot.py"]
     restart: unless-stopped

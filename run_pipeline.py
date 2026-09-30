@@ -119,10 +119,12 @@ def run_pipeline(
         exit_code=EXIT_FAILED,
     )
 
-    def finish(status: str, exit_code: int) -> PipelineResult:
+    def finish(status: str, exit_code: int, *, notify_n8n: bool = False) -> PipelineResult:
         result.status = status
         result.exit_code = exit_code
         result.duration_seconds = round(time.perf_counter() - started, 3)
+        if notify_n8n:
+            _maybe_notify_n8n(db_path, result, started_at=started_at)
         return result
 
     lock_cm = pipeline_lock(lock_path) if use_lock else None
@@ -166,7 +168,7 @@ def run_pipeline(
                 error_message=_safe_error_text(exc),
                 started=started,
             )
-            return finish(PIPELINE_STATUS_FAILED, EXIT_FAILED)
+            return finish(PIPELINE_STATUS_FAILED, EXIT_FAILED, notify_n8n=True)
 
         result.regard_status = "ok" if collection.regard.ok else "failed"
         result.andpro_status = "ok" if collection.andpro.ok else "failed"
@@ -228,7 +230,7 @@ def run_pipeline(
                 error_message=_safe_error_text(exc),
                 started=started,
             )
-            return finish(PIPELINE_STATUS_FAILED, EXIT_FAILED)
+            return finish(PIPELINE_STATUS_FAILED, EXIT_FAILED, notify_n8n=True)
 
         if collection.none_ok:
             msg = "All stores failed collection"
@@ -248,7 +250,7 @@ def run_pipeline(
                 error_message=msg,
                 started=started,
             )
-            return finish(PIPELINE_STATUS_FAILED, EXIT_FAILED)
+            return finish(PIPELINE_STATUS_FAILED, EXIT_FAILED, notify_n8n=True)
 
         # --- IDENTITY ---
         try:
@@ -267,7 +269,7 @@ def run_pipeline(
                 error_message=_safe_error_text(exc),
                 started=started,
             )
-            return finish(PIPELINE_STATUS_FAILED, EXIT_FAILED)
+            return finish(PIPELINE_STATUS_FAILED, EXIT_FAILED, notify_n8n=True)
 
         # --- COMPARISON ---
         try:
@@ -286,7 +288,7 @@ def run_pipeline(
                 error_message=_safe_error_text(exc),
                 started=started,
             )
-            return finish(PIPELINE_STATUS_FAILED, EXIT_FAILED)
+            return finish(PIPELINE_STATUS_FAILED, EXIT_FAILED, notify_n8n=True)
 
         # --- MONITOR / ALERTS ---
         try:
@@ -308,7 +310,7 @@ def run_pipeline(
                 error_message=_safe_error_text(exc),
                 started=started,
             )
-            return finish(PIPELINE_STATUS_FAILED, EXIT_FAILED)
+            return finish(PIPELINE_STATUS_FAILED, EXIT_FAILED, notify_n8n=True)
 
         # --- TELEGRAM ---
         if deliver:
@@ -332,7 +334,7 @@ def run_pipeline(
                     error_message=_safe_error_text(exc),
                     started=started,
                 )
-                return finish(PIPELINE_STATUS_PARTIAL, EXIT_PARTIAL)
+                return finish(PIPELINE_STATUS_PARTIAL, EXIT_PARTIAL, notify_n8n=True)
 
             if (result.messages_failed or 0) > 0:
                 status = PIPELINE_STATUS_PARTIAL
@@ -379,8 +381,7 @@ def run_pipeline(
             error_message=result.error_message,
             started=started,
         )
-        _maybe_notify_n8n(db_path, result, started_at=started_at)
-        return finish(status, exit_code)
+        return finish(status, exit_code, notify_n8n=True)
 
     except Exception as exc:
         _record_run(
@@ -392,8 +393,7 @@ def run_pipeline(
             error_message=_safe_error_text(exc),
             started=started,
         )
-        _maybe_notify_n8n(db_path, result, started_at=started_at)
-        return finish(PIPELINE_STATUS_FAILED, EXIT_FAILED)
+        return finish(PIPELINE_STATUS_FAILED, EXIT_FAILED, notify_n8n=True)
     finally:
         if lock_cm is not None:
             try:

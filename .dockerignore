@@ -26,6 +26,7 @@ dist
 *.md
 !deploy/README.md
 !deploy/n8n/README.md
+!deploy/n8n/HMAC.md
 !README.md
 .idea
 .vscode

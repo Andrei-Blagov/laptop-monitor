@@ -226,6 +226,33 @@ class N8nIntegrationTests(unittest.TestCase):
                 )
             self.assertEqual(result.status, PIPELINE_STATUS_SUCCESS)
 
+    def test_n8n_called_on_all_stores_failed(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            db = Path(tmp) / "t.db"
+            calls: list[dict] = []
+
+            def capture(payload, **kwargs):
+                calls.append(dict(payload))
+                return {"enabled": True, "ok": True, "skipped": False}
+
+            def boom():
+                raise RuntimeError("down")
+
+            with patch("run_pipeline.post_pipeline_webhook", side_effect=capture):
+                result = run_pipeline(
+                    db,
+                    fetch_regard=boom,
+                    fetch_andpro=boom,
+                    deliver=False,
+                    use_lock=False,
+                    enrich_identities=False,
+                )
+            self.assertEqual(result.status, "failed")
+            self.assertEqual(len(calls), 1)
+            self.assertEqual(calls[0]["event"], "pipeline.completed")
+            self.assertEqual(calls[0]["status"], "failed")
+            self.assertEqual(calls[0]["app_version"], "0.2.0")
+
 
 if __name__ == "__main__":
     unittest.main()
