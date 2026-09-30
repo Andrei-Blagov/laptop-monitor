@@ -137,6 +137,8 @@ def evaluate_price_drop(
         return None
     new_price_i = int(new_price)
     old_price_i = int(old_price)
+    if not config.is_price_in_tracking_scope(new_price_i):
+        return None
     percent = price_drop_percent(old_price_i, new_price_i)
     if percent is None or percent < float(config.PRICE_DROP_PERCENT):
         return None
@@ -183,6 +185,8 @@ def evaluate_historical_low(
     if new_price is None:
         return None
     new_price = int(new_price)
+    if not config.is_price_in_tracking_scope(new_price):
+        return None
     hist_min = get_historical_min_before_current(conn, product_id)
     if hist_min is None:
         return None
@@ -226,6 +230,8 @@ def evaluate_target_price(
     if threshold is None:
         return None
     price = int(price)
+    if not config.is_price_in_tracking_scope(price):
+        return None
     if price > threshold:
         return None
 
@@ -279,6 +285,7 @@ def evaluate_cross_store(
             for o in match.offers
             if o.available
             and o.price is not None
+            and config.is_price_in_tracking_scope(o.price)
             and (fresh_stores is None or o.store in fresh_stores)
         ]
         if len(available) < 2:
@@ -438,6 +445,8 @@ def get_current_deals(
         if price is None:
             continue
         price = int(price)
+        if not config.is_price_in_tracking_scope(price):
+            continue
         gpu = _product_gpu(product, specs)
         if gpu is None:
             continue
@@ -467,7 +476,11 @@ def get_current_deals(
     threshold_diff = int(config.CROSS_STORE_DIFFERENCE_RUB)
     for match in comparison.matches:
         available = [
-            o for o in match.offers if o.available and o.price is not None
+            o
+            for o in match.offers
+            if o.available
+            and o.price is not None
+            and config.is_price_in_tracking_scope(o.price)
         ]
         if len(available) < 2:
             continue

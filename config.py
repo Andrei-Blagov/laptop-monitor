@@ -18,6 +18,10 @@ TARGET_PRICES: dict[str, int] = {
     "RTX 5080": 300_000,
 }
 
+# Global tracking / alerts / TOP / cross-store recommendation cap (inclusive).
+# Collection may still persist products above this; user-facing scope is capped.
+MAX_TRACKED_PRICE_RUB: int = 300_000
+
 # Минимальная разница между магазинами для CROSS_STORE_SAVING (руб.).
 CROSS_STORE_DIFFERENCE_RUB: int = 10_000
 
@@ -52,6 +56,28 @@ TELEGRAM_DESTINATION = "default"
 MAX_DELIVERY_ATTEMPTS: int = 5
 # Минимальный интервал между sendMessage в один chat (сек).
 TELEGRAM_MIN_SEND_INTERVAL_SECONDS: float = 1.1
+
+
+def is_price_in_tracking_scope(
+    price: int | float | None,
+    *,
+    max_price: int | None = None,
+) -> bool:
+    """True if public price is eligible for alerts / TOP / cross-store tracking."""
+    if price is None:
+        return False
+    try:
+        value = int(price)
+    except (TypeError, ValueError):
+        return False
+    cap = int(MAX_TRACKED_PRICE_RUB if max_price is None else max_price)
+    return value > 0 and value <= cap
+
+
+def format_price_cap_label(max_price: int | None = None) -> str:
+    """Human-readable cap, e.g. '300 000'."""
+    cap = int(MAX_TRACKED_PRICE_RUB if max_price is None else max_price)
+    return f"{cap:,}".replace(",", " ")
 
 
 def get_monitor_region() -> str:

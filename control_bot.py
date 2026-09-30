@@ -255,6 +255,7 @@ def build_status_text(db_path: Path | str = DEFAULT_DB_PATH) -> str:
         f"<b>{APP_NAME}</b>",
         f"Version: {get_version()}",
         f"Instance: {config.get_instance_id()}",
+        f"Price cap: ≤ {config.format_price_cap_label()} ₽",
     ]
     if last:
         lines.append(f"Last pipeline: {last.get('started_at')}")
@@ -331,7 +332,10 @@ def build_top_text(db_path: Path | str = DEFAULT_DB_PATH) -> str:
         deals,
         limit=int(config.TOP_DEALS_LIMIT),
         max_age_minutes=age,
-        empty_message="Нет свежих данных. Запустите проверку.",
+        empty_message=(
+            f"Нет свежих предложений до {config.format_price_cap_label()} ₽. "
+            "Запустите проверку."
+        ),
     )
 
 

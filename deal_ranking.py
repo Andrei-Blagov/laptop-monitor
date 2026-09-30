@@ -173,6 +173,7 @@ def rank_clusters(
             for o in match.offers
             if o.available
             and o.price is not None
+            and config.is_price_in_tracking_scope(o.price)
             and (allowed is None or o.store in allowed)
         ]
         if not available:
@@ -265,11 +266,14 @@ def format_top_deals_message(
     *,
     limit: int = 10,
     max_age_minutes: int | None = None,
-    empty_message: str = "Нет доступных предложений.",
+    empty_message: str | None = None,
 ) -> str:
+    cap_label = config.format_price_cap_label()
+    if empty_message is None:
+        empty_message = f"Нет свежих предложений до {cap_label} ₽."
     if not deals:
         return empty_message
-    lines = ["<b>ТОП ПРЕДЛОЖЕНИЙ</b>"]
+    lines = [f"<b>ТОП ПРЕДЛОЖЕНИЙ ДО {cap_label} ₽</b>"]
     if max_age_minutes is not None:
         lines.append(f"Данные не старше: {max_age_minutes} мин.")
     lines.append("")
