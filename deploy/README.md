@@ -27,6 +27,24 @@ Always use the wrapper:
 
 Never hardcode `0.x.y` in Dockerfile / compose / systemd.
 
+## Stores (must match `stores/registry.py`)
+
+| Store | Status | Mode | Reliability | Notes |
+|-------|--------|------|-------------|-------|
+| Regard | **enabled** | http | stable | HTML/API catalog |
+| ANDPRO | **enabled** | http | stable | HTML catalog |
+| KNS | **enabled** | http | stable | HTML + goodsList; public ≠ club price |
+| Citilink | **enabled** | browser | experimental | Playwright Chromium; may fail alone |
+| DNS | disabled | — | — | HTTP 401 / API 403; no stable public catalog |
+| XCOM | disabled | — | — | DDoS-Guard / captcha |
+| Technopark | disabled | — | — | HTTP 401/403 |
+
+**Citilink** requires Playwright Chromium (installed in the Docker image). Collection is
+fail-safe: challenge / zero products / browser crash → **store FAILED** only for Citilink;
+Regard / ANDPRO / KNS continue. Stale/failed Citilink is excluded from TOP / cross-store.
+
+Region for all adapters: `MONITOR_REGION=moscow`.
+
 ## Layout on VPS
 
 ```
@@ -35,8 +53,9 @@ Never hardcode `0.x.y` in Dockerfile / compose / systemd.
   *.py
   parsers/
   stores/
+  integrations/    # n8n webhook client
   scripts/          # backup_db, migrate_db only (+ __init__)
-  deploy/           # Dockerfile, compose.yml, compose.sh, systemd/
+  deploy/           # Dockerfile, compose.yml, compose.sh, systemd/, n8n/
   .env              # host secrets only
   data/             # SQLite + backups/
   logs/
@@ -64,6 +83,9 @@ Allowlist-only. Excludes: `.git`, tests, Windows scripts, local DB, logs, `.env`
 | `pipeline` | oneshot via systemd / manual |
 | `control-bot` | long-polling admin bot |
 | `backup` | `python -m scripts.backup_db` |
+
+Pipeline and control-bot use `shm_size: 256mb` for Chromium (Citilink). No published ports.
+Control-bot does **not** keep Chromium open; browser starts only during pipeline / manual Run.
 
 ## Explicit DB migration
 
@@ -94,6 +116,30 @@ Units call `/opt/laptop-monitor/deploy/compose.sh ...`.
 # sudo systemctl enable --now laptop-monitor-backup.timer
 ```
 
+## n8n (optional OPS layer)
+
+Primary scheduler remains **systemd**. n8n receives `pipeline.completed` webhooks.
+
+**Before** pointing laptop-monitor at n8n:
+
+1. Record the production **n8n version**.
+2. Confirm that version’s Webhook node can expose **exact raw body bytes**.
+3. Verify HMAC on a **test** webhook (see [`n8n/HMAC.md`](n8n/HMAC.md)).
+4. Send a request with a **deliberately bad signature** → must be **rejected**.
+5. Confirm reject on missing timestamp / signature / raw body / skew > 300s.
+6. Only then set `N8N_WEBHOOK_URL` (and secret) in laptop-monitor `.env`.
+
+First VPS pipeline run may keep:
+
+```
+N8N_WEBHOOK_URL=
+```
+
+Enable n8n only after the receiver passes the checklist. Sender failures
+(timeout / 4xx / 5xx / DNS) never change pipeline status.
+
+Do **not** mount `/var/run/docker.sock` into n8n.
+
 ## Cutover checklist
 
 ### Windows
@@ -109,7 +155,8 @@ Units call `/opt/laptop-monitor/deploy/compose.sh ...`.
 6. Upload bundle
 7. Verify SHA256
 8. Extract clean tree
-9. Create `.env` (`LAPTOP_MONITOR_INSTANCE=vps-prod`, Telegram admin allowlist)
+9. Create `.env` (`LAPTOP_MONITOR_INSTANCE=vps-prod`, Telegram admin allowlist;
+   leave `N8N_WEBHOOK_URL=` empty until step 20a)
 10. Upload DB into `data/`
 11. Verify DB SHA256
 12. Backup imported DB on VPS
@@ -119,21 +166,25 @@ Units call `/opt/laptop-monitor/deploy/compose.sh ...`.
 16. Read-only: `./deploy/compose.sh run --rm pipeline python run_pipeline.py --status`
 17. Start control bot: `./deploy/compose.sh up -d control-bot`
 18. Check Version / Status / TOP in Telegram
-19. Manual pipeline run
+19. Manual pipeline run (Regard / ANDPRO / KNS / Citilink fail-safe)
 20. Verify alerts / Telegram
+20a. **n8n gate (before enabling webhook):**
+    - note n8n version;
+    - confirm exact raw body + HMAC (see [`n8n/HMAC.md`](n8n/HMAC.md));
+    - test webhook with valid signature → accept;
+    - test deliberately bad signature → reject;
+    - only then set `N8N_WEBHOOK_URL` + `N8N_WEBHOOK_SECRET` and re-run or wait for next pipeline
 21. Enable pipeline timer
 22. Enable backup timer
 23. Confirm next scheduled run
 24. After confirmation: create git tag `v0.2.0` (not before)
 
-## DNS / Citilink
+## DNS / disabled stores
 
-Registered adapters remain **disabled**:
-
-- DNS: 401 challenge / API 403
-- Citilink: 429 JS challenge
-
-Do not bypass anti-bot. Not a blocker for cutover.
+- **DNS:** disabled — catalog HTTP 401, API 403, plain Playwright not usable.
+  Future: official feed / partner API only (no anti-bot bypass).
+- **XCOM / Technopark:** disabled — captcha / 401–403.
+- Not blockers for v0.2.0 cutover.
 
 ## Single production instance
 

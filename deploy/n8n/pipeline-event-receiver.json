@@ -14,7 +14,7 @@
     },
     {
       "parameters": {
-        "functionCode": "// Verify X-Laptop-Monitor-Timestamp + X-Laptop-Monitor-Signature\n// HMAC-SHA256(secret, timestamp + '.' + rawBody)\n// Reject if skew > 300s or signature mismatch.\nreturn items;"
+        "functionCode": "// FAIL CLOSED HMAC verification — see deploy/n8n/HMAC.md\n// Canonical: HMAC_SHA256(secret, timestamp + '.' + exact_raw_body_bytes)\n// REJECT if missing timestamp OR signature OR exact raw body OR skew>300 OR bad signature.\n// NEVER use JSON.stringify(parsedBody) as a raw-body substitute.\n// Only after verify: pass items to status routing.\nthrow new Error('Replace stub: implement fail-closed HMAC with exact raw body (see HMAC.md)');"
       },
       "name": "Verify HMAC",
       "type": "n8n-nodes-base.function",
@@ -48,6 +48,6 @@
     }
   },
   "meta": {
-    "templateNote": "Skeleton only — configure HMAC secret and branches for PARTIAL/FAILED during cutover. Do not import to production n8n yet."
+    "templateNote": "Skeleton. Implement fail-closed HMAC with EXACT raw body before import. Do not use JSON.stringify(parsedBody). Do not import to production n8n until cutover checklist passes."
   }
 }
