@@ -25,6 +25,10 @@ data/*
 *.db-shm
 *.log
 
+# Pipeline automation logs
+logs/*
+!logs/.gitkeep
+
 # OS / editor
 .DS_Store
 Thumbs.db

@@ -124,6 +124,44 @@ python run_pipeline.py --status
 | `2` | partial |
 | `3` | already running (lock занят) |
 
+### Automatic Windows scheduling
+
+Для автозапуска на Windows подготовлены скрипты (задача **ещё не устанавливается** автоматически — только вручную через install-скрипт).
+
+| Script | Назначение |
+|--------|------------|
+| `scripts\run_pipeline.ps1` | Wrapper: корень проекта от пути скрипта, только `.venv\Scripts\python.exe`, лог, тот же exit code |
+| `scripts\pipeline_status.ps1` | Read-only: pipeline + Telegram + lock + последний log |
+| `scripts\install_scheduled_task.ps1` | Создаёт задачу **Laptop Monitor Pipeline** (не запускайте, пока не готовы) |
+| `scripts\uninstall_scheduled_task.ps1` | Удаляет только эту задачу (DB/logs/.env не трогает) |
+
+Ручной запуск wrapper:
+
+```powershell
+powershell -ExecutionPolicy Bypass -File scripts\run_pipeline.ps1
+```
+
+Логи: `logs\pipeline-YYYYMMDD-HHMMSS.log` (stdout+stderr, exit code, длительность).  
+Retention: логи старше **30 дней** удаляются после запуска (ошибка очистки не ломает pipeline).  
+`logs/` в `.gitignore`.
+
+Рекомендуемое расписание (install-скрипт):
+
+- каждые **2 часа**;
+- `StartWhenAvailable = true`;
+- `MultipleInstances = IgnoreNew`;
+- `ExecutionTimeLimit = 30 minutes`;
+- батарея: не останавливать задачу при переходе на батарею (если ОС позволяет);
+- Telegram credentials **только** в локальном `.env`, не в Task Scheduler.
+
+Exit codes wrapper = exit codes `run_pipeline.py` (`0/1/2/3`).
+
+Проверка статуса после установки задачи:
+
+```powershell
+powershell -ExecutionPolicy Bypass -File scripts\pipeline_status.ps1
+```
+
 ### Process lock
 
 Файл `data/laptop_monitor.lock` (PID + `started_at`). Второй параллельный запуск завершается с кодом `3` и сообщением `Pipeline already running`, без изменений DB и без Telegram. После нормального завершения или exception lock снимается. Stale lock удаляется только если PID достоверно мёртв.
@@ -320,10 +358,15 @@ laptop-monitor/
 │   ├── regard.py
 │   └── andpro.py
 ├── scripts/
+│   ├── run_pipeline.ps1
+│   ├── pipeline_status.ps1
+│   ├── install_scheduled_task.ps1
+│   ├── uninstall_scheduled_task.ps1
 │   ├── rebuild_unsent_alerts.py
 │   └── cleanup_test_history.py
 ├── tests/
 ├── data/                   # локальные артефакты (.gitkeep)
+├── logs/                   # pipeline logs (.gitkeep; runtime ignored)
 ├── .env.example
 ├── requirements.txt
 └── README.md
@@ -354,7 +397,7 @@ python -m unittest discover -s tests -v
 
 ## Что пока не сделано (намеренно)
 
-- Scheduler / cron / Windows Task Scheduler
+- Реальная установка Windows Task Scheduler (скрипт `install_scheduled_task.ps1` подготовлен, задача ещё не создана)
 - n8n
 - Третий магазин
 - Публичный веб-UI
