@@ -166,6 +166,24 @@ Enable n8n only after the receiver passes the checklist. Sender failures
 
 Do **not** mount `/var/run/docker.sock` into n8n.
 
+## n8n host watchdog (independent)
+
+`ops/n8n_watchdog.py` runs on the VPS host via systemd (not inside n8n).
+It checks Docker state + in-container `GET /healthz/readiness`, stores state in
+`data/n8n_watchdog_state.json`, and alerts Telegram **directly** after
+**3 consecutive failures** (5‑minute timer). Recovery sends one message.
+
+```bash
+sudo install -m 0644 deploy/systemd/n8n-watchdog.service /etc/systemd/system/
+sudo install -m 0644 deploy/systemd/n8n-watchdog.timer /etc/systemd/system/
+sudo systemctl daemon-reload
+sudo systemctl enable --now n8n-watchdog.timer
+# healthy manual check (no alert expected):
+sudo systemctl start n8n-watchdog.service
+# one-shot Telegram delivery test (does not change state):
+sudo /usr/bin/python3 /opt/laptop-monitor/ops/n8n_watchdog.py --test-alert
+```
+
 ## Cutover checklist
 
 ### Windows

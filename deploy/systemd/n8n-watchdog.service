@@ -1,0 +1,14 @@
+[Unit]
+Description=n8n independent health watchdog
+Requires=docker.service
+After=docker.service network-online.target
+
+[Service]
+Type=oneshot
+WorkingDirectory=/opt/laptop-monitor
+EnvironmentFile=-/opt/laptop-monitor/.env
+ExecStart=/usr/bin/python3 /opt/laptop-monitor/ops/n8n_watchdog.py
+Nice=10
+
+[Install]
+WantedBy=multi-user.target

@@ -357,6 +357,8 @@ class BundleTests(unittest.TestCase):
             self.assertTrue(any("scripts/migrate_db.py" in n for n in names))
             self.assertTrue(any("scripts/backup_db.py" in n for n in names))
             self.assertTrue(any("deploy/compose.sh" in n for n in names))
+            self.assertTrue(any("ops/n8n_watchdog.py" in n for n in names))
+            self.assertTrue(any("deploy/systemd/n8n-watchdog.timer" in n for n in names))
             self.assertFalse(any("/tests/" in n or n.endswith("/tests") for n in names))
             self.assertFalse(any("scripts/windows" in n for n in names))
             self.assertFalse(any(".git/" in n for n in names))

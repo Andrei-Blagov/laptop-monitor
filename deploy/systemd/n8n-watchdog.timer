@@ -1,0 +1,12 @@
+[Unit]
+Description=n8n health watchdog every 5 minutes
+
+[Timer]
+OnBootSec=5min
+OnUnitActiveSec=5min
+AccuracySec=1min
+Persistent=false
+Unit=n8n-watchdog.service
+
+[Install]
+WantedBy=timers.target

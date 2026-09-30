@@ -51,6 +51,7 @@ ALLOWLIST_DIRS = (
     "stores",
     "integrations",
     "deploy",
+    "ops",
 )
 
 ALLOWLIST_SCRIPTS = (
