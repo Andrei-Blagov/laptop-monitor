@@ -1,53 +1,413 @@
 {
-  "name": "laptop-monitor-pipeline-event-receiver",
+  "name": "Laptop Monitor — Pipeline Events",
   "nodes": [
     {
       "parameters": {
         "httpMethod": "POST",
         "path": "laptop-monitor-pipeline",
-        "responseMode": "onReceived"
+        "responseMode": "responseNode",
+        "options": {
+          "rawBody": true
+        }
       },
+      "id": "lm-wh-001",
       "name": "Webhook",
       "type": "n8n-nodes-base.webhook",
-      "typeVersion": 2,
-      "position": [0, 0]
+      "typeVersion": 2.1,
+      "position": [
+        0,
+        0
+      ],
+      "webhookId": "laptop-monitor-pipeline"
     },
     {
       "parameters": {
-        "functionCode": "// FAIL CLOSED HMAC verification — see deploy/n8n/HMAC.md\n// Canonical: HMAC_SHA256(secret, timestamp + '.' + exact_raw_body_bytes)\n// REJECT if missing timestamp OR signature OR exact raw body OR skew>300 OR bad signature.\n// NEVER use JSON.stringify(parsedBody) as a raw-body substitute.\n// Only after verify: pass items to status routing.\nthrow new Error('Replace stub: implement fail-closed HMAC with exact raw body (see HMAC.md)');"
+        "mode": "runOnceForAllItems",
+        "jsCode": "// FAIL CLOSED HMAC — deploy/n8n/HMAC.md\n// Canonical: HMAC_SHA256(secret, timestamp + '.' + exact_raw_body_bytes)\n// NEVER use JSON.stringify(parsedBody) as a raw-body substitute.\nconst crypto = require('crypto');\n\nfunction reject(reason) {\n  return [{ json: { verified: false, error: reason } }];\n}\n\nconst secret = $env.LAPTOP_MONITOR_WEBHOOK_SECRET;\nif (!secret) return reject('missing_secret');\n\nconst item = $input.first();\nconst headers = (item.json && item.json.headers) ? item.json.headers : {};\nconst ts = headers['x-laptop-monitor-timestamp'] || headers['X-Laptop-Monitor-Timestamp'];\nconst sig = headers['x-laptop-monitor-signature'] || headers['X-Laptop-Monitor-Signature'];\nif (!ts) return reject('missing_timestamp');\nif (!sig) return reject('missing_signature');\nif (!item.binary || !item.binary.data) return reject('missing_raw_body');\n\nlet raw;\ntry {\n  raw = await this.helpers.getBinaryDataBuffer(0, 'data');\n} catch (e) {\n  return reject('missing_raw_body');\n}\nif (!raw || !Buffer.isBuffer(raw) || raw.length === 0) return reject('missing_raw_body');\n\nconst tsNum = Number(ts);\nif (!Number.isFinite(tsNum)) return reject('bad_timestamp');\nconst skew = Math.abs(Math.floor(Date.now() / 1000) - Math.floor(tsNum));\nif (skew > 300) return reject('timestamp_skew');\n\nconst expected = crypto\n  .createHmac('sha256', secret)\n  .update(Buffer.concat([\n    Buffer.from(String(ts), 'utf8'),\n    Buffer.from('.', 'utf8'),\n    raw,\n  ]))\n  .digest('hex');\n\nconst a = Buffer.from(expected, 'utf8');\nconst b = Buffer.from(String(sig), 'utf8');\nif (a.length !== b.length || !crypto.timingSafeEqual(a, b)) {\n  return reject('bad_signature');\n}\n\nlet payload;\ntry {\n  payload = JSON.parse(raw.toString('utf8'));\n} catch (e) {\n  return reject('invalid_json');\n}\n\nreturn [{\n  json: {\n    verified: true,\n    event: payload.event,\n    status: payload.status,\n    app_version: payload.app_version,\n    instance_id: payload.instance_id,\n    run_id: payload.run_id,\n    alerts_created: payload.alerts_created,\n    messages_sent: payload.messages_sent,\n    messages_failed: payload.messages_failed,\n    stores: payload.stores,\n    top_deals: payload.top_deals,\n  },\n}];\n"
       },
+      "id": "lm-hmac-001",
       "name": "Verify HMAC",
-      "type": "n8n-nodes-base.function",
-      "typeVersion": 1,
-      "position": [220, 0]
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        260,
+        0
+      ]
     },
     {
       "parameters": {
         "conditions": {
-          "string": [
+          "options": {
+            "caseSensitive": true,
+            "leftValue": "",
+            "typeValidation": "strict"
+          },
+          "conditions": [
             {
-              "value1": "={{$json.status}}",
-              "operation": "equals",
-              "value2": "success"
+              "id": "verified-true",
+              "leftValue": "={{$json.verified}}",
+              "rightValue": true,
+              "operator": {
+                "type": "boolean",
+                "operation": "true",
+                "singleValue": true
+              }
             }
-          ]
+          ],
+          "combinator": "and"
+        },
+        "options": {}
+      },
+      "id": "lm-if-001",
+      "name": "HMAC OK?",
+      "type": "n8n-nodes-base.if",
+      "typeVersion": 2,
+      "position": [
+        520,
+        0
+      ]
+    },
+    {
+      "parameters": {
+        "respondWith": "json",
+        "responseBody": "={{ JSON.stringify({ ok: false, error: $json.error || 'unauthorized' }) }}",
+        "options": {
+          "responseCode": 401
         }
       },
-      "name": "Status SUCCESS?",
-      "type": "n8n-nodes-base.if",
-      "typeVersion": 1,
-      "position": [440, 0]
+      "id": "lm-rej-001",
+      "name": "Reject 401",
+      "type": "n8n-nodes-base.respondToWebhook",
+      "typeVersion": 1.1,
+      "position": [
+        780,
+        160
+      ]
+    },
+    {
+      "parameters": {
+        "rules": {
+          "values": [
+            {
+              "conditions": {
+                "options": {
+                  "caseSensitive": true,
+                  "leftValue": "",
+                  "typeValidation": "strict"
+                },
+                "conditions": [
+                  {
+                    "id": "st-success",
+                    "leftValue": "={{$json.status}}",
+                    "rightValue": "success",
+                    "operator": {
+                      "type": "string",
+                      "operation": "equals"
+                    }
+                  }
+                ],
+                "combinator": "and"
+              },
+              "renameOutput": true,
+              "outputKey": "success"
+            },
+            {
+              "conditions": {
+                "options": {
+                  "caseSensitive": true,
+                  "leftValue": "",
+                  "typeValidation": "strict"
+                },
+                "conditions": [
+                  {
+                    "id": "st-partial",
+                    "leftValue": "={{$json.status}}",
+                    "rightValue": "partial",
+                    "operator": {
+                      "type": "string",
+                      "operation": "equals"
+                    }
+                  }
+                ],
+                "combinator": "and"
+              },
+              "renameOutput": true,
+              "outputKey": "partial"
+            },
+            {
+              "conditions": {
+                "options": {
+                  "caseSensitive": true,
+                  "leftValue": "",
+                  "typeValidation": "strict"
+                },
+                "conditions": [
+                  {
+                    "id": "st-failed",
+                    "leftValue": "={{$json.status}}",
+                    "rightValue": "failed",
+                    "operator": {
+                      "type": "string",
+                      "operation": "equals"
+                    }
+                  }
+                ],
+                "combinator": "and"
+              },
+              "renameOutput": true,
+              "outputKey": "failed"
+            }
+          ]
+        },
+        "options": {
+          "fallbackOutput": "extra"
+        }
+      },
+      "id": "lm-sw-001",
+      "name": "Status route",
+      "type": "n8n-nodes-base.switch",
+      "typeVersion": 3,
+      "position": [
+        780,
+        -40
+      ]
+    },
+    {
+      "parameters": {
+        "assignments": {
+          "assignments": [
+            {
+              "id": "r1",
+              "name": "route",
+              "value": "success",
+              "type": "string"
+            }
+          ]
+        },
+        "options": {}
+      },
+      "id": "lm-set-s",
+      "name": "Tag success",
+      "type": "n8n-nodes-base.set",
+      "typeVersion": 3.4,
+      "position": [
+        1040,
+        -200
+      ]
+    },
+    {
+      "parameters": {
+        "assignments": {
+          "assignments": [
+            {
+              "id": "r2",
+              "name": "route",
+              "value": "partial",
+              "type": "string"
+            }
+          ]
+        },
+        "options": {}
+      },
+      "id": "lm-set-p",
+      "name": "Tag partial",
+      "type": "n8n-nodes-base.set",
+      "typeVersion": 3.4,
+      "position": [
+        1040,
+        -40
+      ]
+    },
+    {
+      "parameters": {
+        "assignments": {
+          "assignments": [
+            {
+              "id": "r3",
+              "name": "route",
+              "value": "failed",
+              "type": "string"
+            }
+          ]
+        },
+        "options": {}
+      },
+      "id": "lm-set-f",
+      "name": "Tag failed",
+      "type": "n8n-nodes-base.set",
+      "typeVersion": 3.4,
+      "position": [
+        1040,
+        120
+      ]
+    },
+    {
+      "parameters": {
+        "assignments": {
+          "assignments": [
+            {
+              "id": "r4",
+              "name": "route",
+              "value": "other",
+              "type": "string"
+            }
+          ]
+        },
+        "options": {}
+      },
+      "id": "lm-set-o",
+      "name": "Tag other",
+      "type": "n8n-nodes-base.set",
+      "typeVersion": 3.4,
+      "position": [
+        1040,
+        280
+      ]
+    },
+    {
+      "parameters": {
+        "respondWith": "json",
+        "responseBody": "={{ JSON.stringify({ ok: true, event: $json.event, status: $json.status, route: $json.route, run_id: $json.run_id }) }}",
+        "options": {
+          "responseCode": 200
+        }
+      },
+      "id": "lm-ok-001",
+      "name": "Accept 200",
+      "type": "n8n-nodes-base.respondToWebhook",
+      "typeVersion": 1.1,
+      "position": [
+        1300,
+        0
+      ]
     }
   ],
   "connections": {
     "Webhook": {
-      "main": [[{ "node": "Verify HMAC", "type": "main", "index": 0 }]]
+      "main": [
+        [
+          {
+            "node": "Verify HMAC",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
     },
     "Verify HMAC": {
-      "main": [[{ "node": "Status SUCCESS?", "type": "main", "index": 0 }]]
+      "main": [
+        [
+          {
+            "node": "HMAC OK?",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "HMAC OK?": {
+      "main": [
+        [
+          {
+            "node": "Status route",
+            "type": "main",
+            "index": 0
+          }
+        ],
+        [
+          {
+            "node": "Reject 401",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Status route": {
+      "main": [
+        [
+          {
+            "node": "Tag success",
+            "type": "main",
+            "index": 0
+          }
+        ],
+        [
+          {
+            "node": "Tag partial",
+            "type": "main",
+            "index": 0
+          }
+        ],
+        [
+          {
+            "node": "Tag failed",
+            "type": "main",
+            "index": 0
+          }
+        ],
+        [
+          {
+            "node": "Tag other",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Tag success": {
+      "main": [
+        [
+          {
+            "node": "Accept 200",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Tag partial": {
+      "main": [
+        [
+          {
+            "node": "Accept 200",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Tag failed": {
+      "main": [
+        [
+          {
+            "node": "Accept 200",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Tag other": {
+      "main": [
+        [
+          {
+            "node": "Accept 200",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
     }
   },
+  "settings": {
+    "executionOrder": "v1"
+  },
+  "active": false,
   "meta": {
-    "templateNote": "Skeleton. Implement fail-closed HMAC with EXACT raw body before import. Do not use JSON.stringify(parsedBody). Do not import to production n8n until cutover checklist passes."
-  }
+    "templateNote": "n8n 2.40.x: Webhook options.rawBody=true → binary.data; Code uses getBinaryDataBuffer(0,'data') + require('crypto'). Secret via $env.LAPTOP_MONITOR_WEBHOOK_SECRET (never hardcode). NEVER use JSON.stringify(parsedBody) as exact raw body."
+  },
+  "id": "LmPipeEvntRecv01",
+  "isArchived": false,
+  "versionId": "lm-pipe-v1"
 }

@@ -114,9 +114,16 @@ Units call `/opt/laptop-monitor/deploy/compose.sh ...`.
 After a successful **manual** production pipeline run:
 
 ```bash
-sudo systemctl enable --now laptop-monitor-control.service
-sudo systemctl enable --now laptop-monitor.timer
-sudo systemctl enable --now laptop-monitor-backup.timer
+sudo systemctl enable laptop-monitor-control.service
+sudo systemctl start laptop-monitor-control.service
+
+# Pipeline timer: prefer enable, then start under observation
+# (Persistent=true may trigger one catch-up run — do not start a second).
+sudo systemctl enable laptop-monitor.timer
+sudo systemctl start laptop-monitor.timer
+
+sudo systemctl enable laptop-monitor-backup.timer
+sudo systemctl start laptop-monitor-backup.timer
 ```
 
 Semantics:
@@ -124,8 +131,8 @@ Semantics:
 | Unit | Behavior |
 |------|----------|
 | `laptop-monitor-control.service` | `Type=oneshot` + `RemainAfterExit=yes`: starts detached `control-bot`, then systemd shows **active (exited)**. Docker `restart: unless-stopped` recovers container crashes. `systemctl stop` runs `compose stop control-bot`. |
-| `laptop-monitor.timer` | Schedules pipeline every 2h (`Persistent=true`). **`enable --now` does not start an immediate pipeline** — next run is the next `OnCalendar` elapse. No `Requires=` on the oneshot service. |
-| `laptop-monitor-backup.timer` | Daily 03:15; same pattern (no immediate backup on enable). |
+| `laptop-monitor.timer` | Schedules pipeline every 2h (`Persistent=true`). Usually waits for the next `OnCalendar` elapse. **With `Persistent=true`, systemd may still run one catch-up activation** when the timer is first started if a calendar slot was missed while the unit was inactive — watch `laptop-monitor.service` after start; if a catch-up run begins, do **not** start a second manual pipeline. No `Requires=` on the oneshot service. |
+| `laptop-monitor-backup.timer` | Daily 03:15 (`Persistent=true`). Usually waits for next 03:15; catch-up activation is possible on first start — watch the backup oneshot if it fires. |
 
 Verify after enable:
 

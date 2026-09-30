@@ -26,12 +26,17 @@ Signature = `HMAC_SHA256(secret, timestamp + "." + raw_body)` hex digest.
 Env on laptop-monitor:
 
 ```
-N8N_WEBHOOK_URL=https://n8n.example/webhook/laptop-monitor
+N8N_WEBHOOK_URL=https://n8n.example/webhook/laptop-monitor-pipeline
 N8N_WEBHOOK_SECRET=...
 N8N_WEBHOOK_TIMEOUT_SECONDS=8
 ```
 
 Empty `N8N_WEBHOOK_URL` disables the integration.
+
+On the n8n side (not in Git): set `LAPTOP_MONITOR_WEBHOOK_SECRET` to the same
+value, plus `NODE_FUNCTION_ALLOW_BUILTIN=crypto` and
+`N8N_BLOCK_ENV_ACCESS_IN_NODE=false` so the Code verifier can HMAC exact
+raw body bytes (`getBinaryDataBuffer`). See [`HMAC.md`](HMAC.md).
 
 Webhook failures (timeout / 5xx / DNS) are logged and **do not** change
 pipeline SUCCESS/PARTIAL/FAILED.

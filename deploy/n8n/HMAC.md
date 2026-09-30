@@ -48,40 +48,59 @@ Reject (do not route SUCCESS / PARTIAL / FAILED) when any of:
 Only after successful verification: branch on `status`
 (`success` | `partial` | `failed`).
 
+## Production recipe (verified on n8n 2.40.2)
+
+| Item | Value |
+|------|--------|
+| Image | `docker.n8n.io/n8nio/n8n:beta` → app **2.40.2** |
+| Exact raw body | Webhook node **Options → Raw Body = true** |
+| Binary property | `data` (`item.binary.data`) |
+| Read bytes in Code | `await this.helpers.getBinaryDataBuffer(0, 'data')` |
+| Crypto | `require('crypto')` in Code node |
+| Required n8n env | `NODE_FUNCTION_ALLOW_BUILTIN=crypto` |
+| Secret env | `LAPTOP_MONITOR_WEBHOOK_SECRET` (also set `N8N_BLOCK_ENV_ACCESS_IN_NODE=false`) |
+| Production path | `/webhook/laptop-monitor-pipeline` |
+
+Do **not** read `$binary.data.data` base64 manually when filesystem/binary-mode
+storage is enabled — prefer `getBinaryDataBuffer`.
+
+If `require('crypto')` is blocked and cannot be enabled, use the built-in
+**Crypto** node HMAC-SHA256 over `timestamp + "." + exact_raw_utf8` — still
+**fail closed** when raw body/binary is missing. Prefer Code + `crypto` when
+allowed (single buffer HMAC matches the sender byte-for-byte).
+
 ## Pseudo-code (n8n Code node) — raw body only
 
-Wire the Webhook node so the Code node receives **exact raw body**
-(binary/string of the request). Field names vary by n8n version — see checklist below.
-
 ```javascript
-const crypto = require('crypto'); // only if this n8n version allows it
+const crypto = require('crypto'); // needs NODE_FUNCTION_ALLOW_BUILTIN=crypto
 const secret = $env.LAPTOP_MONITOR_WEBHOOK_SECRET;
-const headers = $input.item.json.headers || {};
+const headers = $input.first().json.headers || {};
 const ts = headers['x-laptop-monitor-timestamp']
         || headers['X-Laptop-Monitor-Timestamp'];
 const sig = headers['x-laptop-monitor-signature']
-         || headers['X-Laptop-Monitor-Signature'];
-
-// MUST be exact request bytes/string from the Webhook node.
-// Adjust the path after checking your n8n version (see checklist).
-const rawBody = $input.item.json.rawBody; // example — verify on your n8n
+        || headers['X-Laptop-Monitor-Signature'];
 
 if (!ts || !sig || !secret) {
   throw new Error('Missing HMAC headers or secret');
 }
-if (rawBody === undefined || rawBody === null || rawBody === '') {
+if (!$input.first().binary?.data) {
+  throw new Error('Missing exact raw body — fail closed');
+}
+const bodyBytes = await this.helpers.getBinaryDataBuffer(0, 'data');
+if (!bodyBytes || bodyBytes.length === 0) {
   throw new Error('Missing exact raw body — fail closed');
 }
 const skew = Math.abs(Math.floor(Date.now() / 1000) - Number(ts));
 if (Number.isNaN(Number(ts)) || skew > 300) {
   throw new Error('Timestamp skew too large');
 }
-const bodyBytes = Buffer.isBuffer(rawBody)
-  ? rawBody
-  : Buffer.from(String(rawBody), 'utf8');
 const expected = crypto
   .createHmac('sha256', secret)
-  .update(Buffer.concat([Buffer.from(String(ts), 'utf8'), Buffer.from('.', 'utf8'), bodyBytes]))
+  .update(Buffer.concat([
+    Buffer.from(String(ts), 'utf8'),
+    Buffer.from('.', 'utf8'),
+    bodyBytes,
+  ]))
   .digest('hex');
 if (expected !== sig) {
   throw new Error('Invalid signature');
@@ -91,14 +110,14 @@ return $input.all();
 
 Notes:
 
-- Store the secret in n8n credentials/env — never hardcode in workflow JSON.
+- Store the secret in n8n env/credentials — never hardcode in workflow JSON.
 - Sender (laptop-monitor) remains best-effort: timeout / 4xx / 5xx / DNS
   **do not** change pipeline status; no retry storm.
 - Do **not** mount Docker socket into n8n. Do **not** give n8n shell on the VPS.
 
 ## Verify on production n8n before enabling webhook
 
-Complete this on the **real** n8n instance during cutover (do not change n8n now):
+Complete this on the **real** n8n instance during cutover:
 
 1. Record **n8n version** (`Settings` / about / image tag).
 2. Confirm how **this** version’s Webhook node exposes the request:
@@ -117,6 +136,5 @@ Complete this on the **real** n8n instance during cutover (do not change n8n now
 8. Only then set `N8N_WEBHOOK_URL` + `N8N_WEBHOOK_SECRET` in
    laptop-monitor `.env`. Until then keep `N8N_WEBHOOK_URL=` empty.
 
-Template `pipeline-event-receiver.json` is a skeleton: replace the
-Verify HMAC stub with the version-correct fail-closed implementation above
-**before** enabling the production webhook URL.
+Template `pipeline-event-receiver.json` implements this recipe for n8n 2.40.x.
+**NEVER use JSON.stringify(parsedBody)** as the HMAC input.
