@@ -1,19 +1,19 @@
 services:
   pipeline:
     build:
-      context: ..
+      context: .
       dockerfile: deploy/Dockerfile
       args:
         APP_VERSION: ${LAPTOP_MONITOR_VERSION:?Set LAPTOP_MONITOR_VERSION via deploy/compose.sh}
     image: laptop-monitor:${LAPTOP_MONITOR_VERSION:?Set LAPTOP_MONITOR_VERSION via deploy/compose.sh}
     container_name: laptop-monitor-pipeline
     env_file:
-      - ../.env
+      - .env
     environment:
       LAPTOP_MONITOR_INSTANCE: vps-prod
     volumes:
-      - ../data:/app/data
-      - ../logs:/app/logs
+      - ./data:/app/data
+      - ./logs:/app/logs
     # Chromium (Citilink experimental) needs more than default 64MB /dev/shm
     shm_size: "256mb"
     working_dir: /app
@@ -24,12 +24,12 @@ services:
     container_name: laptop-monitor-control
     depends_on: []
     env_file:
-      - ../.env
+      - .env
     environment:
       LAPTOP_MONITOR_INSTANCE: vps-prod
     volumes:
-      - ../data:/app/data
-      - ../logs:/app/logs
+      - ./data:/app/data
+      - ./logs:/app/logs
     # Manual Telegram Run executes pipeline in-process (may launch Chromium)
     shm_size: "256mb"
     working_dir: /app
@@ -40,9 +40,9 @@ services:
     image: laptop-monitor:${LAPTOP_MONITOR_VERSION:?Set LAPTOP_MONITOR_VERSION via deploy/compose.sh}
     container_name: laptop-monitor-backup
     env_file:
-      - ../.env
+      - .env
     volumes:
-      - ../data:/app/data
+      - ./data:/app/data
     working_dir: /app
     command: ["python", "-m", "scripts.backup_db"]
     profiles: ["manual"]

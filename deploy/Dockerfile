@@ -1,5 +1,7 @@
 # syntax=docker/dockerfile:1
-FROM python:3.12-slim
+# bookworm: Playwright --with-deps Chromium matches Debian 12 packages
+# (python:3.12-slim floated to trixie and breaks font deps).
+FROM python:3.12-slim-bookworm
 
 ARG APP_VERSION=unknown
 LABEL org.opencontainers.image.title="laptop-monitor" \
@@ -9,11 +11,13 @@ WORKDIR /app
 
 ENV PYTHONDONTWRITEBYTECODE=1 \
     PYTHONUNBUFFERED=1 \
-    LAPTOP_MONITOR_INSTANCE=vps-prod
+    LAPTOP_MONITOR_INSTANCE=vps-prod \
+    PLAYWRIGHT_BROWSERS_PATH=/ms-playwright
 
 COPY requirements.txt .
 RUN pip install --no-cache-dir -r requirements.txt \
-    && playwright install --with-deps chromium
+    && playwright install --with-deps chromium \
+    && chmod -R a+rX /ms-playwright
 
 COPY VERSION .
 COPY *.py ./
