@@ -3,24 +3,27 @@ from __future__ import annotations
 from typing import Sequence
 
 from models import Product
+from parsers.citilink import fetch_target_laptops
 from stores.base import StoreAdapter
+from stores.common import MONITOR_REGION_MOSCOW
 
 
 class CitilinkStore(StoreAdapter):
     """
-    Citilink — disabled.
+    Citilink Moscow — experimental browser collector.
 
-    Live probe (2026-09): catalog/search return HTTP 429 with JS challenge
-    page («Подождите...»). No stable public JSON without browser challenge.
+    Plain Chromium only (no stealth). Uses search + JSON-LD Offer.price.
+    HTTP catalog alone returns 429 challenge pages.
     """
 
     slug = "citilink"
     display_name = "Citilink"
-    enabled = False
-    min_expected_products = 5
+    enabled = True
+    region = MONITOR_REGION_MOSCOW
+    collection_mode = "browser"
+    reliability = "experimental"
+    price_semantics = "public"
+    min_expected_products = 3
 
     def collect(self) -> Sequence[Product]:
-        raise RuntimeError(
-            "Citilink adapter disabled: HTTP 429 JS challenge on catalog. "
-            "Enable only after a documented stable public API is available."
-        )
+        return list(fetch_target_laptops())

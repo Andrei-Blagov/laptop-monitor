@@ -49,6 +49,7 @@ ALLOWLIST_FILES = (
 ALLOWLIST_DIRS = (
     "parsers",
     "stores",
+    "integrations",
     "deploy",
 )
 

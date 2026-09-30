@@ -37,6 +37,15 @@ from storage import (
     update_pipeline_run,
 )
 from admin_notify import maybe_notify_ops_failure
+from comparison import match_products
+from deal_ranking import rank_clusters
+from integrations.n8n import (
+    build_pipeline_completed_payload,
+    post_pipeline_webhook,
+)
+from store_freshness import get_fresh_store_slugs
+from stores.registry import all_adapters
+from storage import get_all_identifiers, get_all_products, get_latest_store_runs_readonly
 from telegram_sender import MessageSender
 from version import APP_NAME, get_version
 import config
@@ -370,6 +379,7 @@ def run_pipeline(
             error_message=result.error_message,
             started=started,
         )
+        _maybe_notify_n8n(db_path, result, started_at=started_at)
         return finish(status, exit_code)
 
     except Exception as exc:
@@ -382,6 +392,7 @@ def run_pipeline(
             error_message=_safe_error_text(exc),
             started=started,
         )
+        _maybe_notify_n8n(db_path, result, started_at=started_at)
         return finish(PIPELINE_STATUS_FAILED, EXIT_FAILED)
     finally:
         if lock_cm is not None:
@@ -389,6 +400,56 @@ def run_pipeline(
                 lock_cm.__exit__(None, None, None)
             except Exception:
                 pass
+
+
+def _maybe_notify_n8n(
+    db_path: Path | str,
+    result: PipelineResult,
+    *,
+    started_at: str | None,
+) -> None:
+    """Best-effort n8n webhook; never changes pipeline status."""
+    try:
+        top_payload: list[dict[str, Any]] = []
+        try:
+            latest = get_latest_store_runs_readonly(db_path)
+            fresh = get_fresh_store_slugs(latest)
+            if fresh:
+                products = get_all_products(db_path)
+                identifiers = get_all_identifiers(db_path)
+                comparison = match_products(products, identifiers)
+                deals = rank_clusters(
+                    comparison.matches, fresh_stores=fresh, limit=10
+                )
+                top_payload = [
+                    {
+                        "name": d.cluster_name,
+                        "store": d.store,
+                        "price": d.price,
+                        "score": d.score,
+                        "url": d.url,
+                    }
+                    for d in deals
+                ]
+        except Exception:
+            top_payload = []
+        payload = build_pipeline_completed_payload(
+            run_id=result.run_id,
+            status=result.status,
+            started_at=started_at,
+            finished_at=_iso_now(),
+            duration_seconds=result.duration_seconds,
+            store_statuses=result.store_statuses,
+            alerts_created=result.alerts_created,
+            messages_sent=result.messages_sent,
+            messages_failed=result.messages_failed,
+            top_deals=top_payload,
+            adapters_meta=[a.meta_dict() for a in all_adapters()],
+        )
+        post_pipeline_webhook(payload)
+    except Exception:
+        # Absolute isolation from pipeline outcome.
+        pass
 
 
 def _record_run(

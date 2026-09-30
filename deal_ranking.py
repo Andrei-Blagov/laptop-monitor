@@ -198,6 +198,27 @@ def rank_clusters(
                 screen_inch = getattr(spec, "screen_inch", None) or getattr(
                     spec, "screen_size_inch", None
                 )
+        if gpu is None or ram_gb is None or ssd_gb is None or screen_inch is None:
+            from stores.common import extract_specs_from_name
+
+            name_blob = " ".join(
+                x
+                for x in (
+                    match.name,
+                    getattr(best, "name", None),
+                    best.url,
+                )
+                if x
+            )
+            inferred = extract_specs_from_name(name_blob)
+            gpu = gpu or inferred.get("gpu")  # type: ignore[assignment]
+            ram_gb = ram_gb if ram_gb is not None else inferred.get("ram_gb")  # type: ignore[assignment]
+            ssd_gb = ssd_gb if ssd_gb is not None else inferred.get("ssd_gb")  # type: ignore[assignment]
+            screen_inch = (
+                screen_inch
+                if screen_inch is not None
+                else inferred.get("screen_inch")  # type: ignore[assignment]
+            )
 
         score, reasons = score_offer(
             price=int(best.price),

@@ -25,6 +25,7 @@ scripts/build_deploy_bundle.py
 dist
 *.md
 !deploy/README.md
+!deploy/n8n/README.md
 !README.md
 .idea
 .vscode

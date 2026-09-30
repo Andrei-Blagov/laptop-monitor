@@ -12,12 +12,14 @@ ENV PYTHONDONTWRITEBYTECODE=1 \
     LAPTOP_MONITOR_INSTANCE=vps-prod
 
 COPY requirements.txt .
-RUN pip install --no-cache-dir -r requirements.txt
+RUN pip install --no-cache-dir -r requirements.txt \
+    && playwright install --with-deps chromium
 
 COPY VERSION .
 COPY *.py ./
 COPY parsers/ ./parsers/
 COPY stores/ ./stores/
+COPY integrations/ ./integrations/
 COPY scripts/__init__.py ./scripts/__init__.py
 COPY scripts/backup_db.py ./scripts/backup_db.py
 COPY scripts/migrate_db.py ./scripts/migrate_db.py

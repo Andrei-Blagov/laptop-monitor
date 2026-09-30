@@ -1,0 +1,41 @@
+{
+  "name": "laptop-monitor-failure-alert",
+  "nodes": [
+    {
+      "parameters": {
+        "httpMethod": "POST",
+        "path": "laptop-monitor-failure",
+        "responseMode": "onReceived"
+      },
+      "name": "Webhook",
+      "type": "n8n-nodes-base.webhook",
+      "typeVersion": 2,
+      "position": [0, 0]
+    },
+    {
+      "parameters": {
+        "conditions": {
+          "string": [
+            {
+              "value1": "={{$json.status}}",
+              "operation": "notEqual",
+              "value2": "success"
+            }
+          ]
+        }
+      },
+      "name": "Not SUCCESS?",
+      "type": "n8n-nodes-base.if",
+      "typeVersion": 1,
+      "position": [220, 0]
+    }
+  ],
+  "connections": {
+    "Webhook": {
+      "main": [[{ "node": "Not SUCCESS?", "type": "main", "index": 0 }]]
+    }
+  },
+  "meta": {
+    "templateNote": "Skeleton ops alert for PARTIAL/FAILED. Prefer verifying HMAC like the main receiver."
+  }
+}

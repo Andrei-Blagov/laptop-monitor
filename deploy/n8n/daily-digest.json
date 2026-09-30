@@ -1,0 +1,33 @@
+{
+  "name": "laptop-monitor-daily-digest",
+  "nodes": [
+    {
+      "parameters": {
+        "rule": {
+          "interval": [{ "field": "cronExpression", "expression": "0 9 * * *" }]
+        }
+      },
+      "name": "Cron 09:00",
+      "type": "n8n-nodes-base.scheduleTrigger",
+      "typeVersion": 1,
+      "position": [0, 0]
+    },
+    {
+      "parameters": {
+        "functionCode": "// Skeleton: load latest top_deals / store health from your store\n// or from the last pipeline.completed webhook payload archive.\nreturn items;"
+      },
+      "name": "Build digest",
+      "type": "n8n-nodes-base.function",
+      "typeVersion": 1,
+      "position": [220, 0]
+    }
+  ],
+  "connections": {
+    "Cron 09:00": {
+      "main": [[{ "node": "Build digest", "type": "main", "index": 0 }]]
+    }
+  },
+  "meta": {
+    "templateNote": "Skeleton daily digest — wire Telegram/email during cutover."
+  }
+}

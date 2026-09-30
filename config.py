@@ -39,6 +39,12 @@ TOP_DEALS_LIMIT: int = 10
 # Schedule is every 2 hours → default ~3 hours.
 STORE_FRESHNESS_MAX_MINUTES: int = 180
 
+# Monitoring geography. Cross-store only among same-region snapshots.
+MONITOR_REGION: str = "moscow"
+
+# n8n webhook (optional OPS layer; empty URL = disabled)
+N8N_WEBHOOK_TIMEOUT_SECONDS: float = 8.0
+
 # Telegram delivery
 CHANNEL_TELEGRAM = "telegram"
 # Стабильный ключ destination в DB (chat_id используется только API-клиентом).
@@ -46,6 +52,24 @@ TELEGRAM_DESTINATION = "default"
 MAX_DELIVERY_ATTEMPTS: int = 5
 # Минимальный интервал между sendMessage в один chat (сек).
 TELEGRAM_MIN_SEND_INTERVAL_SECONDS: float = 1.1
+
+
+def get_monitor_region() -> str:
+    load_dotenv_if_present()
+    return (os.environ.get("MONITOR_REGION") or MONITOR_REGION).strip().lower()
+
+
+def get_n8n_webhook_config() -> tuple[str | None, str | None, float]:
+    """Returns (url, secret, timeout). url None => disabled."""
+    load_dotenv_if_present()
+    url = (os.environ.get("N8N_WEBHOOK_URL") or "").strip() or None
+    secret = (os.environ.get("N8N_WEBHOOK_SECRET") or "").strip() or None
+    raw_timeout = (os.environ.get("N8N_WEBHOOK_TIMEOUT_SECONDS") or "").strip()
+    try:
+        timeout = float(raw_timeout) if raw_timeout else float(N8N_WEBHOOK_TIMEOUT_SECONDS)
+    except ValueError:
+        timeout = float(N8N_WEBHOOK_TIMEOUT_SECONDS)
+    return url, secret, timeout
 
 
 def get_instance_id() -> str:

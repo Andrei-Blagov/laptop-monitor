@@ -3,14 +3,14 @@ from __future__ import annotations
 from typing import Sequence
 
 from models import Product
-from parsers.regard import fetch_target_laptops
+from parsers.kns import fetch_target_laptops
 from stores.base import StoreAdapter
 from stores.common import MONITOR_REGION_MOSCOW
 
 
-class RegardStore(StoreAdapter):
-    slug = "regard"
-    display_name = "Regard"
+class KnsStore(StoreAdapter):
+    slug = "kns"
+    display_name = "KNS"
     enabled = True
     region = MONITOR_REGION_MOSCOW
     collection_mode = "http"

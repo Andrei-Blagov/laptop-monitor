@@ -1,5 +1,6 @@
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from datetime import datetime
+from typing import Any
 
 
 @dataclass
@@ -12,3 +13,5 @@ class Product:
     price: int | None
     available: bool
     checked_at: datetime
+    # Optional extras: member_price, availability_status, promo_price, etc.
+    metadata: dict[str, Any] = field(default_factory=dict)

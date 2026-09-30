@@ -91,12 +91,18 @@ class StoreRegistryTests(unittest.TestCase):
         slugs = enabled_slugs()
         self.assertIn("regard", slugs)
         self.assertIn("andpro", slugs)
+        self.assertIn("kns", slugs)
+        self.assertIn("citilink", slugs)
         self.assertNotIn("dns", slugs)
-        self.assertNotIn("citilink", slugs)
+        self.assertNotIn("xcom", slugs)
+        self.assertNotIn("technopark", slugs)
 
     def test_dns_citilink_disabled(self) -> None:
         self.assertFalse(get_adapter("dns").enabled)
-        self.assertFalse(get_adapter("citilink").enabled)
+        self.assertTrue(get_adapter("citilink").enabled)
+        self.assertEqual(get_adapter("citilink").collection_mode, "browser")
+        self.assertFalse(get_adapter("xcom").enabled)
+        self.assertFalse(get_adapter("technopark").enabled)
 
     def test_sanity_rejects_empty_catalog(self) -> None:
         class EmptyStore(StoreAdapter):

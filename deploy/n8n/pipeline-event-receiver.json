@@ -1,0 +1,53 @@
+{
+  "name": "laptop-monitor-pipeline-event-receiver",
+  "nodes": [
+    {
+      "parameters": {
+        "httpMethod": "POST",
+        "path": "laptop-monitor-pipeline",
+        "responseMode": "onReceived"
+      },
+      "name": "Webhook",
+      "type": "n8n-nodes-base.webhook",
+      "typeVersion": 2,
+      "position": [0, 0]
+    },
+    {
+      "parameters": {
+        "functionCode": "// Verify X-Laptop-Monitor-Timestamp + X-Laptop-Monitor-Signature\n// HMAC-SHA256(secret, timestamp + '.' + rawBody)\n// Reject if skew > 300s or signature mismatch.\nreturn items;"
+      },
+      "name": "Verify HMAC",
+      "type": "n8n-nodes-base.function",
+      "typeVersion": 1,
+      "position": [220, 0]
+    },
+    {
+      "parameters": {
+        "conditions": {
+          "string": [
+            {
+              "value1": "={{$json.status}}",
+              "operation": "equals",
+              "value2": "success"
+            }
+          ]
+        }
+      },
+      "name": "Status SUCCESS?",
+      "type": "n8n-nodes-base.if",
+      "typeVersion": 1,
+      "position": [440, 0]
+    }
+  ],
+  "connections": {
+    "Webhook": {
+      "main": [[{ "node": "Verify HMAC", "type": "main", "index": 0 }]]
+    },
+    "Verify HMAC": {
+      "main": [[{ "node": "Status SUCCESS?", "type": "main", "index": 0 }]]
+    }
+  },
+  "meta": {
+    "templateNote": "Skeleton only — configure HMAC secret and branches for PARTIAL/FAILED during cutover. Do not import to production n8n yet."
+  }
+}

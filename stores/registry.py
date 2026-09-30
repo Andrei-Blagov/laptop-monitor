@@ -4,13 +4,19 @@ from stores.andpro import AndproStore
 from stores.base import StoreAdapter
 from stores.citilink import CitilinkStore
 from stores.dns import DnsStore
+from stores.kns import KnsStore
 from stores.regard import RegardStore
+from stores.technopark import TechnoparkStore
+from stores.xcom import XcomStore
 
 _REGISTERED: list[StoreAdapter] = [
     RegardStore(),
     AndproStore(),
-    DnsStore(),
+    KnsStore(),
     CitilinkStore(),
+    DnsStore(),
+    XcomStore(),
+    TechnoparkStore(),
 ]
 
 
