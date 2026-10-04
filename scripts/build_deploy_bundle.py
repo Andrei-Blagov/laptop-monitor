@@ -37,6 +37,7 @@ ALLOWLIST_FILES = (
     "notification_groups.py",
     "notifications.py",
     "pipeline_lock.py",
+    "price_history_chart.py",
     "product_identity.py",
     "run_pipeline.py",
     "store_freshness.py",
@@ -61,6 +62,7 @@ ALLOWLIST_SCRIPTS = (
     "scripts/migrate_db.py",
     "scripts/build_deploy_bundle.py",
     "scripts/diagnose_model_price_history.py",
+    "scripts/diagnose_price_history_chart.py",
 )
 
 FORBIDDEN_NAME_PARTS = (
