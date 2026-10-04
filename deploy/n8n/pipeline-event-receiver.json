@@ -314,7 +314,9 @@
       ]
     },
     {
-      "parameters": {},
+      "parameters": {
+        "inputSource": "passthrough"
+      },
       "id": "lm-ewt-001",
       "name": "When called by Digest",
       "type": "n8n-nodes-base.executeWorkflowTrigger",

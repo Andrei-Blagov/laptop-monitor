@@ -272,7 +272,9 @@ def main() -> None:
         "position": [650, -40],
     }
     export_trigger = {
-        "parameters": {},
+        # n8n 2.40 executeWorkflowTrigger v1.1 requires inputSource;
+        # empty params => "At least 1 field is required" / WorkflowHasIssuesError.
+        "parameters": {"inputSource": "passthrough"},
         "id": "lm-ewt-001",
         "name": "When called by Digest",
         "type": "n8n-nodes-base.executeWorkflowTrigger",
