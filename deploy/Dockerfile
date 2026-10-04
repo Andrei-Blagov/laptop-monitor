@@ -27,6 +27,7 @@ COPY integrations/ ./integrations/
 COPY scripts/__init__.py ./scripts/__init__.py
 COPY scripts/backup_db.py ./scripts/backup_db.py
 COPY scripts/migrate_db.py ./scripts/migrate_db.py
+COPY scripts/diagnose_model_price_history.py ./scripts/diagnose_model_price_history.py
 
 RUN mkdir -p /app/data /app/logs \
     && useradd --create-home --uid 10001 appuser \
