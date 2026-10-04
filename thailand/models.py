@@ -36,6 +36,27 @@ class ThailandOffer:
     verification_status: str | None = None
     verification_reasons: list[str] = field(default_factory=list)
     metadata: dict[str, Any] = field(default_factory=dict)
+    # Marketplace / Lazada channel
+    marketplace: bool = False
+    seller_name: str | None = None
+    seller_id: str | None = None
+    seller_type: str | None = None
+    seller_rating: float | None = None
+    seller_reviews_count: int | None = None
+    units_sold: int | None = None
+    official_store: bool = False
+    mall: bool = False
+    listing_id: str | None = None
+    product_id: str | None = None
+    variant_id: str | None = None
+    seller_trust_tier: str | None = None
+    marketplace_confidence: float | None = None
+    price_verified_for_variant: bool = True
+    voucher_text: str | None = None
+    promo_notes: str | None = None
+    # User-facing price-cap audit (raw offers may still be stored)
+    in_tracking_scope: bool | None = None
+    excluded_reason: str | None = None
 
     def to_dict(self) -> dict[str, Any]:
         data = asdict(self)
@@ -51,6 +72,7 @@ class StoreScanResult:
     error: str | None = None
     duration_seconds: float | None = None
     unverified_candidates: list[ThailandOffer] = field(default_factory=list)
+    collection_mode: str | None = None  # http | html | browser | failed
 
     @property
     def count(self) -> int:

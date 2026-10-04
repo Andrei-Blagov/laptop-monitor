@@ -13,16 +13,29 @@ import config
 from buy_opportunity import BuySignal
 from deal_ranking import RankedDeal
 from thailand.comparison import country_verdict
+from thailand.eligibility import (
+    EXCLUDED_FX_UNUSABLE,
+    EXCLUDED_PRICE_ABOVE_CAP,
+    annotate_offer_price_scope,
+    apply_near_price_trust_preference,
+    effective_thb_cap,
+    max_tracked_price_rub,
+    offer_user_facing_eligible,
+    price_within_cap,
+    sort_cheapest_rows,
+    sort_value_rows,
+)
 from thailand.fx import fetch_cbr_thb_rate, fx_usable_for_verdict, thb_to_rub
 from thailand.matching import group_thai_offers, match_russian_to_thai
 from thailand.models import FxRate, StoreScanResult, ThailandOffer
 from thailand.registry import get_thailand_adapters
 from thailand.scoring import international_value_score
-from thailand.verification import (
-    international_confidence,
-    is_purchasable_confirmed,
-    is_verified_for_ranking,
+from thailand.seller_trust import (
+    classify_seller_trust,
+    marketplace_confidence,
+    store_display_label,
 )
+from thailand.verification import international_confidence
 from thailand.storage import write_scan_snapshot
 
 logger = logging.getLogger(__name__)
@@ -103,6 +116,59 @@ def collect_thailand_offers(
     return results, offers, unverified, time.perf_counter() - started
 
 
+def _offer_to_top_row(
+    o: ThailandOffer, *, price_rub: int | None
+) -> dict[str, Any]:
+    score = international_value_score(
+        price_rub=price_rub,
+        gpu=o.gpu,
+        cpu=o.cpu,
+        ram_gb=o.ram_gb,
+        ssd_gb=o.ssd_gb,
+        screen_inch=o.screen_size_inch,
+        screen_resolution=o.screen_resolution,
+    )
+    tier = o.seller_trust_tier or (
+        classify_seller_trust(o) if o.marketplace else None
+    )
+    mconf = o.marketplace_confidence
+    if o.marketplace and mconf is None:
+        mconf = marketplace_confidence(o, tier=tier)
+    return {
+        "store": o.store,
+        "store_label": store_display_label(o),
+        "external_id": o.external_id,
+        "name": o.name,
+        "gpu": o.gpu,
+        "gpu_source": o.gpu_source,
+        "cpu": o.cpu,
+        "ram_gb": o.ram_gb,
+        "ssd_gb": o.ssd_gb,
+        "screen_size_inch": o.screen_size_inch,
+        "screen_resolution": o.screen_resolution,
+        "price_thb": o.price_thb,
+        "price_rub": price_rub,
+        "price_source": o.price_source,
+        "availability_status": o.availability_status,
+        "availability_source": o.availability_source,
+        "verification_status": o.verification_status,
+        "warranty": o.warranty,
+        "url": o.url,
+        "international_score": score.score,
+        "international_confidence": international_confidence(o),
+        "international_raw": score.raw,
+        "score_breakdown": score.breakdown,
+        "marketplace": bool(o.marketplace),
+        "seller_name": o.seller_name,
+        "seller_trust_tier": tier,
+        "marketplace_confidence": mconf,
+        "official_store": bool(o.official_store),
+        "mall": bool(o.mall),
+        "in_tracking_scope": True,
+        "excluded_reason": None,
+    }
+
+
 def build_thai_top(
     offers: Sequence[ThailandOffer],
     *,
@@ -110,62 +176,75 @@ def build_thai_top(
     limit: int | None = None,
     verified_only: bool = True,
 ) -> list[dict[str, Any]]:
-    """Build TOP from verified purchasable offers only (default)."""
+    """Build TOP from verified purchasable offers within MAX_TRACKED_PRICE_RUB."""
     limit = int(limit if limit is not None else config.THAILAND_TOP_LIMIT)
+    if not fx_usable_for_verdict(fx):
+        return []
     rows: list[dict[str, Any]] = []
     for o in offers:
-        if verified_only and not is_verified_for_ranking(o):
+        ok, _reason, rub = offer_user_facing_eligible(
+            o, fx=fx, require_verified=verified_only
+        )
+        if not ok:
             continue
-        if not is_purchasable_confirmed(o):
-            continue
-        if o.price_thb is None:
-            continue
-        rub = thb_to_rub(o.price_thb, fx) if fx_usable_for_verdict(fx) else thb_to_rub(
-            o.price_thb, fx if fx and not fx.error else None
-        )
-        score = international_value_score(
-            price_rub=rub,
-            gpu=o.gpu,
-            cpu=o.cpu,
-            ram_gb=o.ram_gb,
-            ssd_gb=o.ssd_gb,
-            screen_inch=o.screen_size_inch,
-            screen_resolution=o.screen_resolution,
-        )
-        conf = international_confidence(o)
-        rows.append(
-            {
-                "store": o.store,
-                "external_id": o.external_id,
-                "name": o.name,
-                "gpu": o.gpu,
-                "gpu_source": o.gpu_source,
-                "cpu": o.cpu,
-                "ram_gb": o.ram_gb,
-                "ssd_gb": o.ssd_gb,
-                "screen_size_inch": o.screen_size_inch,
-                "screen_resolution": o.screen_resolution,
-                "price_thb": o.price_thb,
-                "price_rub": rub,
-                "price_source": o.price_source,
-                "availability_status": o.availability_status,
-                "availability_source": o.availability_source,
-                "verification_status": o.verification_status,
-                "warranty": o.warranty,
-                "url": o.url,
-                "international_score": score.score,
-                "international_confidence": conf,
-                "international_raw": score.raw,
-                "score_breakdown": score.breakdown,
-            }
-        )
-    rows.sort(
-        key=lambda r: (
-            -(r["international_score"] or 0),
-            r["price_thb"] or 10**12,
-        )
-    )
+        rows.append(_offer_to_top_row(o, price_rub=rub))
+    rows = sort_value_rows(rows)
+    rows = apply_near_price_trust_preference(rows)
     return rows[:limit]
+
+
+def build_cheapest_eligible(
+    offers: Sequence[ThailandOffer],
+    *,
+    fx: FxRate | None,
+    limit: int | None = None,
+) -> list[dict[str, Any]]:
+    limit = int(limit if limit is not None else config.THAILAND_TOP_LIMIT)
+    if not fx_usable_for_verdict(fx):
+        return []
+    rows: list[dict[str, Any]] = []
+    for o in offers:
+        ok, _reason, rub = offer_user_facing_eligible(o, fx=fx, require_verified=True)
+        if not ok:
+            continue
+        rows.append(_offer_to_top_row(o, price_rub=rub))
+    return sort_cheapest_rows(rows)[:limit]
+
+
+def summarize_price_cap(
+    offers: Sequence[ThailandOffer],
+    *,
+    fx: FxRate | None,
+) -> dict[str, Any]:
+    usable = fx_usable_for_verdict(fx)
+    verified = 0
+    eligible = 0
+    over_cap = 0
+    for o in offers:
+        from thailand.verification import is_verified_for_ranking
+
+        if is_verified_for_ranking(o):
+            verified += 1
+        if not usable:
+            continue
+        rub = thb_to_rub(o.price_thb, fx)
+        if rub is None:
+            continue
+        if price_within_cap(rub):
+            ok, _, _ = offer_user_facing_eligible(o, fx=fx, require_verified=True)
+            if ok:
+                eligible += 1
+        else:
+            over_cap += 1
+    return {
+        "max_tracked_price_rub": max_tracked_price_rub(),
+        "fx_usable": usable,
+        "effective_thb_cap": effective_thb_cap(fx),
+        "verified_count": verified,
+        "eligible_count": eligible,
+        "over_cap_count": over_cap,
+        "cap_unavailable_reason": None if usable else EXCLUDED_FX_UNUSABLE,
+    }
 
 
 def run_thailand_scan(
@@ -198,6 +277,12 @@ def run_thailand_scan(
 
         price_rub_map: dict[str, int | None] = {}
         for o in list(offers) + list(unverified):
+            annotate_offer_price_scope(o, fx=fx)
+            if o.marketplace and not o.seller_trust_tier:
+                o.seller_trust_tier = classify_seller_trust(o)
+                o.marketplace_confidence = marketplace_confidence(
+                    o, tier=o.seller_trust_tier
+                )
             key = f"{o.store}:{o.external_id}"
             price_rub_map[key] = thb_to_rub(o.price_thb, fx) if fx else None
 
@@ -214,6 +299,7 @@ def run_thailand_scan(
 
         matches = []
         comparison = None
+        match_over_cap_note = None
         if primary_deal is not None:
             # Prefer verified offers for matching; fall back to all discovered.
             match_pool = offers or unverified
@@ -223,6 +309,17 @@ def run_thailand_scan(
             best_match = None
             for m in matches:
                 if m.level in {"EXACT", "EQUIVALENT", "SAME_FAMILY"}:
+                    # User-facing purchase recommendation respects price cap.
+                    if m.thai_price_rub is not None and not price_within_cap(
+                        m.thai_price_rub
+                    ):
+                        if match_over_cap_note is None:
+                            match_over_cap_note = (
+                                "Та же/эквивалентная модель найдена, "
+                                "но цена выше установленного лимита "
+                                f"{max_tracked_price_rub():,} ₽.".replace(",", " ")
+                            )
+                        continue
                     best_match = m
                     break
             comparison = country_verdict(best_match, fx=fx)
@@ -230,6 +327,17 @@ def run_thailand_scan(
             best_match = None
 
         top = build_thai_top(offers, fx=fx, verified_only=True)
+        cheapest = build_cheapest_eligible(offers, fx=fx)
+        cap_summary = summarize_price_cap(offers, fx=fx)
+        eligible_offers = []
+        over_cap_offers = []
+        for o in offers:
+            rub = price_rub_map.get(f"{o.store}:{o.external_id}")
+            if rub is not None and not price_within_cap(rub):
+                over_cap_offers.append(o)
+            ok, _, _ = offer_user_facing_eligible(o, fx=fx, require_verified=True)
+            if ok:
+                eligible_offers.append(o)
         groups = group_thai_offers(offers)
         match_runtime = time.perf_counter() - match_t0
 
@@ -257,12 +365,17 @@ def run_thailand_scan(
                         "count": r.count,
                         "error": r.error,
                         "duration_seconds": r.duration_seconds,
+                        "collection_mode": r.collection_mode,
                     }
                     for r in store_results
                 ],
+                "all_verified_offers": [o.to_dict() for o in offers],
+                "eligible_offers": [o.to_dict() for o in eligible_offers],
+                "over_cap_offers_count": len(over_cap_offers),
                 "verified_offers": [o.to_dict() for o in offers],
                 "unverified_candidates": [o.to_dict() for o in unverified],
                 "offers": [o.to_dict() for o in offers],
+                "price_cap": cap_summary,
                 "trigger_models": [
                     s.cluster_name for s in (trigger_signals or [])
                 ],
@@ -294,12 +407,14 @@ def run_thailand_scan(
                         best_match.thai_offer.name if best_match else None
                     ),
                     "differences": best_match.differences if best_match else [],
+                    "over_cap_note": match_over_cap_note,
                 },
                 "country_comparison": {
                     "verdict": comparison.verdict if comparison else None,
                     "reasons": comparison.reasons if comparison else [],
                 },
                 "thailand_top": top,
+                "cheapest_eligible_thailand": cheapest,
                 "unverified_count": len(unverified),
                 "thai_groups": len(groups),
                 "runtimes": {
@@ -313,6 +428,7 @@ def run_thailand_scan(
                 "_best_match": best_match,
                 "_comparison": comparison,
                 "_top": top,
+                "_match_over_cap_note": match_over_cap_note,
             }
         )
 

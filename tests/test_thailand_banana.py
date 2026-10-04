@@ -1,8 +1,11 @@
 from __future__ import annotations
 
 import unittest
+from unittest.mock import MagicMock, patch
 
-from thailand.banana import parse_banana_product_dict
+import httpx
+
+from thailand.banana import collect, parse_banana_json_payload, parse_banana_product_dict
 from stores.common import extract_specs_from_name
 
 
@@ -115,6 +118,100 @@ class BananaParseTests(unittest.TestCase):
             catalog_gpu="RTX 5080",
         )
         self.assertEqual(s.get("ram_gb"), 32)
+
+
+class BananaCollectTests(unittest.TestCase):
+    def test_http_json_success(self) -> None:
+        payload = [
+            {
+                "external_id": "b1",
+                "name": "MSI Vector 16 HX AI RTX 5070 Ti 32GB 1TB",
+                "price_thb": 62990,
+                "available": True,
+                "availability_status": "online_available",
+                "gpu": "RTX 5070 Ti",
+                "cpu": "Intel Core Ultra 9 275HX",
+                "ram_gb": 32,
+                "ssd_gb": 1024,
+                "url": "https://www.bnn.in.th/th/p/b1",
+            }
+        ]
+
+        class Resp:
+            status_code = 200
+            headers = {"content-type": "application/json"}
+
+            def json(self):
+                return payload
+
+            text = ""
+
+        client = MagicMock()
+        client.get.return_value = Resp()
+        result = collect(client=client, allow_browser=False)
+        self.assertTrue(result.ok)
+        self.assertEqual(result.collection_mode, "http")
+        self.assertGreaterEqual(len(result.offers), 1)
+        self.assertEqual(result.offers[0].gpu, "RTX 5070 Ti")
+
+    def test_browser_fallback_on_http_403(self) -> None:
+        class Resp:
+            status_code = 403
+            headers = {"content-type": "text/html"}
+            text = "Attention Required! Cloudflare"
+            def json(self):
+                raise ValueError("no")
+
+        client = MagicMock()
+        client.get.return_value = Resp()
+        offer = parse_banana_product_dict(
+            {
+                "external_id": "b2",
+                "name": "ASUS ROG Strix G16 RTX 5080 32GB 1TB",
+                "price_thb": 84990,
+                "available": True,
+                "availability_status": "in_stock",
+                "gpu": "RTX 5080",
+                "url": "https://www.bnn.in.th/th/p/b2",
+            }
+        )
+        with patch("thailand.banana._collect_browser", return_value=([offer], [])):
+            result = collect(client=client, allow_browser=True)
+        self.assertTrue(result.ok)
+        self.assertEqual(result.collection_mode, "browser")
+        self.assertEqual(result.offers[0].gpu, "RTX 5080")
+
+    def test_browser_challenge_failed(self) -> None:
+        class Resp:
+            status_code = 403
+            headers = {"content-type": "text/html"}
+            text = "blocked"
+            def json(self):
+                raise ValueError("no")
+
+        client = MagicMock()
+        client.get.return_value = Resp()
+        with patch(
+            "thailand.banana._collect_browser",
+            return_value=([], ["challenge"]),
+        ):
+            result = collect(client=client, allow_browser=True)
+        self.assertFalse(result.ok)
+        self.assertEqual(result.collection_mode, "failed")
+
+    def test_query_does_not_override_product_gpu(self) -> None:
+        # catalog_gpu is candidate only; product without authoritative GPU → drop
+        o = parse_banana_product_dict(
+            {
+                "external_id": "x",
+                "name": "Gaming notebook special offer",
+                "price_thb": 50000,
+                "available": True,
+                "availability_status": "in_stock",
+            },
+            catalog_gpu="RTX 5080",
+        )
+        self.assertIsNone(o)
 
 
 if __name__ == "__main__":

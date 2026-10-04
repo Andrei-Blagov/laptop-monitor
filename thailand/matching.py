@@ -257,7 +257,15 @@ def group_thai_offers(offers: Sequence[ThailandOffer]) -> list[ThaiGroup]:
         ]
         pool = purchasable or []
         if pool:
-            g.best = sorted(pool, key=lambda o: (o.price_thb or 10**12, o.store))[0]
+            # Prefer direct retailer over same-seller marketplace when not cheaper.
+            g.best = sorted(
+                pool,
+                key=lambda o: (
+                    o.price_thb or 10**12,
+                    1 if o.marketplace else 0,
+                    o.store,
+                ),
+            )[0]
         else:
             g.best = None
     return list(groups.values())

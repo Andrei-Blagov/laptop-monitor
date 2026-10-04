@@ -307,11 +307,18 @@ def execute_thailand_job(
             match=scan_result.get("_best_match"),
             comparison=scan_result.get("_comparison"),
             russian_signal=primary,
+            match_over_cap_note=scan_result.get("_match_over_cap_note")
+            or (scan_result.get("matching") or {}).get("over_cap_note"),
         )
     )
     top = scan_result.get("_top") or scan_result.get("thailand_top") or []
     unverified_n = len(scan_result.get("unverified_candidates") or [])
-    alt = format_thailand_alternatives_message(top, unverified_count=unverified_n)
+    alt = format_thailand_alternatives_message(
+        top,
+        unverified_count=unverified_n,
+        price_cap=scan_result.get("price_cap"),
+        fx_usable=scan_result.get("fx_usable_for_verdict"),
+    )
     if alt and status != "failed":
         messages.append(alt)
     out["messages"] = [m for m in messages if m][:2]

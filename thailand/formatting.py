@@ -6,7 +6,9 @@ from typing import Any, Sequence
 
 from buy_opportunity import BuySignal
 from thailand.comparison import verdict_label_ru
+from thailand.eligibility import max_tracked_price_rub
 from thailand.models import CountryComparison, CrossCountryMatch, FxRate, StoreScanResult
+from thailand.seller_trust import store_display_label
 
 FOOTER_LOCAL = (
     "Локальная покупка в Таиланде. "
@@ -15,6 +17,10 @@ FOOTER_LOCAL = (
 FOOTER_FX = (
     "Курс валют меняется; RUB equivalent рассчитан "
     "по указанному курсу на момент проверки."
+)
+FOOTER_CAP = (
+    "Показаны только предложения до 300 000 ₽ "
+    "по курсу на момент проверки."
 )
 
 TELEGRAM_SOFT = 3500
@@ -110,13 +116,17 @@ def format_thailand_comparison_message(
     match: CrossCountryMatch | None,
     comparison: CountryComparison | None,
     russian_signal: BuySignal | None = None,
+    match_over_cap_note: str | None = None,
 ) -> str:
     lines = ["🇹🇭 <b>ТАИЛАНД — РАЗОВАЯ ПРОВЕРКА</b>", "", "Проверены:"]
     for sr in store_results:
         mark = "✅" if sr.ok else "❌"
-        label = {"jib": "JIB", "advice": "Advice", "banana": "BaNANA"}.get(
-            sr.store, sr.store
-        )
+        label = {
+            "jib": "JIB",
+            "advice": "Advice",
+            "banana": "BaNANA",
+            "lazada": "Lazada",
+        }.get(sr.store, sr.store)
         extra = f" ({sr.error})" if (not sr.ok and sr.error) else ""
         lines.append(f"{label} {mark}{extra}")
 
@@ -144,6 +154,13 @@ def format_thailand_comparison_message(
             lines.append(f"age {fx.rate_age_hours:.0f}h stale=true")
     else:
         lines.append("⚠️ Актуальный курс THB/RUB получить не удалось.")
+        lines.append(
+            "Не удалось применить лимит 300 000 ₽: "
+            "актуальный курс THB/RUB недоступен."
+        )
+
+    lines.append("")
+    lines.append(f"Лимит:\n≤{_rub(max_tracked_price_rub())} ₽")
 
     if match and match.level in {"EXACT", "EQUIVALENT", "SAME_FAMILY"}:
         lines.append("")
@@ -159,7 +176,7 @@ def format_thailand_comparison_message(
         lines.append(f"{_thb(match.thai_price_thb)} ฿")
         rub_eq = _rub(match.thai_price_rub) if match.thai_price_rub is not None else "н/д"
         lines.append(f"≈ {rub_eq} ₽")
-        lines.append(match.thai_offer.store.upper())
+        lines.append(store_display_label(match.thai_offer))
         if match.thai_offer.availability_status == "store_pickup_only":
             lines.append("ограничение: store pickup only")
         if match.delta_rub is not None and match.delta_percent is not None:
@@ -189,10 +206,13 @@ def format_thailand_comparison_message(
     else:
         lines.append("")
         lines.append("EXACT / EQUIVALENT: не найдено")
+        if match_over_cap_note:
+            lines.append(match_over_cap_note)
 
     lines.append("")
     lines.append(FOOTER_LOCAL)
     lines.append(FOOTER_FX)
+    lines.append(FOOTER_CAP)
     return "\n".join(lines)[:TELEGRAM_SOFT]
 
 
@@ -201,10 +221,31 @@ def format_thailand_alternatives_message(
     *,
     limit: int = 5,
     unverified_count: int = 0,
+    price_cap: dict[str, Any] | None = None,
+    fx_usable: bool | None = None,
 ) -> str:
+    cap = price_cap or {}
+    if fx_usable is False or (
+        fx_usable is None and cap.get("fx_usable") is False
+    ):
+        return (
+            "🇹🇭 <b>ЛУЧШИЕ ПРЕДЛОЖЕНИЯ В ТАИЛАНДЕ ДО 300 000 ₽</b>\n\n"
+            "Не удалось применить лимит 300 000 ₽:\n"
+            "актуальный курс THB/RUB недоступен.\n\n"
+            f"{FOOTER_LOCAL}"
+        )[:TELEGRAM_SOFT]
     if not top and not unverified_count:
         return ""
-    lines = ["🇹🇭 <b>ЛУЧШИЕ АЛЬТЕРНАТИВЫ В ТАИЛАНДЕ</b>", ""]
+    lines = ["🇹🇭 <b>ЛУЧШИЕ ПРЕДЛОЖЕНИЯ В ТАИЛАНДЕ ДО 300 000 ₽</b>", ""]
+    if cap:
+        lines.append("Лимит:")
+        lines.append(f"≤{_rub(int(cap.get('max_tracked_price_rub') or max_tracked_price_rub()))} ₽")
+        lines.append("")
+        lines.append("Найдено:")
+        lines.append(f"verified: {int(cap.get('verified_count') or 0)}")
+        lines.append(f"eligible до лимита: {int(cap.get('eligible_count') or 0)}")
+        lines.append(f"дороже лимита: {int(cap.get('over_cap_count') or 0)}")
+        lines.append("")
     urls: list[str] = []
     for i, row in enumerate(top[:limit], start=1):
         lines.append(f"{i}. {row.get('name') or '?'}")
@@ -216,7 +257,7 @@ def format_thailand_alternatives_message(
         lines.append(f"{_thb(row.get('price_thb'))} ฿")
         rub = row.get("price_rub")
         lines.append(f"≈ {_rub(rub) if rub is not None else 'н/д'} ₽")
-        lines.append(str(row.get("store") or "").upper())
+        lines.append(str(row.get("store_label") or store_display_label(row)))
         if row.get("availability_status") == "store_pickup_only":
             lines.append("pickup only")
         if row.get("international_score") is not None:
@@ -237,5 +278,6 @@ def format_thailand_alternatives_message(
     lines.append("")
     lines.append(FOOTER_LOCAL)
     lines.append(FOOTER_FX)
+    lines.append(FOOTER_CAP)
     text = "\n".join(lines).rstrip()
     return text[:TELEGRAM_SOFT]

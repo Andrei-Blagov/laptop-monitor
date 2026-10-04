@@ -18,7 +18,8 @@ class ThailandStoreAdapter:
 
 def get_thailand_adapters() -> list[ThailandStoreAdapter]:
     # Local imports avoid circular deps at package import time.
-    from thailand import advice, banana, jib
+    import config
+    from thailand import advice, banana, jib, lazada
 
     return [
         ThailandStoreAdapter(
@@ -38,5 +39,11 @@ def get_thailand_adapters() -> list[ThailandStoreAdapter]:
             display_name="BaNANA",
             enabled=True,
             collect=banana.collect,
+        ),
+        ThailandStoreAdapter(
+            slug="lazada",
+            display_name="Lazada",
+            enabled=bool(config.THAILAND_LAZADA_ENABLED),
+            collect=lazada.collect,
         ),
     ]

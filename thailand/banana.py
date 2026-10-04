@@ -248,73 +248,205 @@ def parse_banana_html(
     return offers
 
 
+def _dedupe(offers: list[ThailandOffer]) -> list[ThailandOffer]:
+    by_id: dict[str, ThailandOffer] = {}
+    for o in offers:
+        by_id.setdefault(o.external_id, o)
+    return list(by_id.values())
+
+
+def _collect_http(
+    client: httpx.Client,
+    *,
+    timeout: float,
+    collected_at: datetime,
+) -> tuple[list[ThailandOffer], list[str], str | None]:
+    """Returns offers, errors, mode (http|html|None)."""
+    offers: list[ThailandOffer] = []
+    errors: list[str] = []
+    mode: str | None = None
+    for url, gpu in (
+        (SEARCH_URLS[0], "RTX 5070 Ti"),
+        (SEARCH_URLS[1], "RTX 5080"),
+    ):
+        try:
+            resp = client.get(url, timeout=timeout)
+        except Exception as exc:  # noqa: BLE001
+            errors.append(type(exc).__name__)
+            continue
+        if resp.status_code >= 400:
+            errors.append(f"HTTP_{resp.status_code}")
+            continue
+        ct = (resp.headers.get("content-type") or "").lower()
+        if "json" in ct:
+            try:
+                batch = parse_banana_json_payload(
+                    resp.json(), catalog_gpu=gpu, collected_at=collected_at
+                )
+                offers.extend(batch)
+                if batch:
+                    mode = "http"
+            except ValueError:
+                errors.append("invalid_json")
+        else:
+            if looks_like_challenge_page(resp.text) or "Attention Required" in (
+                resp.text[:500] if resp.text else ""
+            ):
+                errors.append("blocked")
+                continue
+            batch = parse_banana_html(
+                resp.text, catalog_gpu=gpu, collected_at=collected_at
+            )
+            offers.extend(batch)
+            if batch:
+                mode = mode or "html"
+    return offers, errors, mode
+
+
+def _collect_browser(
+    *,
+    timeout: float,
+    collected_at: datetime,
+) -> tuple[list[ThailandOffer], list[str]]:
+    from thailand.browser import chromium_page
+
+    offers: list[ThailandOffer] = []
+    errors: list[str] = []
+    timeout_ms = int(max(5_000, timeout * 1000))
+    try:
+        with chromium_page(timeout_ms=timeout_ms) as page:
+            for url, gpu in (
+                (SEARCH_URLS[0], "RTX 5070 Ti"),
+                (SEARCH_URLS[1], "RTX 5080"),
+            ):
+                try:
+                    page.goto(url, wait_until="domcontentloaded", timeout=timeout_ms)
+                    page.wait_for_timeout(3000)
+                    html = page.content()
+                except Exception as exc:  # noqa: BLE001
+                    errors.append(type(exc).__name__)
+                    continue
+                title = ""
+                try:
+                    title = page.title() or ""
+                except Exception:  # noqa: BLE001
+                    pass
+                if (
+                    looks_like_challenge_page(html)
+                    or "Attention Required" in title
+                    or "Cloudflare" in title
+                ):
+                    errors.append("challenge")
+                    continue
+                batch = parse_banana_html(
+                    html, catalog_gpu=gpu, collected_at=collected_at
+                )
+                if not batch:
+                    # Visible card fallback: product links + text
+                    try:
+                        cards = page.evaluate(
+                            """() => [...document.querySelectorAll('a[href*=\"/th/p/\"]')]
+                            .slice(0, 40).map(a => ({
+                              href: a.href,
+                              name: (a.getAttribute('title') || a.innerText || '').trim(),
+                              text: (a.closest('div')?.innerText || a.innerText || '').slice(0, 500)
+                            }))"""
+                        )
+                    except Exception:  # noqa: BLE001
+                        cards = []
+                    for card in cards or []:
+                        name = str(card.get("name") or "").strip()
+                        href = str(card.get("href") or "").strip()
+                        text = str(card.get("text") or name)
+                        if not name or not href:
+                            continue
+                        eid = href.rstrip("/").split("/")[-1] or href
+                        price = parse_thb_price(text)
+                        raw = {
+                            "name": name,
+                            "external_id": eid,
+                            "url": href,
+                            "price_thb": price,
+                            "available": True,
+                            "availability_status": "in_stock",
+                            "source": "bnn_browser_dom",
+                        }
+                        offer = parse_banana_product_dict(
+                            raw, catalog_gpu=gpu, collected_at=collected_at
+                        )
+                        if offer:
+                            offer.metadata["collection_mode"] = "browser"
+                            batch.append(offer)
+                offers.extend(batch)
+    except Exception as exc:  # noqa: BLE001
+        errors.append(type(exc).__name__)
+    return offers, errors
+
+
 def collect(
     *,
     client: httpx.Client | None = None,
     timeout: float | None = None,
+    allow_browser: bool | None = None,
 ) -> StoreScanResult:
     timeout = float(
         timeout
         if timeout is not None
         else config.THAILAND_PER_STORE_TIMEOUT_SECONDS
     )
+    allow_browser = (
+        bool(config.THAILAND_BANANA_BROWSER_ENABLED)
+        if allow_browser is None
+        else bool(allow_browser)
+    )
     started = time.perf_counter()
     owns = client is None
     client = client or httpx.Client(
         headers=_headers(), follow_redirects=True, timeout=timeout
     )
+    collection_mode = "failed"
     try:
         now = datetime.now(timezone.utc)
-        offers: list[ThailandOffer] = []
-        errors: list[str] = []
-        for url, gpu in (
-            (SEARCH_URLS[0], "RTX 5070 Ti"),
-            (SEARCH_URLS[1], "RTX 5080"),
-        ):
-            try:
-                resp = client.get(url, timeout=timeout)
-            except Exception as exc:  # noqa: BLE001
-                errors.append(type(exc).__name__)
-                continue
-            if resp.status_code >= 400:
-                errors.append(f"HTTP_{resp.status_code}")
-                continue
-            ct = (resp.headers.get("content-type") or "").lower()
-            if "json" in ct:
-                try:
-                    offers.extend(
-                        parse_banana_json_payload(
-                            resp.json(), catalog_gpu=gpu, collected_at=now
-                        )
-                    )
-                except ValueError:
-                    errors.append("invalid_json")
-            else:
-                if looks_like_challenge_page(resp.text):
-                    errors.append("blocked")
-                    continue
-                offers.extend(
-                    parse_banana_html(resp.text, catalog_gpu=gpu, collected_at=now)
-                )
-        by_id: dict[str, ThailandOffer] = {}
-        for o in offers:
-            by_id.setdefault(o.external_id, o)
-        final = list(by_id.values())
-        if not final:
+        offers, errors, mode = _collect_http(client, timeout=timeout, collected_at=now)
+        if mode:
+            collection_mode = mode
+        # Browser fallback when HTTP blocked/empty (plain Chromium, no stealth).
+        http_blocked = any(
+            e.startswith("HTTP_403") or e in {"blocked", "challenge"} for e in errors
+        )
+        if not offers and allow_browser and (http_blocked or not mode):
+            b_offers, b_errors = _collect_browser(timeout=timeout, collected_at=now)
+            errors.extend(b_errors)
+            if b_offers:
+                offers = b_offers
+                collection_mode = "browser"
+            elif "challenge" in b_errors:
+                collection_mode = "failed"
+        final = _dedupe(offers)
+        # Split verified vs unverified
+        from thailand.verification import is_verified_for_ranking
+
+        verified = [o for o in final if is_verified_for_ranking(o)]
+        unverified = [o for o in final if not is_verified_for_ranking(o)]
+        if not verified:
             err = ",".join(errors) if errors else "no_target_offers"
             return StoreScanResult(
                 store=STORE,
                 ok=False,
                 offers=[],
+                unverified_candidates=unverified,
                 error=err,
                 duration_seconds=time.perf_counter() - started,
+                collection_mode=collection_mode,
             )
         return StoreScanResult(
             store=STORE,
             ok=True,
-            offers=final,
+            offers=verified,
+            unverified_candidates=unverified,
             error=",".join(errors) if errors else None,
             duration_seconds=time.perf_counter() - started,
+            collection_mode=collection_mode,
         )
     except Exception as exc:  # noqa: BLE001
         logger.warning("BaNANA collect failed: %s", type(exc).__name__)
@@ -324,6 +456,7 @@ def collect(
             offers=[],
             error=type(exc).__name__,
             duration_seconds=time.perf_counter() - started,
+            collection_mode="failed",
         )
     finally:
         if owns:

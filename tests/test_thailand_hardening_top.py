@@ -98,11 +98,12 @@ class TopHardeningTests(unittest.TestCase):
             availability_status="unknown",
         )
         mid = _offer(external_id="mid", price_thb=90000, gpu="RTX 5070 Ti")
+        # Keep under 300k RUB at 2.5 RUB/THB (cap = 120000 THB).
         high = _offer(
             external_id="high",
             name="X RTX 5080",
             gpu="RTX 5080",
-            price_thb=150000,
+            price_thb=110000,
         )
         top = build_thai_top([cheap_unverified, mid, high], fx=_fx())
         # 5080 GPU component outweighs cheaper 5070 Ti on intl score.

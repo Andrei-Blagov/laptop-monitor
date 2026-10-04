@@ -57,9 +57,24 @@ def is_target_laptop_gpu(gpu: str | None, *extra: str | None) -> bool:
     return matches_target_gpu(gpu, *extra)
 
 
+def is_accessory_listing(text: str) -> bool:
+    """True for bags/pads/cables/etc. mentioning target GPUs (false positives)."""
+    u = text.upper()
+    return bool(
+        re.search(
+            r"\b(COOLING\s*PAD|LAPTOP\s*BAG|BACKPACK|SLEEVE|MOUSE|KEYBOARD|"
+            r"CHARGER|ADAPTER|CABLE|STAND|DOCK|HUB|FOR\s+RTX)\b|"
+            r"กระเป๋า|แผ่นรอง|เมาส์|คีย์บอร์ด",
+            u,
+        )
+    )
+
+
 def exclude_non_target_gpu(text: str) -> bool:
     """True if text clearly indicates a non-target GPU (5050/5060/5070 non-Ti/5090/desktop)."""
     u = text.upper()
+    if is_accessory_listing(text):
+        return True
     # Desktop VGA / discrete graphics cards (Thai stores prefix VGA)
     if re.search(r"\bVGA\b|การ์ดแสดงผล|GRAPHICS\s*CARD|DESKTOP\s*GPU", u):
         return True
