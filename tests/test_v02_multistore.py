@@ -60,7 +60,7 @@ def _identity(**kwargs: object) -> ProductIdentity:
 
 class VersionTests(unittest.TestCase):
     def test_version_file(self) -> None:
-        self.assertEqual(get_version(), "0.2.0")
+        self.assertEqual(get_version(), "0.3.0")
 
     def test_cli_version(self) -> None:
         code = pipeline_main(["--version"])
@@ -82,7 +82,7 @@ class VersionTests(unittest.TestCase):
                     "SELECT app_version, instance_id FROM pipeline_runs WHERE id=?",
                     (rid,),
                 ).fetchone()
-                self.assertEqual(row["app_version"], "0.2.0")
+                self.assertEqual(row["app_version"], get_version())
                 self.assertEqual(row["instance_id"], "test")
 
 
@@ -407,7 +407,7 @@ class OpsNotifyFormat(unittest.TestCase):
             duration_seconds = 1.2
 
         text = format_ops_message(R())
-        self.assertIn("0.2.0", text)
+        self.assertIn(get_version(), text)
         self.assertIn("PARTIAL", text)
         self.assertIn("Regard", text)
 

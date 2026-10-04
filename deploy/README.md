@@ -153,7 +153,7 @@ Production OPS status:
 | Pipeline Events receiver (HMAC) | **active** |
 | Failure Alert (PARTIAL / FAILED) | **active** (same workflow, after HMAC) |
 | Host n8n watchdog | **active** |
-| Daily Digest v1 (09:00 Europe/Moscow) | **active** (summaries only; no detailed price history yet) |
+| Daily Digest v1 (09:00 Europe/Moscow) | **active** |
 
 Production n8n is pinned to app **2.42.1** via immutable image digest
 (see [`n8n/README.md`](n8n/README.md)). Do **not** use moving `:beta`.
@@ -231,20 +231,22 @@ sudo /usr/bin/python3 /opt/laptop-monitor/ops/n8n_watchdog.py --test-alert
     - test deliberately bad signature → reject;
     - only then set `N8N_WEBHOOK_URL` + `N8N_WEBHOOK_SECRET` and re-run or wait for next pipeline
 21. Enable systemd (order):
-    `enable --now laptop-monitor-control.service`,
-    then `laptop-monitor.timer`,
-    then `laptop-monitor-backup.timer`
-    (`enable --now` on the pipeline timer must **not** fire an immediate run)
+    start with `laptop-monitor-control.service`,
+    then `enable` + `start` `laptop-monitor.timer` under observation,
+    then `laptop-monitor-backup.timer`.
+    **`Persistent=true` MAY produce one catch-up activation** when the timer
+    is first started. Observe `laptop-monitor.service`; do **not** start a
+    second pipeline if catch-up already began.
 22. Confirm timers / control status / `docker ps --filter name=laptop-monitor-control`
 23. Confirm next scheduled pipeline elapse
-24. After confirmation: create git tag `v0.2.0` (not before)
+24. Tag a release only after production validation (see `CHANGELOG.md`)
 
 ## DNS / disabled stores
 
 - **DNS:** disabled — catalog HTTP 401, API 403, plain Playwright not usable.
   Future: official feed / partner API only (no anti-bot bypass).
 - **XCOM / Technopark:** disabled — captcha / 401–403.
-- Not blockers for v0.2.0 cutover.
+- Not required for current production releases.
 
 ## Single production instance
 

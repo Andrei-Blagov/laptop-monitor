@@ -1,28 +1,30 @@
 ﻿# Laptop Monitor
 
-Мониторинг цен на игровые ноутбуки (RTX 5070 Ti / RTX 5080 Laptop) с multi-store adapter architecture, матчингом моделей, ranking, Telegram alerts, remote control и optional n8n OPS webhooks.
+Мониторинг цен на игровые ноутбуки (RTX 5070 Ti / RTX 5080 Laptop) с multi-store adapter architecture, матчингом моделей, ranking v2, Telegram alerts / control, Price History charts и n8n OPS layer.
 
-**Version:** читается из файла `VERSION` (сейчас `0.2.0`) — единственный source of truth.
-**Production target:** Linux VPS через **clean release bundle** + Docker + systemd
+**Version:** читается из файла `VERSION` (сейчас `0.3.0`) — единственный source of truth.  
+**Production target:** Linux VPS через **clean release bundle** + Docker + systemd  
 **Windows:** только development / testing
 
 ---
 
-## Что умеет (v0.2.0)
+## Что умеет (v0.3.0)
 
 | Область | Описание |
 |---------|----------|
 | **Multi-store** | `StoreAdapter` registry. Enabled: Regard, ANDPRO, KNS, Citilink (experimental browser) |
 | **Region** | `MONITOR_REGION=moscow` — cross-store только по одной географии |
 | **Price semantics** | `Product.price` = публичная цена без membership/кредита/trade-in |
+| **Price cap** | User-facing TOP / alerts / cross-store: **≤ 300 000 ₽** (с v0.2.0) |
 | **Independent snapshots** | Успешный store сохраняется отдельно; failed ≠ «все unavailable» |
 | **Fresh TOP** | Только stores с последней попыткой `ok` и age ≤ `STORE_FRESHNESS_MAX_MINUTES` (180) |
 | **Matching** | Exact SKU / MPN / strong ID + config conflict; без fuzzy auto-match |
 | **CROSS_STORE** | Cheapest vs second among fresh offers; metadata содержит весь список |
-| **Ranking** | Explainable `priority_score`, Telegram TOP sort DESC |
-| **Control bot** | Long polling; Run / TOP / Status / Version; admin allowlist |
+| **Ranking v2** | Explainable score **0..100** + **confidence**; GPU / price-value / CPU / RAM / SSD / screen / historical opportunity / cross-store saving |
+| **Price History** | Telegram: карточка истории (v1) + PNG-графики 30 / 90 / all-time (v2), read-only |
+| **Control bot** | Long polling; Run / TOP / История цены / Status / Version; admin allowlist |
 | **Scheduler** | Primary: **systemd timer** → `run_pipeline.py`. Manual: Telegram bot |
-| **n8n** | Optional OPS webhook (`pipeline.completed` + HMAC); не единственный scheduler |
+| **n8n OPS** | Pipeline Events (HMAC) + Failure Alert + Daily Digest; host watchdog; pinned **2.42.1** immutable digest |
 | **Migration** | Явная команда `python -m scripts.migrate_db` |
 | **Deploy** | Clean tar.gz bundle → `/opt/laptop-monitor` |
 
@@ -70,6 +72,7 @@ MONITOR_REGION=moscow
 - `Product.price` — обычная публичная цена
 - `metadata.member_price` / `promo_price` / `credit_price` — при наличии
 - Cross-store и ranking используют только public price
+- Global tracking / TOP / alerts cap: `MAX_TRACKED_PRICE_RUB = 300000`
 
 ### Availability
 
@@ -85,15 +88,38 @@ MONITOR_REGION=moscow
 
 ---
 
-## Matching & ranking
+## Matching & ranking v2
 
-Приоритет идентификации: normalized SKU → MPN → alternative PN → strong ID → config compatibility.
+Приоритет идентификации: normalized SKU → MPN → alternative PN → strong ID → config compatibility.  
 Конфликт конфигурации блокирует плохой cluster.
 
-Ranking (config-driven веса): public price, GPU (5070 Ti / 5080), RAM, SSD, CPU class, screen, historical low, cross-store saving.
-Предпочтения: performance/cooling > вес; 17–18" желательно; 32GB RAM; SSD ≥1TB; HX CPU; ориентир ~200k.
+**Scoring v2** (после eligibility: fresh + available + valid price ≤ 300k):
 
-Telegram «Топ предложений»: только fresh enabled stores, score DESC, без дублей одной physical model, без stale cheapest.
+| Component | Max |
+|-----------|-----|
+| GPU / performance class | 25 |
+| Price / value vs GPU target | 25 |
+| CPU / platform class | 15 |
+| RAM | 10 |
+| SSD | 5 |
+| Screen / form-factor | 8 |
+| Historical opportunity | 8 |
+| Cross-store saving | 4 |
+| **Total** | **0..100** |
+
+Отдельно: **confidence 0..100** (полнота GPU/CPU/RAM/SSD/screen/history) — не часть score.
+
+Specs берутся из identity cache и title extraction; при необходимости — с любого offer в cluster (без выдумывания отсутствующих полей).
+
+Telegram «Топ предложений» и picker «История цены» используют один и тот же `rank_clusters`.
+
+---
+
+## Price History
+
+- **v1:** карточка модели — текущая лучшая цена, исторический минимум, дельты 7d/30d, per-store строки
+- **v2:** кнопка «График» → период 30 / 90 / all → PNG `sendPhoto` (matplotlib Agg, in-memory, step-function + availability gaps)
+- Strictly **read-only** (без pipeline / DB writes / alerts)
 
 ---
 
@@ -110,7 +136,20 @@ Stale не участвуют в TOP / cross-store saving. Нет fresh → «Н
 
 ## n8n (OPS layer)
 
-Primary schedule остаётся **systemd**. n8n — event receiver / digest / failure workflows / analytics.
+Primary schedule остаётся **systemd**. n8n — event receiver / digest / failure workflows.
+
+Production OPS (active):
+
+| Component | Role |
+|-----------|------|
+| Pipeline Events | HMAC-verified `pipeline.completed` |
+| Failure Alert | Telegram on PARTIAL / FAILED |
+| Daily Digest v1 | Morning summary from archived events |
+| Host n8n watchdog | Independent systemd health check |
+
+Production n8n image pinned to **2.42.1** immutable digest  
+`sha256:e7634e62f766044dc770460db8defdcd84034eb6d767dd6a1101d49fe98f814f`  
+(не `:beta`).
 
 ```
 N8N_WEBHOOK_URL=
@@ -118,11 +157,11 @@ N8N_WEBHOOK_SECRET=
 N8N_WEBHOOK_TIMEOUT_SECONDS=8
 ```
 
-Пустой URL → integration disabled. Ошибки webhook (timeout/5xx/DNS) **не** меняют pipeline status.
+Пустой URL → integration disabled. Ошибки webhook **не** меняют pipeline status.
 
 HMAC-SHA256: `X-Laptop-Monitor-Timestamp` + `X-Laptop-Monitor-Signature` over `timestamp + "." + raw_body`.
 
-Документация и JSON skeletons: [`deploy/n8n/README.md`](deploy/n8n/README.md).
+Документация: [`deploy/n8n/README.md`](deploy/n8n/README.md).
 
 **Не** монтировать `/var/run/docker.sock` в n8n. **Не** давать n8n shell control VPS.
 
@@ -140,11 +179,17 @@ Control bot при старте проверяет schema и завершает�
 
 ## Telegram control
 
-Кнопки: Запустить проверку | Топ | Статус | Версия
+Кнопки:
+
+- Запустить проверку
+- Топ предложений
+- История цены
+- Статус
+- Версия
 
 Env: `TELEGRAM_BOT_TOKEN`, `TELEGRAM_CHAT_ID`, `TELEGRAM_ADMIN_CHAT_ID`, `LAPTOP_MONITOR_INSTANCE`.
 
-HTTP ошибки Telegram логируются без URL с token. Real alerts в этом этапе разработки не отправляются на production.
+HTTP ошибки Telegram логируются без URL с token (httpx request logging silenced).
 
 ---
 
@@ -189,10 +234,9 @@ python -m scripts.build_deploy_bundle
 ./deploy/compose.sh build
 python -m scripts.migrate_db --db data/laptop_monitor.db
 ./deploy/compose.sh up -d control-bot
-./deploy/compose.sh run --rm pipeline python run_pipeline.py
 ```
 
-Полная cutover-последовательность: [`deploy/README.md`](deploy/README.md).
+Подробности: [`deploy/README.md`](deploy/README.md). Release history: [`CHANGELOG.md`](CHANGELOG.md).
 
 ---
 
@@ -205,10 +249,8 @@ python -m scripts.migrate_db --db data/laptop_monitor.db
 
 ---
 
-## Что не входит в этот этап (до cutover)
+## Out of scope / disabled stores
 
-- Подключение к VPS / SCP / перенос DB
-- enable systemd / tag `v0.2.0`
-- Import workflow в production n8n
-- Real Telegram alerts на production chat
-- Обход CAPTCHA / enable DNS / XCOM / Technopark без стабильного source
+- CAPTCHA bypass / stealth browser / fingerprint spoofing
+- Enable DNS / XCOM / Technopark без стабильного публичного source
+- Marketplace (Ozon / Wildberries) как primary price source

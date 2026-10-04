@@ -251,7 +251,9 @@ class N8nIntegrationTests(unittest.TestCase):
             self.assertEqual(len(calls), 1)
             self.assertEqual(calls[0]["event"], "pipeline.completed")
             self.assertEqual(calls[0]["status"], "failed")
-            self.assertEqual(calls[0]["app_version"], "0.2.0")
+            from version import get_version
+
+            self.assertEqual(calls[0]["app_version"], get_version())
 
 
 if __name__ == "__main__":

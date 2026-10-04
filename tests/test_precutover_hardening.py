@@ -81,12 +81,12 @@ class VersionSingleSourceTests(unittest.TestCase):
         text = (ROOT / "deploy" / "Dockerfile").read_text(encoding="utf-8")
         self.assertIn("ARG APP_VERSION", text)
         self.assertIn("${APP_VERSION}", text)
-        self.assertNotIn('"0.2.0"', text)
+        self.assertNotIn(f'"{get_version()}"', text)
 
     def test_compose_uses_env_version(self) -> None:
         text = (ROOT / "deploy" / "docker-compose.yml").read_text(encoding="utf-8")
         self.assertIn("LAPTOP_MONITOR_VERSION", text)
-        self.assertNotIn(":0.2.0", text)
+        self.assertNotIn(f":{get_version()}", text)
 
 
 class MigrateDbTests(unittest.TestCase):

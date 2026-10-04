@@ -17,6 +17,7 @@ ALLOWLIST_FILES = (
     "VERSION",
     "requirements.txt",
     "README.md",
+    "CHANGELOG.md",
     ".dockerignore",
     ".env.example",
     "admin_notify.py",
