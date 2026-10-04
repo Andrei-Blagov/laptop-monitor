@@ -146,6 +146,15 @@ docker ps --filter name=laptop-monitor-control
 
 Primary scheduler remains **systemd**. n8n receives `pipeline.completed` webhooks.
 
+Production OPS status:
+
+| Component | Status |
+|-----------|--------|
+| Pipeline Events receiver (HMAC) | **active** |
+| Failure Alert (PARTIAL / FAILED) | **active** (same workflow, after HMAC) |
+| Host n8n watchdog | **active** |
+| Daily digest | **disabled** (post-v0.2.0) |
+
 **Before** pointing laptop-monitor at n8n:
 
 1. Record the production **n8n version**.

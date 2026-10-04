@@ -5,10 +5,12 @@ Laptop Monitor keeps **systemd timer** as the primary scheduler and
 
 n8n is an optional automation / analytics layer:
 
-- receive `pipeline.completed` webhooks
-- branch SUCCESS / PARTIAL / FAILED
-- daily digest (skeleton)
-- failure alert workflows
+| Component | Status |
+|-----------|--------|
+| `pipeline.completed` receiver (HMAC) | **active** |
+| Failure alert (PARTIAL / FAILED) | **active** (inside receiver workflow) |
+| Host n8n watchdog (systemd) | **active** |
+| Daily digest | **disabled** (post-v0.2.0) |
 
 ## Security
 
@@ -33,27 +35,36 @@ N8N_WEBHOOK_TIMEOUT_SECONDS=8
 
 Empty `N8N_WEBHOOK_URL` disables the integration.
 
-On the n8n side (not in Git): set `LAPTOP_MONITOR_WEBHOOK_SECRET` to the same
-value, plus `NODE_FUNCTION_ALLOW_BUILTIN=crypto` and
-`N8N_BLOCK_ENV_ACCESS_IN_NODE=false` so the Code verifier can HMAC exact
-raw body bytes (`getBinaryDataBuffer`). See [`HMAC.md`](HMAC.md).
+On the n8n side (not in Git):
 
-Webhook failures (timeout / 5xx / DNS) are logged and **do not** change
+- `LAPTOP_MONITOR_WEBHOOK_SECRET` (same secret)
+- `NODE_FUNCTION_ALLOW_BUILTIN=crypto`
+- `N8N_BLOCK_ENV_ACCESS_IN_NODE=false`
+- `LAPTOP_MONITOR_TELEGRAM_BOT_TOKEN` / `LAPTOP_MONITOR_TELEGRAM_CHAT_ID`
+  for Failure Alert (direct Telegram; not stored in workflow JSON)
+
+See [`HMAC.md`](HMAC.md).
+
+Webhook failures (timeout / 4xx / 5xx / DNS) are logged and **do not** change
 pipeline SUCCESS/PARTIAL/FAILED.
+
+## Failure Alert
+
+Integrated into **Laptop Monitor — Pipeline Events** after HMAC verification.
+No separate public webhook.
+
+- Triggers only when `status` is `partial` or `failed`
+- SUCCESS → no failure notification
+- Dedupe key: `run_id` (workflow static data; one Telegram message per run)
+- Message text: see `integrations.n8n.format_failure_alert_message`
 
 ## Templates
 
-JSON skeletons in this directory are for import into a **separate** n8n
-instance during cutover. Do not import into production n8n until the
-controlled cutover stage.
-
-1. `pipeline-event-receiver.json` — webhook + HMAC check + status switch
-2. `daily-digest.json` — skeleton
-3. `failure-alert.json` — operational notification skeleton
-
-**HMAC setup:** see [`HMAC.md`](HMAC.md) for the exact verification recipe
-to wire into the receiver before import.
+1. `pipeline-event-receiver.json` — webhook + HMAC + status route + failure alert
+2. `failure-alert.json` — pointer/docs stub (logic lives in the receiver)
+3. `daily-digest.json` — skeleton (still disabled)
 
 ## Payload sketch
 
-See `integrations/n8n.py` → `build_pipeline_completed_payload`.
+See `integrations/n8n.py` → `build_pipeline_completed_payload`
+(includes optional `error_summary` and per-store `error`).

@@ -445,6 +445,7 @@ def _maybe_notify_n8n(
             messages_failed=result.messages_failed,
             top_deals=top_payload,
             adapters_meta=[a.meta_dict() for a in all_adapters()],
+            error_summary=result.error_message,
         )
         post_pipeline_webhook(payload)
     except Exception:

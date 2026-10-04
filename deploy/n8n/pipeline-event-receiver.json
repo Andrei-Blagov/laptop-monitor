@@ -14,25 +14,19 @@
       "name": "Webhook",
       "type": "n8n-nodes-base.webhook",
       "typeVersion": 2.1,
-      "position": [
-        0,
-        0
-      ],
+      "position": [0, 0],
       "webhookId": "laptop-monitor-pipeline"
     },
     {
       "parameters": {
         "mode": "runOnceForAllItems",
-        "jsCode": "// FAIL CLOSED HMAC — deploy/n8n/HMAC.md\n// Canonical: HMAC_SHA256(secret, timestamp + '.' + exact_raw_body_bytes)\n// NEVER use JSON.stringify(parsedBody) as a raw-body substitute.\nconst crypto = require('crypto');\n\nfunction reject(reason) {\n  return [{ json: { verified: false, error: reason } }];\n}\n\nconst secret = $env.LAPTOP_MONITOR_WEBHOOK_SECRET;\nif (!secret) return reject('missing_secret');\n\nconst item = $input.first();\nconst headers = (item.json && item.json.headers) ? item.json.headers : {};\nconst ts = headers['x-laptop-monitor-timestamp'] || headers['X-Laptop-Monitor-Timestamp'];\nconst sig = headers['x-laptop-monitor-signature'] || headers['X-Laptop-Monitor-Signature'];\nif (!ts) return reject('missing_timestamp');\nif (!sig) return reject('missing_signature');\nif (!item.binary || !item.binary.data) return reject('missing_raw_body');\n\nlet raw;\ntry {\n  raw = await this.helpers.getBinaryDataBuffer(0, 'data');\n} catch (e) {\n  return reject('missing_raw_body');\n}\nif (!raw || !Buffer.isBuffer(raw) || raw.length === 0) return reject('missing_raw_body');\n\nconst tsNum = Number(ts);\nif (!Number.isFinite(tsNum)) return reject('bad_timestamp');\nconst skew = Math.abs(Math.floor(Date.now() / 1000) - Math.floor(tsNum));\nif (skew > 300) return reject('timestamp_skew');\n\nconst expected = crypto\n  .createHmac('sha256', secret)\n  .update(Buffer.concat([\n    Buffer.from(String(ts), 'utf8'),\n    Buffer.from('.', 'utf8'),\n    raw,\n  ]))\n  .digest('hex');\n\nconst a = Buffer.from(expected, 'utf8');\nconst b = Buffer.from(String(sig), 'utf8');\nif (a.length !== b.length || !crypto.timingSafeEqual(a, b)) {\n  return reject('bad_signature');\n}\n\nlet payload;\ntry {\n  payload = JSON.parse(raw.toString('utf8'));\n} catch (e) {\n  return reject('invalid_json');\n}\n\nreturn [{\n  json: {\n    verified: true,\n    event: payload.event,\n    status: payload.status,\n    app_version: payload.app_version,\n    instance_id: payload.instance_id,\n    run_id: payload.run_id,\n    alerts_created: payload.alerts_created,\n    messages_sent: payload.messages_sent,\n    messages_failed: payload.messages_failed,\n    stores: payload.stores,\n    top_deals: payload.top_deals,\n  },\n}];\n"
+        "jsCode": "// FAIL CLOSED HMAC — deploy/n8n/HMAC.md\n// NEVER use JSON.stringify(parsedBody) as a raw-body substitute.\nconst crypto = require('crypto');\n\nfunction reject(reason) {\n  return [{ json: { verified: false, error: reason } }];\n}\n\nconst secret = $env.LAPTOP_MONITOR_WEBHOOK_SECRET;\nif (!secret) return reject('missing_secret');\n\nconst item = $input.first();\nconst headers = (item.json && item.json.headers) ? item.json.headers : {};\nconst ts = headers['x-laptop-monitor-timestamp'] || headers['X-Laptop-Monitor-Timestamp'];\nconst sig = headers['x-laptop-monitor-signature'] || headers['X-Laptop-Monitor-Signature'];\nif (!ts) return reject('missing_timestamp');\nif (!sig) return reject('missing_signature');\nif (!item.binary || !item.binary.data) return reject('missing_raw_body');\n\nlet raw;\ntry {\n  raw = await this.helpers.getBinaryDataBuffer(0, 'data');\n} catch (e) {\n  return reject('missing_raw_body');\n}\nif (!raw || !Buffer.isBuffer(raw) || raw.length === 0) return reject('missing_raw_body');\n\nconst tsNum = Number(ts);\nif (!Number.isFinite(tsNum)) return reject('bad_timestamp');\nconst skew = Math.abs(Math.floor(Date.now() / 1000) - Math.floor(tsNum));\nif (skew > 300) return reject('timestamp_skew');\n\nconst expected = crypto\n  .createHmac('sha256', secret)\n  .update(Buffer.concat([\n    Buffer.from(String(ts), 'utf8'),\n    Buffer.from('.', 'utf8'),\n    raw,\n  ]))\n  .digest('hex');\n\nconst a = Buffer.from(expected, 'utf8');\nconst b = Buffer.from(String(sig), 'utf8');\nif (a.length !== b.length || !crypto.timingSafeEqual(a, b)) {\n  return reject('bad_signature');\n}\n\nlet payload;\ntry {\n  payload = JSON.parse(raw.toString('utf8'));\n} catch (e) {\n  return reject('invalid_json');\n}\n\nreturn [{\n  json: {\n    verified: true,\n    event: payload.event,\n    status: payload.status,\n    app_version: payload.app_version,\n    instance_id: payload.instance_id,\n    run_id: payload.run_id,\n    started_at: payload.started_at,\n    finished_at: payload.finished_at,\n    error_summary: payload.error_summary,\n    alerts_created: payload.alerts_created,\n    messages_sent: payload.messages_sent,\n    messages_failed: payload.messages_failed,\n    stores: payload.stores,\n    top_deals: payload.top_deals,\n  },\n}];\n"
       },
       "id": "lm-hmac-001",
       "name": "Verify HMAC",
       "type": "n8n-nodes-base.code",
       "typeVersion": 2,
-      "position": [
-        260,
-        0
-      ]
+      "position": [260, 0]
     },
     {
       "parameters": {
@@ -62,10 +56,7 @@
       "name": "HMAC OK?",
       "type": "n8n-nodes-base.if",
       "typeVersion": 2,
-      "position": [
-        520,
-        0
-      ]
+      "position": [520, 0]
     },
     {
       "parameters": {
@@ -79,10 +70,7 @@
       "name": "Reject 401",
       "type": "n8n-nodes-base.respondToWebhook",
       "typeVersion": 1.1,
-      "position": [
-        780,
-        160
-      ]
+      "position": [780, 200]
     },
     {
       "parameters": {
@@ -167,10 +155,7 @@
       "name": "Status route",
       "type": "n8n-nodes-base.switch",
       "typeVersion": 3,
-      "position": [
-        780,
-        -40
-      ]
+      "position": [780, -40]
     },
     {
       "parameters": {
@@ -190,10 +175,7 @@
       "name": "Tag success",
       "type": "n8n-nodes-base.set",
       "typeVersion": 3.4,
-      "position": [
-        1040,
-        -200
-      ]
+      "position": [1040, -200]
     },
     {
       "parameters": {
@@ -213,10 +195,7 @@
       "name": "Tag partial",
       "type": "n8n-nodes-base.set",
       "typeVersion": 3.4,
-      "position": [
-        1040,
-        -40
-      ]
+      "position": [1040, -40]
     },
     {
       "parameters": {
@@ -236,10 +215,7 @@
       "name": "Tag failed",
       "type": "n8n-nodes-base.set",
       "typeVersion": 3.4,
-      "position": [
-        1040,
-        120
-      ]
+      "position": [1040, 120]
     },
     {
       "parameters": {
@@ -259,15 +235,23 @@
       "name": "Tag other",
       "type": "n8n-nodes-base.set",
       "typeVersion": 3.4,
-      "position": [
-        1040,
-        280
-      ]
+      "position": [1040, 280]
+    },
+    {
+      "parameters": {
+        "mode": "runOnceForAllItems",
+        "jsCode": "// Failure Alert — only after HMAC OK + status partial/failed\n// Dedupe key: run_id (workflow static data). Telegram via env (not workflow JSON).\nconst item = $input.first().json || {};\nconst status = String(item.status || '').toLowerCase();\n\nfunction safeSummary(text, limit = 160) {\n  if (text === undefined || text === null || text === '') return null;\n  let cleaned = String(text).replace(/\\s+/g, ' ').trim();\n  const lower = cleaned.toLowerCase();\n  if (lower.includes('api.telegram.org/bot') || lower.includes('bot_token') || lower.includes('webhook_secret')) {\n    const head = String(text).split(':', 1)[0].trim();\n    cleaned = head && !head.includes(' ') && head.length < 80 ? head : 'error redacted';\n  }\n  if (cleaned.length > limit) cleaned = cleaned.slice(0, limit - 1).trimEnd() + '…';\n  return cleaned || null;\n}\n\nfunction formatMsk(iso) {\n  if (!iso) return '—';\n  const d = new Date(iso);\n  if (Number.isNaN(d.getTime())) return String(iso);\n  const fmt = new Intl.DateTimeFormat('en-GB', {\n    timeZone: 'Europe/Moscow',\n    year: 'numeric', month: '2-digit', day: '2-digit',\n    hour: '2-digit', minute: '2-digit', second: '2-digit',\n    hour12: false,\n  });\n  const parts = Object.fromEntries(fmt.formatToParts(d).filter(p => p.type !== 'literal').map(p => [p.type, p.value]));\n  return `${parts.year}-${parts.month}-${parts.day} ${parts.hour}:${parts.minute}:${parts.second} MSK`;\n}\n\nfunction buildMessage(payload) {\n  const st = String(payload.status || '').toLowerCase();\n  if (st !== 'partial' && st !== 'failed') return null;\n  const timeTxt = formatMsk(payload.finished_at || payload.started_at);\n  const instance = String(payload.instance_id || 'unknown');\n  const runId = payload.run_id;\n  const stores = Array.isArray(payload.stores) ? payload.stores : [];\n  const problem = [];\n  const working = [];\n  for (const store of stores) {\n    const name = String(store.display_name || store.slug || 'store');\n    const sst = String(store.status || '').toLowerCase();\n    if (sst === 'ok' || sst === 'success') working.push(`• ${name} — OK`);\n    else {\n      const reason = safeSummary(store.error) || sst || 'failed';\n      problem.push(`• ${name} — FAILED: ${reason}`);\n    }\n  }\n  if (st === 'partial') {\n    return [\n      '⚠️ Laptop Monitor — PARTIAL', '',\n      `Время: ${timeTxt}`,\n      `Instance: ${instance}`,\n      `Run: ${runId}`, '',\n      'Проблемные магазины:',\n      ...(problem.length ? problem : ['• (не указаны)']), '',\n      'Работают:',\n      ...(working.length ? working : ['• (нет)']), '',\n      'Telegram:',\n      `sent: ${payload.messages_sent ?? '—'}`,\n      `failed: ${payload.messages_failed ?? '—'}`,\n    ].join('\\n');\n  }\n  const summary = safeSummary(payload.error_summary) || 'pipeline failed';\n  const storeLines = stores.length\n    ? stores.map((store) => {\n        const name = String(store.display_name || store.slug || 'store');\n        const sst = String(store.status || 'unknown').toUpperCase();\n        const err = safeSummary(store.error);\n        return `• ${name} — ${sst}` + (err ? `: ${err}` : '');\n      })\n    : ['• (нет данных)'];\n  return [\n    '🔴 Laptop Monitor — FAILED', '',\n    `Время: ${timeTxt}`,\n    `Instance: ${instance}`,\n    `Run: ${runId}`, '',\n    'Причина:', summary, '',\n    'Stores:', ...storeLines,\n  ].join('\\n');\n}\n\nif (status !== 'partial' && status !== 'failed') {\n  return [{ json: { ...item, failure_alert: 'skipped_not_failure' } }];\n}\n\nconst staticData = $getWorkflowStaticData('global');\nstaticData.lmFailureAlerts = staticData.lmFailureAlerts || {};\nconst runKey = String(item.run_id ?? '');\nif (runKey && staticData.lmFailureAlerts[runKey]) {\n  return [{ json: { ...item, failure_alert: 'deduped' } }];\n}\n\nconst text = buildMessage(item);\nif (!text) {\n  return [{ json: { ...item, failure_alert: 'skipped_not_failure' } }];\n}\n\nconst token = $env.LAPTOP_MONITOR_TELEGRAM_BOT_TOKEN;\nconst chatRaw = $env.LAPTOP_MONITOR_TELEGRAM_CHAT_ID || '';\nconst chatId = String(chatRaw).split(',')[0].trim();\nif (!token || !chatId) {\n  return [{ json: { ...item, failure_alert: 'telegram_env_missing' } }];\n}\n\ntry {\n  const resp = await this.helpers.httpRequest({\n    method: 'POST',\n    url: 'https://api.telegram.org/bot' + token + '/sendMessage',\n    headers: { 'content-type': 'application/json' },\n    body: {\n      chat_id: chatId,\n      text,\n      disable_web_page_preview: true,\n    },\n    json: true,\n    timeout: 10000,\n  });\n  if (!resp || resp.ok !== true) {\n    return [{ json: { ...item, failure_alert: 'telegram_rejected' } }];\n  }\n} catch (e) {\n  return [{ json: { ...item, failure_alert: 'telegram_error' } }];\n}\n\nif (runKey) {\n  staticData.lmFailureAlerts[runKey] = Date.now();\n  const keys = Object.keys(staticData.lmFailureAlerts);\n  if (keys.length > 200) {\n    keys.sort((a, b) => staticData.lmFailureAlerts[a] - staticData.lmFailureAlerts[b]);\n    for (const k of keys.slice(0, keys.length - 200)) delete staticData.lmFailureAlerts[k];\n  }\n}\n\nreturn [{ json: { ...item, failure_alert: 'sent' } }];\n"
+      },
+      "id": "lm-fail-001",
+      "name": "Failure alert",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [1300, 40]
     },
     {
       "parameters": {
         "respondWith": "json",
-        "responseBody": "={{ JSON.stringify({ ok: true, event: $json.event, status: $json.status, route: $json.route, run_id: $json.run_id }) }}",
+        "responseBody": "={{ JSON.stringify({ ok: true, event: $json.event, status: $json.status, route: $json.route, run_id: $json.run_id, failure_alert: $json.failure_alert || null }) }}",
         "options": {
           "responseCode": 200
         }
@@ -276,128 +260,44 @@
       "name": "Accept 200",
       "type": "n8n-nodes-base.respondToWebhook",
       "typeVersion": 1.1,
-      "position": [
-        1300,
-        0
-      ]
+      "position": [1560, 0]
     }
   ],
   "connections": {
     "Webhook": {
-      "main": [
-        [
-          {
-            "node": "Verify HMAC",
-            "type": "main",
-            "index": 0
-          }
-        ]
-      ]
+      "main": [[{ "node": "Verify HMAC", "type": "main", "index": 0 }]]
     },
     "Verify HMAC": {
-      "main": [
-        [
-          {
-            "node": "HMAC OK?",
-            "type": "main",
-            "index": 0
-          }
-        ]
-      ]
+      "main": [[{ "node": "HMAC OK?", "type": "main", "index": 0 }]]
     },
     "HMAC OK?": {
       "main": [
-        [
-          {
-            "node": "Status route",
-            "type": "main",
-            "index": 0
-          }
-        ],
-        [
-          {
-            "node": "Reject 401",
-            "type": "main",
-            "index": 0
-          }
-        ]
+        [{ "node": "Status route", "type": "main", "index": 0 }],
+        [{ "node": "Reject 401", "type": "main", "index": 0 }]
       ]
     },
     "Status route": {
       "main": [
-        [
-          {
-            "node": "Tag success",
-            "type": "main",
-            "index": 0
-          }
-        ],
-        [
-          {
-            "node": "Tag partial",
-            "type": "main",
-            "index": 0
-          }
-        ],
-        [
-          {
-            "node": "Tag failed",
-            "type": "main",
-            "index": 0
-          }
-        ],
-        [
-          {
-            "node": "Tag other",
-            "type": "main",
-            "index": 0
-          }
-        ]
+        [{ "node": "Tag success", "type": "main", "index": 0 }],
+        [{ "node": "Tag partial", "type": "main", "index": 0 }],
+        [{ "node": "Tag failed", "type": "main", "index": 0 }],
+        [{ "node": "Tag other", "type": "main", "index": 0 }]
       ]
     },
     "Tag success": {
-      "main": [
-        [
-          {
-            "node": "Accept 200",
-            "type": "main",
-            "index": 0
-          }
-        ]
-      ]
+      "main": [[{ "node": "Accept 200", "type": "main", "index": 0 }]]
     },
     "Tag partial": {
-      "main": [
-        [
-          {
-            "node": "Accept 200",
-            "type": "main",
-            "index": 0
-          }
-        ]
-      ]
+      "main": [[{ "node": "Failure alert", "type": "main", "index": 0 }]]
     },
     "Tag failed": {
-      "main": [
-        [
-          {
-            "node": "Accept 200",
-            "type": "main",
-            "index": 0
-          }
-        ]
-      ]
+      "main": [[{ "node": "Failure alert", "type": "main", "index": 0 }]]
     },
     "Tag other": {
-      "main": [
-        [
-          {
-            "node": "Accept 200",
-            "type": "main",
-            "index": 0
-          }
-        ]
-      ]
+      "main": [[{ "node": "Accept 200", "type": "main", "index": 0 }]]
+    },
+    "Failure alert": {
+      "main": [[{ "node": "Accept 200", "type": "main", "index": 0 }]]
     }
   },
   "settings": {
@@ -405,9 +305,9 @@
   },
   "active": false,
   "meta": {
-    "templateNote": "n8n 2.40.x: Webhook options.rawBody=true → binary.data; Code uses getBinaryDataBuffer(0,'data') + require('crypto'). Secret via $env.LAPTOP_MONITOR_WEBHOOK_SECRET (never hardcode). NEVER use JSON.stringify(parsedBody) as exact raw body."
+    "templateNote": "HMAC fail-closed + status routing + Failure Alert (PARTIAL/FAILED) with run_id dedupe. Telegram via LAPTOP_MONITOR_TELEGRAM_* env. NEVER use JSON.stringify(parsedBody) as exact raw body."
   },
   "id": "LmPipeEvntRecv01",
   "isArchived": false,
-  "versionId": "lm-pipe-v1"
+  "versionId": "lm-pipe-v2-failure-alert"
 }

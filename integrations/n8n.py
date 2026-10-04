@@ -16,6 +16,32 @@ from version import get_version
 
 logger = logging.getLogger(__name__)
 
+def safe_error_summary(text: str | None, *, limit: int = 160) -> str | None:
+    """Short, safe error text for OPS webhooks / Telegram (no secrets/trace floods)."""
+    if not text:
+        return None
+    cleaned = " ".join(str(text).split())
+    lower = cleaned.lower()
+    looks_secret = any(
+        marker in lower
+        for marker in (
+            "api.telegram.org/bot",
+            "bot_token",
+            "webhook_secret",
+            "authorization: ",
+        )
+    )
+    if looks_secret:
+        head = str(text).split(":", 1)[0].strip()
+        cleaned = (
+            head
+            if head and " " not in head and len(head) < 80
+            else "error redacted"
+        )
+    if len(cleaned) > limit:
+        cleaned = cleaned[: max(0, limit - 1)].rstrip() + "…"
+    return cleaned or None
+
 
 def build_pipeline_completed_payload(
     *,
@@ -30,22 +56,25 @@ def build_pipeline_completed_payload(
     messages_failed: int | None,
     top_deals: Sequence[Mapping[str, Any]] | None = None,
     adapters_meta: Sequence[Mapping[str, Any]] | None = None,
+    error_summary: str | None = None,
 ) -> dict[str, Any]:
     stores_out: list[dict[str, Any]] = []
     meta_by_slug = {str(m.get("slug")): m for m in (adapters_meta or [])}
     for slug, info in sorted((store_statuses or {}).items()):
         meta = meta_by_slug.get(slug) or {}
-        stores_out.append(
-            {
-                "slug": slug,
-                "display_name": meta.get("display_name") or slug,
-                "status": info.get("status"),
-                "products": info.get("products_count"),
-                "region": meta.get("region"),
-                "collection_mode": meta.get("collection_mode"),
-                "reliability": meta.get("reliability"),
-            }
-        )
+        store_err = safe_error_summary(info.get("error"))
+        entry: dict[str, Any] = {
+            "slug": slug,
+            "display_name": meta.get("display_name") or slug,
+            "status": info.get("status"),
+            "products": info.get("products_count"),
+            "region": meta.get("region"),
+            "collection_mode": meta.get("collection_mode"),
+            "reliability": meta.get("reliability"),
+        }
+        if store_err:
+            entry["error"] = store_err
+        stores_out.append(entry)
     tops: list[dict[str, Any]] = []
     for i, deal in enumerate(top_deals or [], start=1):
         tops.append(
@@ -58,7 +87,7 @@ def build_pipeline_completed_payload(
                 "url": deal.get("url"),
             }
         )
-    return {
+    payload: dict[str, Any] = {
         "event": "pipeline.completed",
         "app_version": get_version(),
         "instance_id": config.get_instance_id(),
@@ -74,6 +103,101 @@ def build_pipeline_completed_payload(
         "messages_failed": messages_failed,
         "top_deals": tops,
     }
+    summary = safe_error_summary(error_summary)
+    if summary:
+        payload["error_summary"] = summary
+    return payload
+
+
+def format_failure_alert_message(payload: Mapping[str, Any]) -> str | None:
+    """
+    Build Telegram text for PARTIAL/FAILED pipeline.completed events.
+    Returns None for success / unknown (no failure notification).
+    """
+    status = str(payload.get("status") or "").strip().lower()
+    if status not in {"partial", "failed"}:
+        return None
+
+    finished = payload.get("finished_at") or payload.get("started_at")
+    time_txt = _format_moscow(finished)
+    instance = str(payload.get("instance_id") or "unknown")
+    run_id = payload.get("run_id")
+    stores = list(payload.get("stores") or [])
+    sent = payload.get("messages_sent")
+    failed = payload.get("messages_failed")
+
+    problem: list[str] = []
+    working: list[str] = []
+    for store in stores:
+        name = str(store.get("display_name") or store.get("slug") or "store")
+        st = str(store.get("status") or "").lower()
+        if st in {"ok", "success"}:
+            working.append(f"• {name} — OK")
+        else:
+            reason = safe_error_summary(store.get("error")) or st or "failed"
+            problem.append(f"• {name} — FAILED: {reason}")
+
+    if status == "partial":
+        lines = [
+            "⚠️ Laptop Monitor — PARTIAL",
+            "",
+            f"Время: {time_txt}",
+            f"Instance: {instance}",
+            f"Run: {run_id}",
+            "",
+            "Проблемные магазины:",
+        ]
+        lines.extend(problem or ["• (не указаны)"])
+        lines.extend(["", "Работают:"])
+        lines.extend(working or ["• (нет)"])
+        lines.extend(
+            [
+                "",
+                "Telegram:",
+                f"sent: {sent if sent is not None else '—'}",
+                f"failed: {failed if failed is not None else '—'}",
+            ]
+        )
+        return "\n".join(lines)
+
+    summary = safe_error_summary(payload.get("error_summary")) or "pipeline failed"
+    lines = [
+        "🔴 Laptop Monitor — FAILED",
+        "",
+        f"Время: {time_txt}",
+        f"Instance: {instance}",
+        f"Run: {run_id}",
+        "",
+        "Причина:",
+        summary,
+        "",
+        "Stores:",
+    ]
+    if stores:
+        for store in stores:
+            name = str(store.get("display_name") or store.get("slug") or "store")
+            st = str(store.get("status") or "unknown").upper()
+            err = safe_error_summary(store.get("error"))
+            lines.append(f"• {name} — {st}" + (f": {err}" if err else ""))
+    else:
+        lines.append("• (нет данных)")
+    return "\n".join(lines)
+
+
+def _format_moscow(iso_value: Any) -> str:
+    from datetime import datetime, timedelta, timezone
+
+    if not iso_value:
+        return "—"
+    try:
+        text = str(iso_value).replace("Z", "+00:00")
+        dt = datetime.fromisoformat(text)
+        if dt.tzinfo is None:
+            dt = dt.replace(tzinfo=timezone.utc)
+        msk = timezone(timedelta(hours=3))
+        return dt.astimezone(msk).strftime("%Y-%m-%d %H:%M:%S MSK")
+    except ValueError:
+        return str(iso_value)
 
 
 def sign_webhook(body: bytes, secret: str, *, timestamp: str | None = None) -> tuple[str, str]:
