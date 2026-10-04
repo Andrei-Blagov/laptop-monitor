@@ -24,6 +24,7 @@ COPY *.py ./
 COPY parsers/ ./parsers/
 COPY stores/ ./stores/
 COPY integrations/ ./integrations/
+COPY thailand/ ./thailand/
 COPY scripts/__init__.py ./scripts/__init__.py
 COPY scripts/backup_db.py ./scripts/backup_db.py
 COPY scripts/migrate_db.py ./scripts/migrate_db.py
