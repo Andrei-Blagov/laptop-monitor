@@ -48,11 +48,11 @@ Reject (do not route SUCCESS / PARTIAL / FAILED) when any of:
 Only after successful verification: branch on `status`
 (`success` | `partial` | `failed`).
 
-## Production recipe (verified on n8n 2.40.2)
+## Production recipe (verified on n8n 2.42.1)
 
 | Item | Value |
 |------|--------|
-| Image | `docker.n8n.io/n8nio/n8n:beta` → app **2.40.2** |
+| Image (pinned) | `docker.n8n.io/n8nio/n8n@sha256:e7634e62f766044dc770460db8defdcd84034eb6d767dd6a1101d49fe98f814f` → app **2.42.1** |
 | Exact raw body | Webhook node **Options → Raw Body = true** |
 | Binary property | `data` (`item.binary.data`) |
 | Read bytes in Code | `await this.helpers.getBinaryDataBuffer(0, 'data')` |
@@ -60,6 +60,11 @@ Only after successful verification: branch on `status`
 | Required n8n env | `NODE_FUNCTION_ALLOW_BUILTIN=crypto` |
 | Secret env | `LAPTOP_MONITOR_WEBHOOK_SECRET` (also set `N8N_BLOCK_ENV_ACCESS_IN_NODE=false`) |
 | Production path | `/webhook/laptop-monitor-pipeline` |
+
+**Pinning:** do **not** use the moving tag `docker.n8n.io/n8nio/n8n:beta`.
+That tag drifted production from **2.40.2 → 2.42.1** on recreate.
+Keep the immutable digest above so `docker compose up -d` / recreate
+cannot pull a newer n8n unexpectedly.
 
 Do **not** read `$binary.data.data` base64 manually when filesystem/binary-mode
 storage is enabled — prefer `getBinaryDataBuffer`.
@@ -136,5 +141,6 @@ Complete this on the **real** n8n instance during cutover:
 8. Only then set `N8N_WEBHOOK_URL` + `N8N_WEBHOOK_SECRET` in
    laptop-monitor `.env`. Until then keep `N8N_WEBHOOK_URL=` empty.
 
-Template `pipeline-event-receiver.json` implements this recipe for n8n 2.40.x.
+Template `pipeline-event-receiver.json` implements this recipe for n8n 2.42.x
+(also verified earlier on 2.40.2).
 **NEVER use JSON.stringify(parsedBody)** as the HMAC input.

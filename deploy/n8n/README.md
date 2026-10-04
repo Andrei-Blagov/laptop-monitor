@@ -12,6 +12,17 @@ n8n is an optional automation / analytics layer:
 | Host n8n watchdog (systemd) | **active** |
 | Daily Digest v1 (09:00 Europe/Moscow) | **active** |
 
+## Production n8n image pin
+
+| Item | Value |
+|------|--------|
+| App version | **2.42.1** |
+| Image reference | `docker.n8n.io/n8nio/n8n@sha256:e7634e62f766044dc770460db8defdcd84034eb6d767dd6a1101d49fe98f814f` |
+
+Reason: the moving tag `:beta` caused automatic version drift
+**2.40.2 → 2.42.1** during container recreate. Production compose must keep
+this immutable digest (VPS `/opt/n8n/docker-compose.yml`, not in this repo).
+
 ## Security
 
 - Do **not** mount `/var/run/docker.sock` into n8n

@@ -155,6 +155,9 @@ Production OPS status:
 | Host n8n watchdog | **active** |
 | Daily Digest v1 (09:00 Europe/Moscow) | **active** (summaries only; no detailed price history yet) |
 
+Production n8n is pinned to app **2.42.1** via immutable image digest
+(see [`n8n/README.md`](n8n/README.md)). Do **not** use moving `:beta`.
+
 **Before** pointing laptop-monitor at n8n:
 
 1. Record the production **n8n version**.
