@@ -38,14 +38,23 @@ from storage import (
 )
 from admin_notify import maybe_notify_ops_failure
 from comparison import match_products
-from deal_ranking import rank_clusters
+from deal_ranking import (
+    collect_match_product_ids,
+    historical_mins_from_rows,
+    rank_clusters,
+)
 from integrations.n8n import (
     build_pipeline_completed_payload,
     post_pipeline_webhook,
 )
 from store_freshness import get_fresh_store_slugs
 from stores.registry import all_adapters
-from storage import get_all_identifiers, get_all_products, get_latest_store_runs_readonly
+from storage import (
+    get_all_identifiers,
+    get_all_products,
+    get_latest_store_runs_readonly,
+    get_price_history_for_products_readonly,
+)
 from telegram_sender import MessageSender
 from version import APP_NAME, get_version
 import config
@@ -418,8 +427,15 @@ def _maybe_notify_n8n(
                 products = get_all_products(db_path)
                 identifiers = get_all_identifiers(db_path)
                 comparison = match_products(products, identifiers)
+                pids = collect_match_product_ids(comparison.matches)
+                hist_mins = historical_mins_from_rows(
+                    get_price_history_for_products_readonly(db_path, pids)
+                )
                 deals = rank_clusters(
-                    comparison.matches, fresh_stores=fresh, limit=10
+                    comparison.matches,
+                    fresh_stores=fresh,
+                    limit=10,
+                    historical_mins=hist_mins,
                 )
                 top_payload = [
                     {
@@ -427,6 +443,7 @@ def _maybe_notify_n8n(
                         "store": d.store,
                         "price": d.price,
                         "score": d.score,
+                        "confidence": d.confidence,
                         "url": d.url,
                     }
                     for d in deals

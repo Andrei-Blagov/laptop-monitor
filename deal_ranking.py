@@ -1,9 +1,9 @@
 from __future__ import annotations
 
-"""Explainable deal ranking for TOP / Telegram priority."""
+"""Explainable deal ranking v2 for TOP / Telegram / n8n / history picker."""
 
 from dataclasses import dataclass, field
-from typing import Any, Mapping, Sequence
+from typing import Any, Iterable, Mapping, Sequence
 
 import config
 
@@ -24,80 +24,308 @@ class RankedDeal:
     ram_gb: int | None = None
     ssd_gb: int | None = None
     screen_inch: float | None = None
+    # v2 additions (backward-compatible extras)
+    cpu: str | None = None
+    confidence: int = 0
+    score_breakdown: dict[str, float] = field(default_factory=dict)
+    historical_min: int | None = None
+    screen_resolution: str | None = None
 
 
-def _gpu_bonus(gpu: str | None) -> tuple[float, str | None]:
+@dataclass
+class ScoreResult:
+    """score_offer return value; unpacks as (score, reasons) for compatibility."""
+
+    score: float
+    reasons: list[str]
+    confidence: int = 0
+    breakdown: dict[str, float] = field(default_factory=dict)
+
+    def __iter__(self):
+        yield self.score
+        yield self.reasons
+
+
+def _clamp(value: float, low: float, high: float) -> float:
+    return max(low, min(high, value))
+
+
+def canonical_gpu(gpu: str | None) -> str | None:
     if not gpu:
-        return 0.0, None
-    g = gpu.upper()
+        return None
+    g = gpu.upper().replace("GEFORCE", " ").replace("LAPTOP", " ").replace("MOBILE", " ")
+    g = " ".join(g.split())
     if "5080" in g and "TI" not in g:
-        return float(config.RANK_GPU_5080_BONUS), "+ RTX 5080"
+        return "RTX 5080"
     if "5070" in g and "TI" in g:
-        return float(config.RANK_GPU_5070TI_BONUS), "+ RTX 5070 Ti"
+        return "RTX 5070 Ti"
+    return None
+
+
+def target_price_for_gpu(gpu: str | None) -> int | None:
+    key = canonical_gpu(gpu)
+    if key is None:
+        return None
+    raw = config.TARGET_PRICES.get(key)
+    return int(raw) if raw is not None else None
+
+
+def score_gpu(gpu: str | None) -> tuple[float, str | None]:
+    key = canonical_gpu(gpu)
+    if key == "RTX 5080":
+        return float(config.SCORE_GPU_5080), "RTX 5080"
+    if key == "RTX 5070 Ti":
+        return float(config.SCORE_GPU_5070TI), "RTX 5070 Ti"
     return 0.0, None
 
 
-def _ram_bonus(ram_gb: int | None) -> tuple[float, str | None]:
+def score_price_value(price: int | None, gpu: str | None) -> tuple[float, str | None]:
+    """Smooth 0..SCORE_PRICE_MAX vs GPU-specific target."""
+    if price is None or price <= 0:
+        return 0.0, None
+    target = target_price_for_gpu(gpu)
+    if target is None or target <= 0:
+        return 0.0, None
+    max_pts = float(config.SCORE_PRICE_MAX)
+    at_target = float(config.SCORE_PRICE_AT_TARGET)
+    if price <= target:
+        discount = (target - price) / target
+        span = max(float(config.SCORE_PRICE_UNDER_SPAN), 1e-6)
+        pts = at_target + (max_pts - at_target) * _clamp(discount / span, 0.0, 1.0)
+        if discount >= 0.03:
+            reason = "цена ниже target"
+        else:
+            reason = "цена близко к целевой"
+        return round(_clamp(pts, 0.0, max_pts), 2), reason
+    over = (price - target) / target
+    zero_at = max(float(config.SCORE_PRICE_OVER_ZERO_AT), 1e-6)
+    pts = at_target * max(0.0, 1.0 - over / zero_at)
+    if over <= 0.08:
+        reason = "цена немного выше target"
+    elif over <= 0.20:
+        reason = "цена выше target"
+    else:
+        reason = None
+    return round(_clamp(pts, 0.0, max_pts), 2), reason
+
+
+def classify_cpu(cpu: str | None) -> tuple[float, str | None]:
+    """Deterministic explainable CPU class — not a benchmark claim."""
+    if not cpu:
+        return 0.0, None
+    u = " ".join(str(cpu).upper().replace("Ё", "Е").split())
+    if "HX" in u:
+        return float(config.SCORE_CPU_HIGH_END_HX), "мощный HX-процессор"
+    if "RYZEN AI" in u:
+        return float(config.SCORE_CPU_STRONG_H), "производительный Ryzen AI"
+    if "ULTRA 9" in u:
+        return float(config.SCORE_CPU_STRONG_H), "мощный Core Ultra"
+    if "ULTRA 7" in u or "ULTRA 5" in u:
+        return float(config.SCORE_CPU_STRONG_H), "производительный Core Ultra"
+    if "RYZEN 9" in u:
+        return float(config.SCORE_CPU_STRONG_H), "производительный Ryzen 9"
+    # Intel Core 7/i7 H-class (e.g. 240H)
+    if (
+        "CORE 7" in u
+        or "CORE I7" in u
+        or " I7 " in f" {u} "
+        or u.endswith("I7")
+    ) and (
+        "H" in u.replace("HX", "")
+        or any(tok.endswith("H") for tok in u.split() if tok[:1].isdigit())
+    ):
+        return float(config.SCORE_CPU_STRONG_H), "производительный H-процессор"
+    if "RYZEN 7" in u and ("H" in u or "HS" in u):
+        return float(config.SCORE_CPU_STRONG_H), "производительный Ryzen"
+    if "CORE I9" in u or " I9 " in f" {u} ":
+        return float(config.SCORE_CPU_STRONG_H), "производительный Intel"
+    if "RYZEN 7" in u or "RYZEN 5" in u or "ULTRA" in u or "CORE I5" in u:
+        return float(config.SCORE_CPU_MID), "средний CPU-класс"
+    if "CORE" in u or "RYZEN" in u or "INTEL" in u or "AMD" in u:
+        return float(config.SCORE_CPU_LOWER), None
+    return 0.0, None
+
+
+def score_ram(ram_gb: int | None) -> tuple[float, str | None]:
     if ram_gb is None:
         return 0.0, None
+    if ram_gb >= 64:
+        return float(config.SCORE_RAM_64), f"{ram_gb}GB RAM"
     if ram_gb >= 32:
-        return float(config.RANK_RAM_32_BONUS), f"+ {ram_gb}GB RAM"
+        return float(config.SCORE_RAM_32), f"{ram_gb}GB RAM"
     if ram_gb >= 16:
-        return float(config.RANK_RAM_16_BONUS), f"+ {ram_gb}GB RAM"
+        return float(config.SCORE_RAM_16), f"{ram_gb}GB RAM"
     return 0.0, None
 
 
-def _ssd_bonus(ssd_gb: int | None) -> tuple[float, str | None]:
+def score_ssd(ssd_gb: int | None) -> tuple[float, str | None]:
     if ssd_gb is None:
         return 0.0, None
+    if ssd_gb >= 2000:
+        return float(config.SCORE_SSD_2TB), "2TB SSD"
     if ssd_gb >= 1000:
-        return float(config.RANK_SSD_1TB_BONUS), f"+ {ssd_gb}GB SSD"
+        return float(config.SCORE_SSD_1TB), "1TB SSD"
+    if ssd_gb >= 512:
+        return float(config.SCORE_SSD_512), "512GB SSD"
     return 0.0, None
 
 
-def _screen_bonus(inch: float | None) -> tuple[float, str | None]:
-    if inch is None:
+def _is_qhd_class(resolution: str | None) -> bool:
+    if not resolution:
+        return False
+    text = resolution.upper().replace("×", "X").replace("*", "X")
+    if "QHD" in text or "WQXGA" in text or "1600" in text:
+        return True
+    if "2560" in text and ("1600" in text or "1440" in text):
+        return True
+    return False
+
+
+def score_screen(
+    screen_inch: float | None,
+    screen_resolution: str | None = None,
+) -> tuple[float, str | None]:
+    if screen_inch is None:
+        base = 0.0
+        reason = None
+    elif screen_inch >= 18:
+        base = float(config.SCORE_SCREEN_18)
+        reason = f'{screen_inch:g}"'
+    elif screen_inch >= 17:
+        base = float(config.SCORE_SCREEN_17)
+        reason = f'{screen_inch:g}"'
+    elif screen_inch >= 16:
+        base = float(config.SCORE_SCREEN_16)
+        reason = f'{screen_inch:g}"'
+    elif screen_inch >= 15.5:
+        base = float(config.SCORE_SCREEN_156)
+        reason = f'{screen_inch:g}"'
+    else:
+        base = 0.0
+        reason = None
+    pts = base
+    if _is_qhd_class(screen_resolution):
+        pts = min(float(config.SCORE_SCREEN_MAX), pts + float(config.SCORE_SCREEN_QHD_BONUS))
+        if reason:
+            reason = f"{reason} QHD"
+        else:
+            reason = "QHD"
+    return round(pts, 2), reason
+
+
+def score_historical_opportunity(
+    current_price: int | None,
+    historical_min: int | None,
+    *,
+    is_historical_low: bool = False,
+) -> tuple[float, str | None]:
+    if is_historical_low and (historical_min is None or current_price is None):
+        return float(config.SCORE_HISTORY_MAX), "цена у исторического минимума"
+    if current_price is None or historical_min is None or historical_min <= 0:
         return 0.0, None
-    if inch >= 17:
-        return float(config.RANK_SCREEN_17_BONUS), f"+ {inch:g}\""
-    if inch >= 16:
-        return float(config.RANK_SCREEN_16_BONUS), f"+ {inch:g}\""
+    ratio = current_price / float(historical_min)
+    if ratio <= 1.01:
+        return float(config.SCORE_HISTORY_WITHIN_1PCT), "цена близка к минимуму"
+    if ratio <= 1.03:
+        return float(config.SCORE_HISTORY_WITHIN_3PCT), "в 3% от исторического минимума"
+    if ratio <= 1.05:
+        return float(config.SCORE_HISTORY_WITHIN_5PCT), "в 5% от исторического минимума"
+    if ratio <= 1.10:
+        return float(config.SCORE_HISTORY_WITHIN_10PCT), "в 10% от исторического минимума"
     return 0.0, None
 
 
-def _price_value_score(
-    price: int | None,
+def score_cross_store_saving(saving_vs_next: int | None) -> tuple[float, str | None]:
+    if saving_vs_next is None:
+        return 0.0, None
+    saving = int(saving_vs_next)
+    if saving < int(config.SCORE_SAVING_TIER_1):
+        return 0.0, None
+    if saving < int(config.SCORE_SAVING_TIER_2):
+        pts = 1.0
+    elif saving < int(config.SCORE_SAVING_TIER_3):
+        pts = 2.0
+    elif saving < int(config.SCORE_SAVING_TIER_4):
+        pts = 3.0
+    else:
+        pts = float(config.SCORE_SAVING_MAX)
+    return pts, None
+
+
+def compute_confidence(
+    *,
     gpu: str | None,
-) -> tuple[float, list[str]]:
-    reasons: list[str] = []
-    if price is None:
-        return 0.0, reasons
-    target = None
-    if gpu:
-        g = gpu.upper()
-        if "5080" in g and "TI" not in g:
-            target = config.TARGET_PRICES.get("RTX 5080")
-        elif "5070" in g and "TI" in g:
-            target = config.TARGET_PRICES.get("RTX 5070 Ti")
-    score = 0.0
-    if target is not None:
-        # Closer / under target → higher score (cap 40).
-        delta = target - price
-        pts = max(-20.0, min(40.0, delta / 5000.0 * 10.0))
-        score += pts
-        if delta >= 0:
-            reasons.append(f"+ цена ≤ target ({price:,} ≤ {target:,})".replace(",", " "))
-        elif delta > -50_000:
-            reasons.append("+ цена близко к target")
-    # Budget anchor ~200k
-    budget = int(config.RANK_BUDGET_ANCHOR_RUB)
-    if price <= budget:
-        score += float(config.RANK_BUDGET_UNDER_BONUS)
-        reasons.append(f"+ в бюджете ≤ {budget:,}".replace(",", " "))
-    elif price <= budget * 1.25:
-        score += float(config.RANK_BUDGET_NEAR_BONUS)
-        reasons.append("+ около бюджета")
-    return score, reasons
+    cpu: str | None,
+    ram_gb: int | None,
+    ssd_gb: int | None,
+    screen_inch: float | None,
+    historical_min: int | None,
+) -> int:
+    flags = [
+        canonical_gpu(gpu) is not None or bool(gpu),
+        bool(cpu),
+        ram_gb is not None,
+        ssd_gb is not None,
+        screen_inch is not None,
+        historical_min is not None,
+    ]
+    known = sum(1 for f in flags if f)
+    return int(round(100.0 * known / len(flags)))
+
+
+def historical_mins_from_rows(
+    histories: Mapping[int, Sequence[Mapping[str, Any]]],
+) -> dict[int, int]:
+    """Pure helper: product_id → all-time valid historical minimum price."""
+    out: dict[int, int] = {}
+    for pid, rows in histories.items():
+        best: int | None = None
+        for row in rows:
+            try:
+                price = int(row.get("price"))
+            except (TypeError, ValueError):
+                continue
+            if price <= 0:
+                continue
+            if best is None or price < best:
+                best = price
+        if best is not None:
+            out[int(pid)] = best
+    return out
+
+
+def collect_match_product_ids(matches: Sequence[Any]) -> list[int]:
+    ids: list[int] = []
+    seen: set[int] = set()
+    for match in matches:
+        for offer in getattr(match, "offers", []) or []:
+            pid = getattr(offer, "product_id", None)
+            if pid is None:
+                continue
+            ipid = int(pid)
+            if ipid not in seen:
+                seen.add(ipid)
+                ids.append(ipid)
+    return ids
+
+
+def cluster_historical_min(
+    match: Any,
+    historical_mins: Mapping[int, int] | None,
+) -> int | None:
+    if not historical_mins:
+        return None
+    values: list[int] = []
+    for offer in getattr(match, "offers", []) or []:
+        pid = getattr(offer, "product_id", None)
+        if pid is None:
+            continue
+        value = historical_mins.get(int(pid))
+        if value is not None:
+            values.append(int(value))
+    if not values:
+        return None
+    return min(values)
 
 
 def score_offer(
@@ -109,46 +337,139 @@ def score_offer(
     screen_inch: float | None = None,
     saving_vs_next: int | None = None,
     is_historical_low: bool = False,
-) -> tuple[float, list[str]]:
-    score = 0.0
+    cpu: str | None = None,
+    screen_resolution: str | None = None,
+    historical_min: int | None = None,
+) -> ScoreResult:
+    breakdown: dict[str, float] = {
+        "gpu": 0.0,
+        "price": 0.0,
+        "cpu": 0.0,
+        "ram": 0.0,
+        "ssd": 0.0,
+        "screen": 0.0,
+        "history": 0.0,
+        "saving": 0.0,
+    }
     reasons: list[str] = []
 
-    pv, pr = _price_value_score(price, gpu)
-    score += pv
-    reasons.extend(pr)
+    g_pts, g_reason = score_gpu(gpu)
+    breakdown["gpu"] = g_pts
+    if g_reason:
+        reasons.append(g_reason)
 
-    b, r = _gpu_bonus(gpu)
-    score += b
-    if r:
-        reasons.append(r)
+    p_pts, p_reason = score_price_value(price, gpu)
+    breakdown["price"] = p_pts
+    if p_reason:
+        reasons.append(p_reason)
 
-    b, r = _ram_bonus(ram_gb)
-    score += b
-    if r:
-        reasons.append(r)
+    c_pts, c_reason = classify_cpu(cpu)
+    breakdown["cpu"] = c_pts
+    if c_reason:
+        reasons.append(c_reason)
 
-    b, r = _ssd_bonus(ssd_gb)
-    score += b
-    if r:
-        reasons.append(r)
+    r_pts, r_reason = score_ram(ram_gb)
+    breakdown["ram"] = r_pts
+    if r_reason:
+        reasons.append(r_reason)
 
-    b, r = _screen_bonus(screen_inch)
-    score += b
-    if r:
-        reasons.append(r)
+    s_pts, s_reason = score_ssd(ssd_gb)
+    breakdown["ssd"] = s_pts
+    if s_reason:
+        reasons.append(s_reason)
 
-    if saving_vs_next and saving_vs_next >= int(config.CROSS_STORE_DIFFERENCE_RUB):
-        pts = min(25.0, saving_vs_next / 1000.0)
-        score += pts
-        reasons.append(
-            f"+ дешевле следующего магазина на {saving_vs_next:,} ₽".replace(",", " ")
+    sc_pts, sc_reason = score_screen(screen_inch, screen_resolution)
+    breakdown["screen"] = sc_pts
+    if sc_reason:
+        reasons.append(sc_reason)
+
+    h_pts, h_reason = score_historical_opportunity(
+        price, historical_min, is_historical_low=is_historical_low
+    )
+    breakdown["history"] = h_pts
+    if h_reason:
+        reasons.append(h_reason)
+
+    sv_pts, _ = score_cross_store_saving(saving_vs_next)
+    breakdown["saving"] = sv_pts
+
+    total = round(sum(breakdown.values()), 2)
+    total = round(_clamp(total, 0.0, 100.0), 2)
+    confidence = compute_confidence(
+        gpu=gpu,
+        cpu=cpu,
+        ram_gb=ram_gb,
+        ssd_gb=ssd_gb,
+        screen_inch=screen_inch,
+        historical_min=historical_min,
+    )
+    # Keep 4–5 most useful reasons; GPU/price/history first if present.
+    reasons = _select_reasons(reasons, breakdown)
+    return ScoreResult(
+        score=total,
+        reasons=reasons,
+        confidence=confidence,
+        breakdown=breakdown,
+    )
+
+
+def _select_reasons(reasons: list[str], breakdown: Mapping[str, float]) -> list[str]:
+    if len(reasons) <= 5:
+        return reasons
+    # Prefer hardware + value signals already appended in priority order.
+    return reasons[:5]
+
+
+def _extract_specs(
+    match: Any,
+    best: Any,
+    specs_by_key: Mapping[tuple[str, str], Any] | None,
+) -> dict[str, Any]:
+    gpu = None
+    ram_gb = None
+    ssd_gb = None
+    screen_inch = None
+    cpu = None
+    screen_resolution = None
+    if specs_by_key:
+        key = (best.store, best.external_id)
+        spec = specs_by_key.get(key)
+        if spec is not None:
+            gpu = getattr(spec, "gpu", None) or getattr(spec, "normalized_gpu", None)
+            ram_gb = getattr(spec, "ram_gb", None)
+            ssd_gb = getattr(spec, "ssd_gb", None)
+            screen_inch = getattr(spec, "screen_inch", None) or getattr(
+                spec, "screen_size_inch", None
+            )
+            cpu = getattr(spec, "cpu", None)
+            screen_resolution = getattr(spec, "screen_resolution", None)
+    from stores.common import extract_specs_from_name
+
+    name_blob = " ".join(
+        x
+        for x in (
+            getattr(match, "name", None),
+            getattr(best, "name", None),
+            getattr(best, "url", None),
         )
-
-    if is_historical_low:
-        score += float(config.RANK_HISTORICAL_LOW_BONUS)
-        reasons.append("+ новый исторический минимум")
-
-    return round(score, 2), reasons
+        if x
+    )
+    inferred = extract_specs_from_name(name_blob)
+    gpu = gpu or inferred.get("gpu")
+    ram_gb = ram_gb if ram_gb is not None else inferred.get("ram_gb")
+    ssd_gb = ssd_gb if ssd_gb is not None else inferred.get("ssd_gb")
+    screen_inch = (
+        screen_inch if screen_inch is not None else inferred.get("screen_inch")
+    )
+    cpu = cpu or inferred.get("cpu")
+    return {
+        "gpu": gpu,
+        "ram_gb": ram_gb,
+        "ssd_gb": ssd_gb,
+        "screen_inch": screen_inch,
+        "cpu": cpu,
+        "screen_resolution": screen_resolution,
+    }
 
 
 def rank_clusters(
@@ -158,12 +479,15 @@ def rank_clusters(
     limit: int | None = None,
     fresh_stores: set[str] | None = None,
     allowed_stores: set[str] | None = None,
+    historical_mins: Mapping[int, int] | None = None,
 ) -> list[RankedDeal]:
     """
     Rank cheapest available offer per matched model cluster.
 
     fresh_stores / allowed_stores: if set, only those stores participate
     in cheapest / second-cheapest / saving calculation.
+
+    historical_mins: optional product_id → all-time min (preloaded, no DB I/O here).
     """
     allowed = fresh_stores if fresh_stores is not None else allowed_stores
     ranked: list[RankedDeal] = []
@@ -181,58 +505,26 @@ def rank_clusters(
         ordered = sorted(available, key=lambda o: (int(o.price), o.store))
         best = ordered[0]
         nxt = ordered[1] if len(ordered) > 1 else None
-        saving = (
-            int(nxt.price) - int(best.price) if nxt is not None else None
-        )
+        saving = int(nxt.price) - int(best.price) if nxt is not None else None
 
-        gpu = None
-        ram_gb = None
-        ssd_gb = None
-        screen_inch = None
-        if specs_by_key:
-            key = (best.store, best.external_id)
-            spec = specs_by_key.get(key)
-            if spec is not None:
-                gpu = getattr(spec, "gpu", None) or getattr(spec, "normalized_gpu", None)
-                ram_gb = getattr(spec, "ram_gb", None)
-                ssd_gb = getattr(spec, "ssd_gb", None)
-                screen_inch = getattr(spec, "screen_inch", None) or getattr(
-                    spec, "screen_size_inch", None
-                )
-        if gpu is None or ram_gb is None or ssd_gb is None or screen_inch is None:
-            from stores.common import extract_specs_from_name
+        specs = _extract_specs(match, best, specs_by_key)
+        hist_min = cluster_historical_min(match, historical_mins)
 
-            name_blob = " ".join(
-                x
-                for x in (
-                    match.name,
-                    getattr(best, "name", None),
-                    best.url,
-                )
-                if x
-            )
-            inferred = extract_specs_from_name(name_blob)
-            gpu = gpu or inferred.get("gpu")  # type: ignore[assignment]
-            ram_gb = ram_gb if ram_gb is not None else inferred.get("ram_gb")  # type: ignore[assignment]
-            ssd_gb = ssd_gb if ssd_gb is not None else inferred.get("ssd_gb")  # type: ignore[assignment]
-            screen_inch = (
-                screen_inch
-                if screen_inch is not None
-                else inferred.get("screen_inch")  # type: ignore[assignment]
-            )
-
-        score, reasons = score_offer(
+        result = score_offer(
             price=int(best.price),
-            gpu=gpu,
-            ram_gb=ram_gb,
-            ssd_gb=ssd_gb,
-            screen_inch=screen_inch,
+            gpu=specs["gpu"],
+            ram_gb=specs["ram_gb"],
+            ssd_gb=specs["ssd_gb"],
+            screen_inch=specs["screen_inch"],
             saving_vs_next=saving,
+            cpu=specs["cpu"],
+            screen_resolution=specs["screen_resolution"],
+            historical_min=hist_min,
         )
         ranked.append(
             RankedDeal(
-                score=score,
-                reasons=reasons,
+                score=result.score,
+                reasons=result.reasons,
                 offer={
                     "store": best.store,
                     "external_id": best.external_id,
@@ -242,16 +534,21 @@ def rank_clusters(
                     "url": best.url,
                 },
                 cluster_name=match.name,
-                gpu=gpu,
+                gpu=specs["gpu"],
                 store=best.store,
                 price=int(best.price),
                 url=best.url,
                 saving_vs_next=saving,
                 next_store=nxt.store if nxt else None,
                 next_price=int(nxt.price) if nxt else None,
-                ram_gb=ram_gb,
-                ssd_gb=ssd_gb,
-                screen_inch=screen_inch,
+                ram_gb=specs["ram_gb"],
+                ssd_gb=specs["ssd_gb"],
+                screen_inch=specs["screen_inch"],
+                cpu=specs["cpu"],
+                confidence=result.confidence,
+                score_breakdown=dict(result.breakdown),
+                historical_min=hist_min,
+                screen_resolution=specs["screen_resolution"],
             )
         )
 
@@ -259,6 +556,14 @@ def rank_clusters(
     if limit is not None:
         return ranked[: int(limit)]
     return ranked
+
+
+def _store_label(store: str) -> str:
+    if store == "andpro":
+        return "ANDPRO"
+    if store == "kns":
+        return "KNS"
+    return store.capitalize()
 
 
 def format_top_deals_message(
@@ -281,32 +586,52 @@ def format_top_deals_message(
         price = f"{deal.price:,}".replace(",", " ") if deal.price else "?"
         lines.append(f"<b>{i}. {deal.cluster_name}</b>")
         if deal.gpu:
-            lines.append(deal.gpu)
+            lines.append(str(deal.gpu).replace(" LAPTOP", "").replace(" TI", " Ti"))
         cfg = []
         if deal.ram_gb:
             cfg.append(f"{deal.ram_gb}GB")
         if deal.ssd_gb:
-            cfg.append(f"{deal.ssd_gb}GB SSD")
+            if deal.ssd_gb >= 1000 and deal.ssd_gb % 1024 == 0:
+                cfg.append(f"{deal.ssd_gb // 1024}TB")
+            elif deal.ssd_gb >= 1000:
+                cfg.append("1TB" if deal.ssd_gb < 1500 else f"{deal.ssd_gb}GB")
+            else:
+                cfg.append(f"{deal.ssd_gb}GB")
         if deal.screen_inch:
             cfg.append(f'{deal.screen_inch:g}"')
         if cfg:
             lines.append(" / ".join(cfg))
-        store_label = (
-            deal.store.upper() if deal.store == "andpro" else deal.store.capitalize()
-        )
-        lines.append(f"{store_label}: {price} ₽")
-        if deal.saving_vs_next and deal.next_store:
-            lines.append(
-                f"Экономия vs {deal.next_store}: {deal.saving_vs_next:,} ₽".replace(
-                    ",", " "
-                )
-            )
-        lines.append(f"Priority score: {deal.score:g}")
+        lines.append(f"{_store_label(deal.store)}: {price} ₽")
+        lines.append(f"Оценка: {deal.score:g}/100")
+        if deal.confidence < 100:
+            lines.append(f"Данные: {deal.confidence}%")
         if deal.reasons:
-            lines.append("Почему: " + "; ".join(deal.reasons[:5]))
+            lines.append("Почему: " + " · ".join(deal.reasons[:5]))
+        if (
+            deal.saving_vs_next
+            and deal.next_store
+            and deal.saving_vs_next >= int(config.SCORE_SAVING_TIER_1)
+        ):
+            lines.append(
+                f"Экономия vs {_store_label(deal.next_store)}: "
+                f"{deal.saving_vs_next:,} ₽".replace(",", " ")
+            )
         if deal.url:
             lines.append(deal.url)
         lines.append("")
     while lines and lines[-1] == "":
         lines.pop()
-    return "\n".join(lines)
+    text = "\n".join(lines)
+    soft = int(getattr(config, "TELEGRAM_TOP_SOFT_LIMIT", 3500))
+    if len(text) > soft:
+        # Drop URLs from the bottom entries first.
+        trimmed = text
+        while len(trimmed) > soft and "\nhttp" in trimmed:
+            idx = trimmed.rfind("\nhttp")
+            end = trimmed.find("\n", idx + 1)
+            if end < 0:
+                trimmed = trimmed[:idx]
+            else:
+                trimmed = trimmed[:idx] + trimmed[end:]
+        text = trimmed[:soft]
+    return text

@@ -10,7 +10,11 @@ from typing import Any, Mapping, Sequence
 
 import config
 from comparison import Offer, ProductMatch, match_products
-from deal_ranking import rank_clusters
+from deal_ranking import (
+    collect_match_product_ids,
+    historical_mins_from_rows,
+    rank_clusters,
+)
 from storage import (
     DEFAULT_DB_PATH,
     get_all_identifiers_readonly,
@@ -251,7 +255,16 @@ def build_history_picker_items(
         for p in products
         if p.get("id") is not None
     }
-    deals = rank_clusters(matches, limit=int(limit), fresh_stores=fresh)
+    pids = collect_match_product_ids(matches)
+    hist_mins = historical_mins_from_rows(
+        get_price_history_for_products_readonly(db_path, pids)
+    )
+    deals = rank_clusters(
+        matches,
+        limit=int(limit),
+        fresh_stores=fresh,
+        historical_mins=hist_mins,
+    )
     items: list[HistoryPickerItem] = []
     for deal in deals:
         if deal.price is None or not config.is_price_in_tracking_scope(deal.price):

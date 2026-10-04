@@ -18,7 +18,12 @@ import httpx
 
 import config
 from comparison import match_products
-from deal_ranking import format_top_deals_message, rank_clusters
+from deal_ranking import (
+    collect_match_product_ids,
+    format_top_deals_message,
+    historical_mins_from_rows,
+    rank_clusters,
+)
 from identity_sync import identity_from_cache, load_specs_cache
 from pipeline_lock import DEFAULT_LOCK_PATH, read_lock_info
 from run_pipeline import (
@@ -58,6 +63,7 @@ from storage import (
     get_all_products_readonly,
     get_delivery_stats,
     get_latest_store_runs_readonly,
+    get_price_history_for_products_readonly,
     get_store_runs_for_pipeline,
     open_db_readonly,
     require_schema_ready,
@@ -572,11 +578,16 @@ def build_top_text(db_path: Path | str = DEFAULT_DB_PATH) -> str:
         identity = identity_from_cache(cache, str(p["store"]), str(p["external_id"]))
         if identity is not None:
             specs_by_key[(str(p["store"]), str(p["external_id"]))] = identity
+    pids = collect_match_product_ids(comparison.matches)
+    hist_mins = historical_mins_from_rows(
+        get_price_history_for_products_readonly(db_path, pids)
+    )
     deals = rank_clusters(
         comparison.matches,
         specs_by_key=specs_by_key,
         limit=int(config.TOP_DEALS_LIMIT),
         fresh_stores=fresh,
+        historical_mins=hist_mins,
     )
     age = freshness_age_minutes(latest, fresh)
     return format_top_deals_message(

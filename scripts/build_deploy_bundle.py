@@ -63,6 +63,7 @@ ALLOWLIST_SCRIPTS = (
     "scripts/build_deploy_bundle.py",
     "scripts/diagnose_model_price_history.py",
     "scripts/diagnose_price_history_chart.py",
+    "scripts/diagnose_deal_ranking_v2.py",
 )
 
 FORBIDDEN_NAME_PARTS = (

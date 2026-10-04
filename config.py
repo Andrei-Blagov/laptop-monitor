@@ -25,19 +25,71 @@ MAX_TRACKED_PRICE_RUB: int = 300_000
 # Минимальная разница между магазинами для CROSS_STORE_SAVING (руб.).
 CROSS_STORE_DIFFERENCE_RUB: int = 10_000
 
-# --- Deal ranking weights (explainable, config-driven) ---
-RANK_GPU_5080_BONUS: float = 25.0
-RANK_GPU_5070TI_BONUS: float = 18.0
-RANK_RAM_32_BONUS: float = 12.0
-RANK_RAM_16_BONUS: float = 4.0
-RANK_SSD_1TB_BONUS: float = 8.0
-RANK_SCREEN_17_BONUS: float = 10.0
-RANK_SCREEN_16_BONUS: float = 4.0
-RANK_BUDGET_ANCHOR_RUB: int = 200_000
-RANK_BUDGET_UNDER_BONUS: float = 15.0
-RANK_BUDGET_NEAR_BONUS: float = 6.0
-RANK_HISTORICAL_LOW_BONUS: float = 8.0
+# --- Deal ranking v2 (explainable 0..100, single source of truth) ---
+# Component maxima (must sum to 100):
+SCORE_GPU_MAX: float = 25.0
+SCORE_PRICE_MAX: float = 25.0
+SCORE_CPU_MAX: float = 15.0
+SCORE_RAM_MAX: float = 10.0
+SCORE_SSD_MAX: float = 5.0
+SCORE_SCREEN_MAX: float = 8.0
+SCORE_HISTORY_MAX: float = 8.0
+SCORE_SAVING_MAX: float = 4.0
+
+SCORE_GPU_5080: float = 25.0
+SCORE_GPU_5070TI: float = 21.0
+
+SCORE_CPU_HIGH_END_HX: float = 15.0
+SCORE_CPU_STRONG_H: float = 12.0
+SCORE_CPU_MID: float = 8.0
+SCORE_CPU_LOWER: float = 3.0
+
+SCORE_RAM_64: float = 10.0
+SCORE_RAM_32: float = 9.0
+SCORE_RAM_16: float = 4.0
+
+SCORE_SSD_2TB: float = 5.0
+SCORE_SSD_1TB: float = 4.0
+SCORE_SSD_512: float = 1.0
+
+SCORE_SCREEN_18: float = 8.0
+SCORE_SCREEN_17: float = 7.0
+SCORE_SCREEN_16: float = 4.0
+SCORE_SCREEN_156: float = 2.0
+SCORE_SCREEN_QHD_BONUS: float = 2.0  # capped by SCORE_SCREEN_MAX
+
+# Price/value curve vs GPU target (smooth, not binary).
+SCORE_PRICE_AT_TARGET: float = 22.0
+SCORE_PRICE_UNDER_SPAN: float = 0.12  # 12% under target → full SCORE_PRICE_MAX
+SCORE_PRICE_OVER_ZERO_AT: float = 0.32  # ~32% over target → 0
+
+# Historical opportunity bands (current / historical_min).
+SCORE_HISTORY_WITHIN_1PCT: float = 8.0
+SCORE_HISTORY_WITHIN_3PCT: float = 7.0
+SCORE_HISTORY_WITHIN_5PCT: float = 5.0
+SCORE_HISTORY_WITHIN_10PCT: float = 2.0
+
+# Cross-store saving tiers (₽).
+SCORE_SAVING_TIER_1: int = 5_000
+SCORE_SAVING_TIER_2: int = 10_000
+SCORE_SAVING_TIER_3: int = 20_000
+SCORE_SAVING_TIER_4: int = 30_000
+
 TOP_DEALS_LIMIT: int = 10
+TELEGRAM_TOP_SOFT_LIMIT: int = 3500
+
+# Deprecated aliases (kept for import compatibility; unused by scoring v2).
+RANK_GPU_5080_BONUS: float = SCORE_GPU_5080
+RANK_GPU_5070TI_BONUS: float = SCORE_GPU_5070TI
+RANK_RAM_32_BONUS: float = SCORE_RAM_32
+RANK_RAM_16_BONUS: float = SCORE_RAM_16
+RANK_SSD_1TB_BONUS: float = SCORE_SSD_1TB
+RANK_SCREEN_17_BONUS: float = SCORE_SCREEN_17
+RANK_SCREEN_16_BONUS: float = SCORE_SCREEN_16
+RANK_BUDGET_ANCHOR_RUB: int = 200_000
+RANK_BUDGET_UNDER_BONUS: float = 0.0
+RANK_BUDGET_NEAR_BONUS: float = 0.0
+RANK_HISTORICAL_LOW_BONUS: float = SCORE_HISTORY_MAX
 
 # Store is fresh for TOP / current deals if latest attempt is ok and within TTL.
 # Schedule is every 2 hours → default ~3 hours.

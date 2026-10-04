@@ -77,16 +77,17 @@ def build_pipeline_completed_payload(
         stores_out.append(entry)
     tops: list[dict[str, Any]] = []
     for i, deal in enumerate(top_deals or [], start=1):
-        tops.append(
-            {
-                "rank": i,
-                "name": deal.get("name") or deal.get("cluster_name"),
-                "store": deal.get("store"),
-                "price": deal.get("price"),
-                "score": deal.get("score"),
-                "url": deal.get("url"),
-            }
-        )
+        entry = {
+            "rank": i,
+            "name": deal.get("name") or deal.get("cluster_name"),
+            "store": deal.get("store"),
+            "price": deal.get("price"),
+            "score": deal.get("score"),
+            "url": deal.get("url"),
+        }
+        if deal.get("confidence") is not None:
+            entry["confidence"] = deal.get("confidence")
+        tops.append(entry)
     payload: dict[str, Any] = {
         "event": "pipeline.completed",
         "app_version": get_version(),
@@ -252,17 +253,18 @@ def make_run_summary(payload: Mapping[str, Any]) -> dict[str, Any]:
     for deal in list(payload.get("top_deals") or []):
         if not isinstance(deal, Mapping):
             continue
-        tops_out.append(
-            {
-                "rank": deal.get("rank"),
-                "name": deal.get("name"),
-                "store": deal.get("store"),
-                "price": deal.get("price"),
-                "score": deal.get("score"),
-                "url": deal.get("url"),
-                "saving": deal.get("saving") or deal.get("cross_store_saving"),
-            }
-        )
+        entry = {
+            "rank": deal.get("rank"),
+            "name": deal.get("name"),
+            "store": deal.get("store"),
+            "price": deal.get("price"),
+            "score": deal.get("score"),
+            "url": deal.get("url"),
+            "saving": deal.get("saving") or deal.get("cross_store_saving"),
+        }
+        if deal.get("confidence") is not None:
+            entry["confidence"] = deal.get("confidence")
+        tops_out.append(entry)
     return {
         "run_id": payload.get("run_id"),
         "status": payload.get("status"),
