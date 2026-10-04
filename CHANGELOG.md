@@ -1,5 +1,51 @@
 # Changelog
 
+## 0.5.0 — 2026-10-04
+
+Buy Opportunity signal and on-demand Thailand market comparison (verified offers only).
+
+### Buy Opportunity (Russia)
+
+- Explainable **BUY** / **STRONG_BUY** from Deal Ranking v2 + history (config-driven rules A/B/C)
+- No automatic signal without historical minimum
+- 24h cooldown / dedupe with bypass on ≥3% better price, ≥5000 ₽ drop, BUY→STRONG_BUY, or new #1 model
+- State: `data/buy_opportunity_state.json` (atomic JSON; corrupt → fail-safe empty)
+
+### Thailand on-demand market
+
+- Separate `thailand/` subsystem (not in Russian 2h `stores.registry`)
+- Scan triggers: new BUY signal **or** admin Telegram **🌍 Рынки**
+- **JIB**: discovery via `search_suggestion` + verification via `readProduct` (GPU / availability / specs)
+- **Advice** / **BaNANA** (`bnn.in.th`): experimental / fail-safe — live HTTP may return Cloudflare 403
+- THB→RUB via Bank of Russia daily FX (nominal-aware); stale FX not used for automatic country verdict
+- Match levels: EXACT / SAME_FAMILY / EQUIVALENT / ALTERNATIVE
+- `international_value_score` + `international_confidence` (no Russian history component)
+- Country verdict only for VERIFIED Thai offers with comparable config
+- Snapshots: `data/thailand_scans/` (retention ≤20); Thailand never writes Russian SQLite products
+- Thailand failures isolated from Russian SUCCESS / PARTIAL / FAILED
+
+### Offer verification hardening
+
+- Search query GPU is **not** authoritative (`candidate_gpu` only)
+- Unknown availability excluded from automatic Thailand BEST / TOP
+- Unverified candidates excluded from automatic TOP / strong country verdict
+- Regression: TUF A18 FA808UH (RTX 5050) must not appear as RTX 5080 in Verified TOP
+
+### Telegram
+
+- Menu **🌍 Рынки** → Россия / Проверить Таиланд / Сравнить сейчас (admin allowlist)
+- Manual Thailand scan does **not** run Russian collection
+- Automatic BUY + Thailand report: ≤3 messages
+
+### Unchanged
+
+- Russian Deal Ranking weights
+- Price cap ≤ 300 000 ₽
+- Price History / charts
+- SQLite schema
+- n8n workflows / pin 2.42.1
+- systemd schedules
+
 ## 0.4.0 — 2026-10-04
 
 Better specification coverage and safer enrichment/cache merging for Deal Ranking v2.

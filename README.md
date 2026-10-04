@@ -2,13 +2,13 @@
 
 Мониторинг цен на игровые ноутбуки (RTX 5070 Ti / RTX 5080 Laptop) с multi-store adapter architecture, матчингом моделей, ranking v2, Telegram alerts / control, Price History charts и n8n OPS layer.
 
-**Version:** читается из файла `VERSION` (сейчас `0.4.0`) — единственный source of truth.  
+**Version:** читается из файла `VERSION` (сейчас `0.5.0`) — единственный source of truth.  
 **Production target:** Linux VPS через **clean release bundle** + Docker + systemd  
 **Windows:** только development / testing
 
 ---
 
-## Что умеет (v0.4.0)
+## Что умеет (v0.5.0)
 
 | Область | Описание |
 |---------|----------|
@@ -22,12 +22,21 @@
 | **CROSS_STORE** | Cheapest vs second among fresh offers; metadata содержит весь список |
 | **Specs coverage** | Collected metadata → `product_specs.json` для всех stores; safe title parse; Regard/ANDPRO re-enrich on cache miss; non-destructive merge / `SPEC_CONFLICT` |
 | **Ranking v2** | Explainable score **0..100** + **confidence**; GPU / price-value / CPU / RAM / SSD / screen / historical opportunity / cross-store saving (**weights unchanged**) |
+| **Buy Opportunity** | Explainable BUY / STRONG_BUY + cooldown; при новом signal — best-effort Thailand scan |
+| **Thailand markets** | On-demand only (не в 2h registry): JIB verified; Advice/BaNANA experimental/fail-safe; CBR THB→RUB; RU/TH comparison |
 | **Price History** | Telegram: карточка истории (v1) + PNG-графики 30 / 90 / all-time (v2), read-only |
-| **Control bot** | Long polling; Run / TOP / История цены / Status / Version; admin allowlist |
+| **Control bot** | Long polling; Run / TOP / История / **🌍 Рынки** / Status / Version; admin allowlist |
 | **Scheduler** | Primary: **systemd timer** → `run_pipeline.py`. Manual: Telegram bot |
 | **n8n OPS** | Pipeline Events (HMAC) + Failure Alert + Daily Digest; host watchdog; pinned **2.42.1** immutable digest |
 | **Migration** | Явная команда `python -m scripts.migrate_db` |
 | **Deploy** | Clean tar.gz bundle → `/opt/laptop-monitor` |
+
+### Россия vs Таиланд
+
+- **Россия** мониторится каждые ~2 часа (Regard / ANDPRO / KNS / Citilink) как раньше
+- **Таиланд** не крутится по расписанию: scan только при новом BUY signal или вручную из Telegram **🌍 Рынки**
+- Сравнение предполагает локальную покупку в Таиланде (без авиа / таможни / пересылки)
+- В automatic TOP / country verdict попадают только **verified** Thai offers (GPU + availability confirmed)
 
 ---
 
@@ -185,8 +194,11 @@ Control bot при старте проверяет schema и завершает�
 - Запустить проверку
 - Топ предложений
 - История цены
+- **🌍 Рынки** → Россия / Проверить Таиланд / Сравнить сейчас
 - Статус
 - Версия
+
+**🌍 Рынки:** ручная проверка Таиланда и RU/TH comparison без запуска Russian collection. Thailand scan также может стартовать автоматически после нового BUY signal.
 
 Env: `TELEGRAM_BOT_TOKEN`, `TELEGRAM_CHAT_ID`, `TELEGRAM_ADMIN_CHAT_ID`, `LAPTOP_MONITOR_INSTANCE`.
 

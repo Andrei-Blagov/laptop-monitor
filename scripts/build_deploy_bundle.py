@@ -23,6 +23,8 @@ ALLOWLIST_FILES = (
     ".env.example",
     "admin_notify.py",
     "alerts.py",
+    "buy_opportunity.py",
+    "buy_thailand_flow.py",
     "collection.py",
     "compare.py",
     "comparison.py",
@@ -42,6 +44,7 @@ ALLOWLIST_FILES = (
     "price_history_chart.py",
     "product_identity.py",
     "run_pipeline.py",
+    "russian_deals.py",
     "store_freshness.py",
     "storage.py",
     "target_gpu.py",
@@ -56,6 +59,7 @@ ALLOWLIST_DIRS = (
     "integrations",
     "deploy",
     "ops",
+    "thailand",
 )
 
 ALLOWLIST_SCRIPTS = (

@@ -60,7 +60,7 @@ def _identity(**kwargs: object) -> ProductIdentity:
 
 class VersionTests(unittest.TestCase):
     def test_version_file(self) -> None:
-        self.assertEqual(get_version(), "0.4.0")
+        self.assertEqual(get_version(), "0.5.0")
 
     def test_cli_version(self) -> None:
         code = pipeline_main(["--version"])
