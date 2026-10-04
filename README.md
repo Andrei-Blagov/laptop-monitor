@@ -2,13 +2,13 @@
 
 Мониторинг цен на игровые ноутбуки (RTX 5070 Ti / RTX 5080 Laptop) с multi-store adapter architecture, матчингом моделей, ranking v2, Telegram alerts / control, Price History charts и n8n OPS layer.
 
-**Version:** читается из файла `VERSION` (сейчас `0.3.0`) — единственный source of truth.  
+**Version:** читается из файла `VERSION` (сейчас `0.4.0`) — единственный source of truth.  
 **Production target:** Linux VPS через **clean release bundle** + Docker + systemd  
 **Windows:** только development / testing
 
 ---
 
-## Что умеет (v0.3.0)
+## Что умеет (v0.4.0)
 
 | Область | Описание |
 |---------|----------|
@@ -20,7 +20,8 @@
 | **Fresh TOP** | Только stores с последней попыткой `ok` и age ≤ `STORE_FRESHNESS_MAX_MINUTES` (180) |
 | **Matching** | Exact SKU / MPN / strong ID + config conflict; без fuzzy auto-match |
 | **CROSS_STORE** | Cheapest vs second among fresh offers; metadata содержит весь список |
-| **Ranking v2** | Explainable score **0..100** + **confidence**; GPU / price-value / CPU / RAM / SSD / screen / historical opportunity / cross-store saving |
+| **Specs coverage** | Collected metadata → `product_specs.json` для всех stores; safe title parse; Regard/ANDPRO re-enrich on cache miss; non-destructive merge / `SPEC_CONFLICT` |
+| **Ranking v2** | Explainable score **0..100** + **confidence**; GPU / price-value / CPU / RAM / SSD / screen / historical opportunity / cross-store saving (**weights unchanged**) |
 | **Price History** | Telegram: карточка истории (v1) + PNG-графики 30 / 90 / all-time (v2), read-only |
 | **Control bot** | Long polling; Run / TOP / История цены / Status / Version; admin allowlist |
 | **Scheduler** | Primary: **systemd timer** → `run_pipeline.py`. Manual: Telegram bot |
@@ -109,7 +110,7 @@ MONITOR_REGION=moscow
 
 Отдельно: **confidence 0..100** (полнота GPU/CPU/RAM/SSD/screen/history) — не часть score.
 
-Specs берутся из identity cache и title extraction; при необходимости — с любого offer в cluster (без выдумывания отсутствующих полей).
+Specs берутся из `product_specs.json` (structured store data > collected metadata > safe title parse) и при необходимости с любого offer в cluster; отсутствующие поля не выдумываются. Диагностика: `python -m scripts.diagnose_spec_coverage`.
 
 Telegram «Топ предложений» и picker «История цены» используют один и тот же `rank_clusters`.
 

@@ -1,5 +1,26 @@
 # Changelog
 
+## 0.4.0 — 2026-10-04
+
+Better specification coverage and safer enrichment/cache merging for Deal Ranking v2.
+
+### Specs / enrichment
+
+- Collected `Product.metadata` is merged into `product_specs.json` for **all** successful stores before SQLite drops it
+- KNS / Citilink catalog + title (+ Citilink already-loaded page) specs reach the cache
+- Regard / ANDPRO structured enrich runs again on **cache miss** (identifiers alone no longer skip specs recovery)
+- Safer title extraction: GPU / CPU / RAM / SSD / screen / numeric resolution; GPU VRAM is not treated as system RAM
+- Non-destructive cache merge + field provenance; `SPEC_CONFLICT` keeps the trusted value
+- Atomic `product_specs.json` writes (temp → fsync → replace)
+- Read-only diagnostic: `python -m scripts.diagnose_spec_coverage`
+
+### Unchanged
+
+- Scoring weights (Ranking v2)
+- DB schema
+- Price cap ≤ 300 000 ₽
+- Store set / systemd / n8n pin
+
 ## 0.3.0 — 2026-10-04
 
 Post-v0.2.0 production features packaged as a stable release.
