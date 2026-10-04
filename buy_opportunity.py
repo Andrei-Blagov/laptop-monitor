@@ -6,10 +6,12 @@ import json
 import logging
 import os
 import tempfile
+import time
+from contextlib import contextmanager
 from dataclasses import asdict, dataclass, field
 from datetime import datetime, timezone
 from pathlib import Path
-from typing import Any, Sequence
+from typing import Any, Iterator, Sequence
 
 import config
 from deal_ranking import RankedDeal, canonical_gpu, target_price_for_gpu
@@ -17,6 +19,7 @@ from deal_ranking import RankedDeal, canonical_gpu, target_price_for_gpu
 logger = logging.getLogger(__name__)
 
 DEFAULT_STATE_PATH = Path("data") / "buy_opportunity_state.json"
+STATE_LOCK_SUFFIX = ".lock"
 
 SignalLevel = str  # BUY | STRONG_BUY
 
@@ -218,6 +221,83 @@ def save_state(state: dict[str, Any], path: Path | str = DEFAULT_STATE_PATH) -> 
     atomic_write_json(path, state)
 
 
+@contextmanager
+def state_process_lock(
+    path: Path | str = DEFAULT_STATE_PATH, *, timeout: float = 5.0
+) -> Iterator[None]:
+    """
+    Cross-process advisory lock for buy_opportunity_state.json RMW.
+
+    Hold only around read-modify-write — never during Thailand HTTP.
+    """
+    p = Path(path)
+    lock_path = Path(str(p) + STATE_LOCK_SUFFIX)
+    lock_path.parent.mkdir(parents=True, exist_ok=True)
+    deadline = time.monotonic() + float(timeout)
+    fd: int | None = None
+    while True:
+        try:
+            fd = os.open(str(lock_path), os.O_CREAT | os.O_EXCL | os.O_RDWR)
+            break
+        except FileExistsError:
+            if time.monotonic() >= deadline:
+                # Stale lock recovery: if older than timeout*3, steal.
+                try:
+                    age = time.time() - lock_path.stat().st_mtime
+                    if age > float(timeout) * 3:
+                        lock_path.unlink(missing_ok=True)  # type: ignore[arg-type]
+                        continue
+                except OSError:
+                    pass
+                raise TimeoutError("buy_opportunity state lock timeout")
+            time.sleep(0.02)
+    try:
+        # Optional POSIX advisory lock for extra safety when available.
+        try:
+            import fcntl  # type: ignore
+
+            fcntl.flock(fd, fcntl.LOCK_EX)
+        except Exception:
+            pass
+        yield
+    finally:
+        try:
+            if fd is not None:
+                try:
+                    import fcntl  # type: ignore
+
+                    fcntl.flock(fd, fcntl.LOCK_UN)
+                except Exception:
+                    pass
+                os.close(fd)
+        finally:
+            try:
+                lock_path.unlink(missing_ok=True)  # type: ignore[arg-type]
+            except TypeError:
+                # Python <3.8 compatibility path (not expected on 3.12)
+                try:
+                    if lock_path.exists():
+                        lock_path.unlink()
+                except OSError:
+                    pass
+            except OSError:
+                pass
+
+
+def with_state(
+    mutator,
+    path: Path | str = DEFAULT_STATE_PATH,
+    *,
+    timeout: float = 5.0,
+) -> dict[str, Any]:
+    """Load → mutate → save under process lock. mutator(state) -> state."""
+    with state_process_lock(path, timeout=timeout):
+        state = load_state(path)
+        state = mutator(state) or state
+        save_state(state, path)
+        return state
+
+
 def _parse_ts(value: Any) -> datetime | None:
     if not value:
         return None
@@ -249,7 +329,12 @@ def cooldown_allows(
     now = now or _now()
     models = state.setdefault("models", {})
     prev = models.get(signal.model_key) or {}
-    last_scan = _parse_ts(prev.get("last_thailand_scan_at") or prev.get("last_signal_at"))
+    # Cooldown clock: prefer completed scan, else last signal / enqueue.
+    last_scan = _parse_ts(
+        prev.get("last_thailand_scan_at")
+        or prev.get("last_thailand_job_enqueued_at")
+        or prev.get("last_signal_at")
+    )
     if last_scan is None:
         return True, "first_signal"
 
@@ -260,6 +345,7 @@ def cooldown_allows(
     last_price = prev.get("last_ru_price")
     last_level = prev.get("last_signal_level")
     last_top1 = state.get("last_top1_key")
+    job_status = str(prev.get("last_thailand_job_status") or "")
 
     if last_price is not None:
         try:
@@ -280,6 +366,10 @@ def cooldown_allows(
     if top1_key and last_top1 and top1_key != last_top1:
         return True, "new_top1_model"
 
+    # Pending/processing job blocks duplicate automatic enqueue.
+    if job_status in {"queued", "processing"}:
+        return False, "job_pending"
+
     return False, "deduped"
 
 
@@ -291,6 +381,7 @@ def record_signal(
     top1_key: str | None,
     now: datetime | None = None,
 ) -> dict[str, Any]:
+    """Legacy helper: signal record; thailand_scanned sets last_thailand_scan_at."""
     now = now or _now()
     models = state.setdefault("models", {})
     entry = dict(models.get(signal.model_key) or {})
@@ -310,6 +401,72 @@ def record_signal(
     models[signal.model_key] = entry
     if top1_key:
         state["last_top1_key"] = top1_key
+    return state
+
+
+def record_signal_enqueued(
+    state: dict[str, Any],
+    signal: BuySignal,
+    *,
+    job_id: str,
+    top1_key: str | None,
+    now: datetime | None = None,
+) -> dict[str, Any]:
+    """Record BUY signal + job enqueue. Does NOT set last_thailand_scan_at."""
+    now = now or _now()
+    models = state.setdefault("models", {})
+    entry = dict(models.get(signal.model_key) or {})
+    entry.update(
+        {
+            "model_key": signal.model_key,
+            "cluster_name": signal.cluster_name,
+            "last_signal_at": now.isoformat(),
+            "last_ru_price": signal.price,
+            "last_signal_level": signal.level,
+            "last_score": signal.score,
+            "fingerprint": signal.fingerprint,
+            "last_thailand_job_enqueued_at": now.isoformat(),
+            "last_thailand_job_id": job_id,
+            "last_thailand_job_status": "queued",
+        }
+    )
+    # Explicitly do not touch last_thailand_scan_at here.
+    models[signal.model_key] = entry
+    if top1_key:
+        state["last_top1_key"] = top1_key
+    return state
+
+
+def record_thailand_job_completed(
+    state: dict[str, Any],
+    *,
+    model_key: str | None,
+    job_id: str,
+    job_status: str,
+    scan_status: str,
+    snapshot_path: str | None,
+    now: datetime | None = None,
+) -> dict[str, Any]:
+    """Worker completion: update scan timestamps only after real scan."""
+    now = now or _now()
+    models = state.setdefault("models", {})
+    key = model_key
+    if not key:
+        # Fall back to entry matching job_id
+        for k, v in models.items():
+            if str((v or {}).get("last_thailand_job_id") or "") == job_id:
+                key = k
+                break
+    if not key:
+        return state
+    entry = dict(models.get(key) or {})
+    entry["last_thailand_job_id"] = job_id
+    entry["last_thailand_job_status"] = job_status
+    entry["last_thailand_scan_at"] = now.isoformat()
+    entry["last_thailand_scan_status"] = scan_status
+    if snapshot_path:
+        entry["last_thailand_snapshot"] = snapshot_path
+    models[key] = entry
     return state
 
 

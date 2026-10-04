@@ -97,6 +97,14 @@ THAILAND_OVERALL_TIMEOUT_SECONDS: float = 120.0
 THAILAND_SNAPSHOT_RETENTION: int = 20
 THAILAND_TOP_LIMIT: int = 5
 THAILAND_FX_STALE_MAX_HOURS: float = 36.0
+# Async Thailand worker queue (v0.5.1 candidate)
+THAILAND_JOB_MAX_PENDING: int = 10
+THAILAND_JOB_ARCHIVE_RETENTION: int = 50
+THAILAND_JOB_FAILED_RETENTION: int = 20
+THAILAND_JOB_STALE_PROCESSING_SECONDS: float = 600.0  # 10 minutes
+THAILAND_JOB_MAX_ATTEMPTS: int = 2
+THAILAND_JOBS_DIR = "data/thailand_jobs"
+THAILAND_WORKER_STATE_PATH = "data/thailand_worker_state.json"
 # Country verdict bands on equivalent hardware (abs % price delta).
 COUNTRY_VERDICT_EQUAL_PCT: float = 0.03
 COUNTRY_VERDICT_SLIGHT_PCT: float = 0.08

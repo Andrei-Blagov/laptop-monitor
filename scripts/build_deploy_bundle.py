@@ -71,6 +71,7 @@ ALLOWLIST_SCRIPTS = (
     "scripts/diagnose_price_history_chart.py",
     "scripts/diagnose_deal_ranking_v2.py",
     "scripts/diagnose_spec_coverage.py",
+    "scripts/diagnose_thailand_async.py",
 )
 
 FORBIDDEN_NAME_PARTS = (
@@ -161,6 +162,7 @@ def build_deploy_bundle(
             ".sh",
             ".service",
             ".timer",
+            ".path",
             ".py",
             ".md",
             ".txt",
@@ -188,6 +190,9 @@ def build_deploy_bundle(
             # (path, size, mtime); mtime=0 caused stale VERSION/content reuse.
             info.mtime = 1
             info.size = len(payload)
+            # Preserve executable bit for shell wrappers on Windows builders.
+            if path.suffix == ".sh" or path.name == "compose.sh":
+                info.mode = 0o755
             tar.addfile(info, io.BytesIO(payload))
 
     data = buf.getvalue()

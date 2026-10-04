@@ -545,6 +545,25 @@ def build_status_text(db_path: Path | str = DEFAULT_DB_PATH) -> str:
         lines.append(f"Status: {str(last.get('status') or '').upper()}")
         if last.get("duration_seconds") is not None:
             lines.append(f"Duration: {last.get('duration_seconds')}s")
+        # Optional one-line Thailand worker status (read-only).
+        try:
+            from thailand.job_queue import pending_count, read_worker_state
+
+            pending = pending_count()
+            ws = read_worker_state()
+            if pending > 0:
+                lines.append(f"Thailand worker: pending {pending}")
+            elif ws.get("last_status"):
+                finished = str(ws.get("last_finished_at") or "")
+                hhmm = finished[11:16] if len(finished) >= 16 else ""
+                suffix = f" {hhmm}" if hhmm else ""
+                lines.append(
+                    f"Thailand worker: last {ws.get('last_status')}{suffix}"
+                )
+            else:
+                lines.append("Thailand worker: idle")
+        except Exception:
+            pass
         lines.append("Stores:")
         run_id = last.get("id")
         store_rows: list[dict[str, Any]] | None = None
@@ -651,39 +670,32 @@ def handle_thailand_manual(
     *,
     compare: bool,
 ) -> None:
-    """Admin-only on-demand Thailand scan using saved Russian DB (no RU collection)."""
-    send_message(
-        client,
-        token,
-        chat_id,
-        "🇹🇭 Запускаю проверку Таиланда…",
-        with_keyboard=False,
-    )
+    """Admin-only: enqueue on-demand Thailand job (no network scan in bot process)."""
     try:
-        from buy_thailand_flow import run_buy_thailand_flow
-        from telegram_sender import TelegramSender
+        from buy_thailand_flow import enqueue_manual_thailand_job
 
-        tg_token, default_chat = config.get_telegram_credentials()
-        sender = TelegramSender(tg_token, str(chat_id or default_chat))
-        flow = run_buy_thailand_flow(
+        result = enqueue_manual_thailand_job(
+            compare=compare,
+            chat_id=chat_id,
             db_path=DEFAULT_DB_PATH,
-            sender=sender,
-            deliver=True,
-            manual=True,
-            force_thailand=True,
         )
-        if not flow.get("messages"):
-            status = flow.get("thailand_scan_status") or "unknown"
+        if result.get("ok"):
             send_message(
                 client,
                 token,
                 chat_id,
-                f"Таиланд: статус {status}. Сообщений нет.",
+                "🇹🇭 Проверка Таиланда запущена. Результат придёт отдельным сообщением.",
                 with_keyboard=False,
             )
-        elif compare and flow.get("thailand_scan_status") == "failed":
-            # Messages already include failure text via sender; ensure UX note.
-            pass
+        else:
+            err = result.get("error") or result.get("thailand_scan_status") or "unknown"
+            send_message(
+                client,
+                token,
+                chat_id,
+                f"Не удалось запустить проверку Таиланда ({err}).",
+                with_keyboard=False,
+            )
     except Exception as exc:
         send_message(
             client,

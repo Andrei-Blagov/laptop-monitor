@@ -60,6 +60,7 @@ def build_pipeline_completed_payload(
     buy_opportunities_count: int | None = None,
     thailand_scan_triggered: bool | None = None,
     thailand_scan_status: str | None = None,
+    thailand_job_id: str | None = None,
 ) -> dict[str, Any]:
     stores_out: list[dict[str, Any]] = []
     meta_by_slug = {str(m.get("slug")): m for m in (adapters_meta or [])}
@@ -114,6 +115,8 @@ def build_pipeline_completed_payload(
         payload["thailand_scan_triggered"] = bool(thailand_scan_triggered)
     if thailand_scan_status is not None:
         payload["thailand_scan_status"] = thailand_scan_status
+    if thailand_job_id is not None:
+        payload["thailand_job_id"] = thailand_job_id
     summary = safe_error_summary(error_summary)
     if summary:
         payload["error_summary"] = summary

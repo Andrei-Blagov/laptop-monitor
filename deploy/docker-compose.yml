@@ -46,3 +46,16 @@ services:
     working_dir: /app
     command: ["python", "-m", "scripts.backup_db"]
     profiles: ["manual"]
+
+  thailand-worker:
+    image: laptop-monitor:${LAPTOP_MONITOR_VERSION:?Set LAPTOP_MONITOR_VERSION via deploy/compose.sh}
+    env_file:
+      - .env
+    environment:
+      LAPTOP_MONITOR_INSTANCE: vps-prod
+    volumes:
+      - ./data:/app/data
+      - ./logs:/app/logs
+    working_dir: /app
+    command: ["python", "-m", "thailand.worker", "--drain"]
+    profiles: ["manual"]

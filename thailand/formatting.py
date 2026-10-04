@@ -48,7 +48,12 @@ def _cfg(ram: int | None, ssd: int | None, screen: float | None) -> str:
     return " / ".join(parts) if parts else "конфигурация н/д"
 
 
-def format_buy_opportunity_message(signal: BuySignal) -> str:
+def format_buy_opportunity_message(
+    signal: BuySignal,
+    *,
+    thailand_queued: bool = False,
+    thailand_enqueue_failed: bool = False,
+) -> str:
     lines = [
         "🔥 <b>СЕЙЧАС ВЫГОДНЫЙ МОМЕНТ ДЛЯ ПОКУПКИ</b>",
         "",
@@ -86,6 +91,14 @@ def format_buy_opportunity_message(signal: BuySignal) -> str:
     if signal.url:
         lines.append("")
         lines.append(signal.url)
+    if thailand_queued:
+        lines.append("")
+        lines.append(
+            "Сравнение с Таиландом запущено и придёт отдельным сообщением."
+        )
+    elif thailand_enqueue_failed:
+        lines.append("")
+        lines.append("Сравнение с Таиландом сейчас запустить не удалось.")
     text = "\n".join(lines)
     return text[:TELEGRAM_SOFT]
 

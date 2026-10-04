@@ -1,0 +1,13 @@
+[Unit]
+Description=Laptop Monitor Thailand async worker (Docker Compose)
+Requires=docker.service
+After=docker.service network-online.target
+
+[Service]
+Type=oneshot
+WorkingDirectory=/opt/laptop-monitor
+ExecStart=/opt/laptop-monitor/deploy/compose.sh run --rm --no-deps thailand-worker
+TimeoutStartSec=300
+
+[Install]
+WantedBy=multi-user.target

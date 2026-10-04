@@ -123,7 +123,9 @@ class PipelineIsolationTests(unittest.TestCase):
 
     def test_buy_report_if_thai_fails(self) -> None:
         from buy_opportunity import evaluate_buy_rules
+        from buy_thailand_flow import evaluate_buy_opportunity_flow, execute_thailand_job
         from thailand.formatting import format_buy_opportunity_message
+        from thailand.job_models import TRIGGER_BUY, build_job
 
         deal = RankedDeal(
             score=79,
@@ -146,31 +148,43 @@ class PipelineIsolationTests(unittest.TestCase):
         text = format_buy_opportunity_message(sig)
         self.assertIn("ВЫГОДНЫЙ МОМЕНТ", text)
 
-        with patch("buy_thailand_flow.run_thailand_scan") as scan:
-            scan.return_value = {
-                "status": "failed",
-                "_store_results": [
-                    StoreScanResult(store="jib", ok=False, error="blocked"),
-                    StoreScanResult(store="advice", ok=False, error="blocked"),
-                    StoreScanResult(store="banana", ok=False, error="blocked"),
-                ],
-                "_fx": None,
-                "_best_match": None,
-                "_comparison": None,
-                "_top": [],
-            }
-            from buy_thailand_flow import run_buy_thailand_flow
-
-            with tempfile.TemporaryDirectory() as tmp:
-                out = run_buy_thailand_flow(
-                    russian_deals=[deal],
-                    deliver=False,
-                    force_thailand=True,
-                    state_path=Path(tmp) / "state.json",
-                    snapshot_dir=Path(tmp) / "scans",
-                )
+        with tempfile.TemporaryDirectory() as tmp:
+            out = evaluate_buy_opportunity_flow(
+                russian_deals=[deal],
+                deliver=False,
+                state_path=Path(tmp) / "state.json",
+                jobs_dir=Path(tmp) / "jobs",
+            )
             self.assertGreaterEqual(len(out["messages"]), 1)
             self.assertIn("ВЫГОДНЫЙ МОМЕНТ", out["messages"][0])
+            self.assertEqual(out["thailand_scan_status"], "queued")
+
+            job = build_job(
+                trigger_type=TRIGGER_BUY,
+                signals=[sig],
+                russian_deals=[deal],
+                dedupe_key="iso",
+            )
+            worker_out = execute_thailand_job(
+                job,
+                deliver=False,
+                state_path=Path(tmp) / "state.json",
+                scan_fn=lambda **kw: {
+                    "status": "failed",
+                    "_store_results": [
+                        StoreScanResult(store="jib", ok=False, error="blocked"),
+                        StoreScanResult(store="advice", ok=False, error="blocked"),
+                        StoreScanResult(store="banana", ok=False, error="blocked"),
+                    ],
+                    "_fx": None,
+                    "_best_match": None,
+                    "_comparison": None,
+                    "_top": [],
+                    "unverified_candidates": [],
+                },
+            )
+            self.assertEqual(worker_out["thailand_scan_status"], "failed")
+            self.assertGreaterEqual(len(worker_out["messages"]), 1)
 
     def test_no_schema_change_marker(self) -> None:
         # Guard: Thailand must not invent new SQLite migrations in this candidate.
@@ -179,33 +193,23 @@ class PipelineIsolationTests(unittest.TestCase):
         self.assertNotIn("buy_opportunity_events", schema)
 
     def test_manual_scan_does_not_run_russian_collection(self) -> None:
-        from buy_thailand_flow import run_buy_thailand_flow
+        from buy_thailand_flow import enqueue_manual_thailand_job
 
-        with patch("buy_thailand_flow.run_thailand_scan") as scan, patch(
+        with patch("thailand.scanner.run_thailand_scan") as scan, patch(
             "buy_thailand_flow.load_russian_ranked_deals"
         ) as load:
             load.return_value = []
-            scan.return_value = {
-                "status": "ok",
-                "_store_results": [],
-                "_fx": None,
-                "_best_match": None,
-                "_comparison": None,
-                "_top": [],
-            }
             with tempfile.TemporaryDirectory() as tmp:
-                run_buy_thailand_flow(
+                out = enqueue_manual_thailand_job(
+                    compare=True,
+                    chat_id="1",
                     db_path="dummy.db",
-                    deliver=False,
-                    manual=True,
-                    force_thailand=True,
-                    state_path=Path(tmp) / "s.json",
-                    snapshot_dir=Path(tmp) / "scans",
+                    jobs_dir=Path(tmp) / "jobs",
                 )
             load.assert_called()
-            scan.assert_called()
-            # collect_products must not be imported/called via this path
-            self.assertTrue(scan.called)
+            scan.assert_not_called()
+            self.assertTrue(out.get("ok"))
+            self.assertEqual(out.get("thailand_scan_status"), "queued")
 
     def test_existing_top_unchanged_without_signal(self) -> None:
         from deal_ranking import format_top_deals_message

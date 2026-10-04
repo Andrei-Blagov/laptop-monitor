@@ -103,6 +103,7 @@ class PipelineResult:
     buy_opportunities_count: int | None = None
     thailand_scan_triggered: bool | None = None
     thailand_scan_status: str | None = None
+    thailand_job_id: str | None = None
 
 def run_pipeline(
     db_path: Path | str = DEFAULT_DB_PATH,
@@ -398,35 +399,34 @@ def run_pipeline(
                 status = PIPELINE_STATUS_SUCCESS
                 exit_code = EXIT_SUCCESS
 
-        # --- BUY OPPORTUNITY + optional Thailand (best-effort; never changes RU status) ---
+        # --- BUY OPPORTUNITY + enqueue Thailand job (async; never changes RU status) ---
         try:
-            from buy_thailand_flow import run_buy_thailand_flow
+            from buy_thailand_flow import evaluate_buy_opportunity_flow
             from russian_deals import load_russian_ranked_deals
 
             deals = load_russian_ranked_deals(db_path)
-            buy_flow = run_buy_thailand_flow(
+            buy_flow = evaluate_buy_opportunity_flow(
                 russian_deals=deals,
                 sender=sender if deliver else None,
                 deliver=deliver,
-                manual=False,
-                force_thailand=False,
+                source_pipeline_run_id=run_id,
             )
             result.buy_opportunities_count = int(buy_flow.get("buy_actionable") or 0)
             result.thailand_scan_triggered = bool(
                 buy_flow.get("thailand_scan_triggered")
             )
             result.thailand_scan_status = buy_flow.get("thailand_scan_status")
-            # Extra buy/thai messages do not alter Russian alert delivery status.
+            result.thailand_job_id = buy_flow.get("thailand_job_id")
+            # Russian BUY telegram only; Thailand follow-up is worker-side.
             if deliver:
                 result.messages_sent = int(result.messages_sent or 0) + int(
                     buy_flow.get("messages_sent") or 0
                 )
-                # Thai telegram failures stay isolated from Russian PARTIAL.
         except Exception:
             traceback.print_exc()
             result.buy_opportunities_count = result.buy_opportunities_count or 0
             result.thailand_scan_triggered = False
-            result.thailand_scan_status = "failed"
+            result.thailand_scan_status = "enqueue_failed"
 
         _record_run(
             db_path,
@@ -513,6 +513,7 @@ def _maybe_notify_n8n(
             buy_opportunities_count=result.buy_opportunities_count,
             thailand_scan_triggered=result.thailand_scan_triggered,
             thailand_scan_status=result.thailand_scan_status,
+            thailand_job_id=result.thailand_job_id,
         )
         post_pipeline_webhook(payload)
     except Exception:

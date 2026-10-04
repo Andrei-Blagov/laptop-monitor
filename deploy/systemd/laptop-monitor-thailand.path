@@ -1,0 +1,12 @@
+[Unit]
+Description=Laptop Monitor Thailand job queue watcher
+Requires=docker.service
+After=docker.service network-online.target
+
+[Path]
+DirectoryNotEmpty=/opt/laptop-monitor/data/thailand_jobs/pending
+Unit=laptop-monitor-thailand.service
+MakeDirectory=true
+
+[Install]
+WantedBy=multi-user.target
