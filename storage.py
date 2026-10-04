@@ -1091,6 +1091,94 @@ def get_price_history_for_product(
     return [dict(row) for row in rows]
 
 
+def get_product_by_id(
+    conn: sqlite3.Connection,
+    product_id: int,
+) -> dict | None:
+    """Read one products row by primary key (no writes)."""
+    row = conn.execute(
+        """
+        SELECT
+            id,
+            store,
+            external_id,
+            sku,
+            name,
+            url,
+            price,
+            available,
+            first_seen_at,
+            last_seen_at,
+            last_checked_at
+        FROM products
+        WHERE id = ?
+        """,
+        (int(product_id),),
+    ).fetchone()
+    if row is None:
+        return None
+    data = dict(row)
+    data["available"] = bool(data.get("available"))
+    return data
+
+
+def get_product_by_id_readonly(
+    db_path: Path | str,
+    product_id: int,
+) -> dict | None:
+    try:
+        conn = open_db_readonly(db_path)
+    except FileNotFoundError:
+        return None
+    try:
+        return get_product_by_id(conn, product_id)
+    except sqlite3.Error:
+        return None
+    finally:
+        conn.close()
+
+
+def get_price_history_for_products(
+    conn: sqlite3.Connection,
+    product_ids: Sequence[int],
+) -> dict[int, list[dict]]:
+    """Batch read price_history for many product ids (ASC by checked_at)."""
+    ids = sorted({int(pid) for pid in product_ids if pid is not None})
+    out: dict[int, list[dict]] = {pid: [] for pid in ids}
+    if not ids:
+        return out
+    placeholders = ",".join("?" for _ in ids)
+    rows = conn.execute(
+        f"""
+        SELECT id, product_id, price, available, checked_at
+        FROM price_history
+        WHERE product_id IN ({placeholders})
+        ORDER BY product_id ASC, checked_at ASC, id ASC
+        """,
+        tuple(ids),
+    ).fetchall()
+    for row in rows:
+        pid = int(row["product_id"])
+        out.setdefault(pid, []).append(dict(row))
+    return out
+
+
+def get_price_history_for_products_readonly(
+    db_path: Path | str,
+    product_ids: Sequence[int],
+) -> dict[int, list[dict]]:
+    try:
+        conn = open_db_readonly(db_path)
+    except FileNotFoundError:
+        return {}
+    try:
+        return get_price_history_for_products(conn, product_ids)
+    except sqlite3.Error:
+        return {}
+    finally:
+        conn.close()
+
+
 def get_previous_price(
     conn: sqlite3.Connection,
     product_id: int,

@@ -3,7 +3,7 @@ from __future__ import annotations
 """
 Telegram control bot (long polling).
 
-Admin-only buttons: run pipeline / top deals / status / version.
+Admin-only buttons: run pipeline / top deals / price history / status / version.
 Does NOT run schema migrations — require migrate_db first.
 """
 
@@ -25,6 +25,19 @@ from run_pipeline import (
     PipelineResult,
     run_pipeline,
     run_status as pipeline_status,
+)
+from model_price_history import (
+    CALLBACK_LIST,
+    CALLBACK_MENU,
+    CALLBACK_MODEL_PREFIX,
+    CALLBACK_REFRESH_PREFIX,
+    build_history_picker_items,
+    build_history_picker_keyboard,
+    build_model_history_report,
+    format_history_picker_message,
+    format_model_history_message,
+    history_nav_keyboard,
+    parse_model_callback,
 )
 from store_freshness import freshness_age_minutes, get_fresh_store_slugs
 from storage import (
@@ -54,6 +67,7 @@ BTN_RUN = "ctrl:run"
 BTN_TOP = "ctrl:top"
 BTN_STATUS = "ctrl:status"
 BTN_VERSION = "ctrl:version"
+BTN_HISTORY = "ctrl:hist"
 
 
 def _api(token: str, method: str) -> str:
@@ -70,6 +84,9 @@ def _keyboard() -> dict[str, Any]:
             [
                 {"text": "Запустить проверку", "callback_data": BTN_RUN},
                 {"text": "Топ предложений", "callback_data": BTN_TOP},
+            ],
+            [
+                {"text": "📈 История цены", "callback_data": BTN_HISTORY},
             ],
             [
                 {"text": "Статус", "callback_data": BTN_STATUS},
@@ -139,6 +156,7 @@ def send_message(
     text: str,
     *,
     with_keyboard: bool = True,
+    reply_markup: dict[str, Any] | None = None,
 ) -> bool:
     payload: dict[str, Any] = {
         "chat_id": chat_id,
@@ -146,9 +164,32 @@ def send_message(
         "parse_mode": "HTML",
         "disable_web_page_preview": True,
     }
-    if with_keyboard:
+    if reply_markup is not None:
+        payload["reply_markup"] = reply_markup
+    elif with_keyboard:
         payload["reply_markup"] = _keyboard()
     return _post_telegram(client, token, "sendMessage", payload) is not None
+
+
+def edit_message(
+    client: httpx.Client,
+    token: str,
+    chat_id: str | int,
+    message_id: int,
+    text: str,
+    *,
+    reply_markup: dict[str, Any] | None = None,
+) -> bool:
+    payload: dict[str, Any] = {
+        "chat_id": chat_id,
+        "message_id": int(message_id),
+        "text": text,
+        "parse_mode": "HTML",
+        "disable_web_page_preview": True,
+    }
+    if reply_markup is not None:
+        payload["reply_markup"] = reply_markup
+    return _post_telegram(client, token, "editMessageText", payload) is not None
 
 
 def answer_callback(
@@ -160,6 +201,79 @@ def answer_callback(
     return (
         _post_telegram(client, token, "answerCallbackQuery", payload, timeout=15.0)
         is not None
+    )
+
+
+def _reply_or_edit(
+    client: httpx.Client,
+    token: str,
+    chat_id: str | int,
+    text: str,
+    *,
+    message_id: int | None,
+    reply_markup: dict[str, Any] | None,
+) -> None:
+    if message_id is not None:
+        ok = edit_message(
+            client,
+            token,
+            chat_id,
+            message_id,
+            text,
+            reply_markup=reply_markup,
+        )
+        if ok:
+            return
+    send_message(
+        client,
+        token,
+        chat_id,
+        text,
+        with_keyboard=False,
+        reply_markup=reply_markup,
+    )
+
+
+def handle_history_list(
+    client: httpx.Client,
+    token: str,
+    chat_id: str | int,
+    *,
+    message_id: int | None = None,
+) -> None:
+    items = build_history_picker_items(DEFAULT_DB_PATH)
+    text = format_history_picker_message(items)
+    markup = build_history_picker_keyboard(items)
+    _reply_or_edit(
+        client,
+        token,
+        chat_id,
+        text,
+        message_id=message_id,
+        reply_markup=markup,
+    )
+
+
+def handle_history_model(
+    client: httpx.Client,
+    token: str,
+    chat_id: str | int,
+    product_id: int,
+    *,
+    message_id: int | None = None,
+) -> None:
+    report = build_model_history_report(DEFAULT_DB_PATH, product_id)
+    text = format_model_history_message(report)
+    markup = history_nav_keyboard(product_id) if report.found else build_history_picker_keyboard(
+        build_history_picker_items(DEFAULT_DB_PATH)
+    )
+    _reply_or_edit(
+        client,
+        token,
+        chat_id,
+        text,
+        message_id=message_id,
+        reply_markup=markup,
     )
 
 
@@ -375,6 +489,12 @@ def process_update(client: httpx.Client, token: str, update: dict[str, Any]) -> 
             answer_callback(client, token, cb_id, "Недостаточно прав")
             return
         answer_callback(client, token, cb_id)
+        msg = callback.get("message") or {}
+        message_id_raw = msg.get("message_id")
+        try:
+            message_id = int(message_id_raw) if message_id_raw is not None else None
+        except (TypeError, ValueError):
+            message_id = None
         if data == BTN_RUN:
             handle_run(client, token, chat_id)
         elif data == BTN_TOP:
@@ -388,6 +508,38 @@ def process_update(client: httpx.Client, token: str, update: dict[str, Any]) -> 
                 chat_id,
                 f"{APP_NAME} {get_version()}\nInstance: {config.get_instance_id()}",
             )
+        elif data in {BTN_HISTORY, CALLBACK_LIST}:
+            handle_history_list(
+                client, token, chat_id, message_id=message_id
+            )
+        elif data == CALLBACK_MENU:
+            _reply_or_edit(
+                client,
+                token,
+                chat_id,
+                f"<b>{APP_NAME}</b> {get_version()}\nВыберите действие:",
+                message_id=message_id,
+                reply_markup=_keyboard(),
+            )
+        elif data.startswith(CALLBACK_MODEL_PREFIX) or data.startswith(
+            CALLBACK_REFRESH_PREFIX
+        ):
+            product_id = parse_model_callback(data)
+            if product_id is None:
+                send_message(
+                    client,
+                    token,
+                    chat_id,
+                    "Не удалось разобрать модель.",
+                )
+            else:
+                handle_history_model(
+                    client,
+                    token,
+                    chat_id,
+                    product_id,
+                    message_id=message_id,
+                )
         return
 
     if message:

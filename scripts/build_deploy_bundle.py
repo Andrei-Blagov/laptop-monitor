@@ -31,6 +31,7 @@ ALLOWLIST_FILES = (
     "enrichment.py",
     "identity_sync.py",
     "main.py",
+    "model_price_history.py",
     "models.py",
     "monitor.py",
     "notification_groups.py",
@@ -59,6 +60,7 @@ ALLOWLIST_SCRIPTS = (
     "scripts/backup_db.py",
     "scripts/migrate_db.py",
     "scripts/build_deploy_bundle.py",
+    "scripts/diagnose_model_price_history.py",
 )
 
 FORBIDDEN_NAME_PARTS = (
