@@ -302,6 +302,33 @@ class PipelineAsyncTests(unittest.TestCase):
             self.assertFalse(out["thailand_scan_triggered"])
             self.assertEqual(pending_count(root / "jobs"), 0)
 
+    def test_pipeline_creates_sender_when_none(self) -> None:
+        """CLI/systemd pipeline passes sender=None; BUY must still Telegram."""
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            deal = _deal()
+            fake = MagicMock()
+            fake.send_message.return_value = MagicMock(ok=True)
+            fake.close = MagicMock()
+            with patch(
+                "buy_thailand_flow.config.get_telegram_credentials",
+                return_value=("tok", "1"),
+            ), patch(
+                "buy_thailand_flow.TelegramSender",
+                return_value=fake,
+            ):
+                out = evaluate_buy_opportunity_flow(
+                    russian_deals=[deal],
+                    sender=None,
+                    deliver=True,
+                    state_path=root / "s.json",
+                    jobs_dir=root / "jobs",
+                )
+            self.assertEqual(out["messages_sent"], 1)
+            fake.send_message.assert_called_once()
+            fake.close.assert_called_once()
+            self.assertEqual(pending_count(root / "jobs"), 1)
+
     def test_enqueue_failure_keeps_russian_success_semantics(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
             root = Path(tmp)

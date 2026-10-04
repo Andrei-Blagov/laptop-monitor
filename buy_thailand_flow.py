@@ -17,7 +17,7 @@ from buy_opportunity import (
 )
 from deal_ranking import RankedDeal
 from russian_deals import load_russian_ranked_deals
-from telegram_sender import MessageSender
+from telegram_sender import MessageSender, TelegramSender
 from thailand.formatting import (
     format_buy_opportunity_message,
     format_thailand_alternatives_message,
@@ -141,16 +141,35 @@ def evaluate_buy_opportunity_flow(
             thailand_enqueue_failed=enqueue_failed,
         )
         out["messages"] = [text]
-        if deliver and sender is not None:
-            try:
-                res = sender.send_message(text)
-                if getattr(res, "ok", False):
-                    out["messages_sent"] += 1
-                else:
+        if deliver:
+            transport = sender
+            owns = False
+            if transport is None:
+                try:
+                    token, chat = config.get_telegram_credentials()
+                    transport = TelegramSender(token, str(chat))
+                    owns = True
+                except Exception as exc:  # noqa: BLE001
+                    logger.warning(
+                        "buy telegram sender init failed: %s", type(exc).__name__
+                    )
+                    transport = None
+            if transport is not None:
+                try:
+                    res = transport.send_message(text)
+                    if getattr(res, "ok", False):
+                        out["messages_sent"] += 1
+                    else:
+                        out["messages_failed"] += 1
+                except Exception as exc:  # noqa: BLE001
+                    logger.warning("buy telegram send failed: %s", type(exc).__name__)
                     out["messages_failed"] += 1
-            except Exception as exc:  # noqa: BLE001
-                logger.warning("buy telegram send failed: %s", type(exc).__name__)
-                out["messages_failed"] += 1
+                finally:
+                    if owns:
+                        try:
+                            transport.close()
+                        except Exception:
+                            pass
         return out
     except Exception as exc:  # noqa: BLE001
         logger.warning("evaluate_buy_opportunity_flow failed: %s", type(exc).__name__)
