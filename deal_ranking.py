@@ -420,48 +420,66 @@ def _select_reasons(reasons: list[str], breakdown: Mapping[str, float]) -> list[
     return reasons[:5]
 
 
+def _merge_spec_field(current: Any, incoming: Any) -> Any:
+    return current if current is not None and current != "" else incoming
+
+
 def _extract_specs(
     match: Any,
     best: Any,
     specs_by_key: Mapping[tuple[str, str], Any] | None,
 ) -> dict[str, Any]:
+    """
+    Resolve specs for a cluster without inventing values.
+
+    Prefer identity/cache from any offer in the cluster (not only the cheapest
+    store), then fall back to title/URL extraction across offer names.
+    """
     gpu = None
     ram_gb = None
     ssd_gb = None
     screen_inch = None
     cpu = None
     screen_resolution = None
+
+    offers = list(getattr(match, "offers", []) or [])
+    # Cheapest/fresh best first, then remaining offers.
+    ordered_offers = [best] + [o for o in offers if o is not best]
+
     if specs_by_key:
-        key = (best.store, best.external_id)
-        spec = specs_by_key.get(key)
-        if spec is not None:
-            gpu = getattr(spec, "gpu", None) or getattr(spec, "normalized_gpu", None)
-            ram_gb = getattr(spec, "ram_gb", None)
-            ssd_gb = getattr(spec, "ssd_gb", None)
-            screen_inch = getattr(spec, "screen_inch", None) or getattr(
-                spec, "screen_size_inch", None
+        for offer in ordered_offers:
+            key = (offer.store, offer.external_id)
+            spec = specs_by_key.get(key)
+            if spec is None:
+                continue
+            gpu = _merge_spec_field(
+                gpu, getattr(spec, "gpu", None) or getattr(spec, "normalized_gpu", None)
             )
-            cpu = getattr(spec, "cpu", None)
-            screen_resolution = getattr(spec, "screen_resolution", None)
+            ram_gb = _merge_spec_field(ram_gb, getattr(spec, "ram_gb", None))
+            ssd_gb = _merge_spec_field(ssd_gb, getattr(spec, "ssd_gb", None))
+            screen_inch = _merge_spec_field(
+                screen_inch,
+                getattr(spec, "screen_inch", None)
+                or getattr(spec, "screen_size_inch", None),
+            )
+            cpu = _merge_spec_field(cpu, getattr(spec, "cpu", None))
+            screen_resolution = _merge_spec_field(
+                screen_resolution, getattr(spec, "screen_resolution", None)
+            )
+
     from stores.common import extract_specs_from_name
 
-    name_blob = " ".join(
-        x
-        for x in (
-            getattr(match, "name", None),
-            getattr(best, "name", None),
-            getattr(best, "url", None),
-        )
-        if x
-    )
+    name_parts = [getattr(match, "name", None)]
+    for offer in ordered_offers:
+        name_parts.append(getattr(offer, "name", None))
+        name_parts.append(getattr(offer, "url", None))
+    name_blob = " ".join(x for x in name_parts if x)
     inferred = extract_specs_from_name(name_blob)
-    gpu = gpu or inferred.get("gpu")
-    ram_gb = ram_gb if ram_gb is not None else inferred.get("ram_gb")
-    ssd_gb = ssd_gb if ssd_gb is not None else inferred.get("ssd_gb")
-    screen_inch = (
-        screen_inch if screen_inch is not None else inferred.get("screen_inch")
-    )
-    cpu = cpu or inferred.get("cpu")
+    gpu = _merge_spec_field(gpu, inferred.get("gpu"))
+    ram_gb = _merge_spec_field(ram_gb, inferred.get("ram_gb"))
+    ssd_gb = _merge_spec_field(ssd_gb, inferred.get("ssd_gb"))
+    screen_inch = _merge_spec_field(screen_inch, inferred.get("screen_inch"))
+    cpu = _merge_spec_field(cpu, inferred.get("cpu"))
     return {
         "gpu": gpu,
         "ram_gb": ram_gb,

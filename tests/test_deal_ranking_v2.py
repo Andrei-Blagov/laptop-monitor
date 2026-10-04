@@ -9,6 +9,7 @@ import config
 from comparison import Offer, ProductMatch
 from deal_ranking import (
     RankedDeal,
+    canonical_gpu,
     classify_cpu,
     compute_confidence,
     format_top_deals_message,
@@ -512,6 +513,47 @@ class DealRankingV2Tests(unittest.TestCase):
             for d in ranked
         ]
         self.assertEqual(payload[0]["name"], ranked[0].cluster_name)
+
+    def test_33_cluster_specs_from_sibling_offer(self) -> None:
+        """Cheapest store may lack cache; sibling identity still supplies GPU."""
+        match = _match(
+            "Gigabyte A16",
+            [
+                _offer(
+                    store="kns",
+                    external_id="cheap",
+                    price=256_000,
+                    product_id=1,
+                    name="Gigabyte A16 no gpu token",
+                ),
+                _offer(
+                    store="regard",
+                    external_id="rich",
+                    price=270_000,
+                    product_id=2,
+                    name="Gigabyte A16 regard",
+                ),
+            ],
+            sku="G",
+        )
+        specs = {
+            ("regard", "rich"): type(
+                "S",
+                (),
+                {
+                    "gpu": "RTX 5080 LAPTOP",
+                    "cpu": "INTEL CORE 7 240H",
+                    "ram_gb": 32,
+                    "ssd_gb": 1024,
+                    "screen_size_inch": 16.0,
+                    "screen_resolution": "2560x1600",
+                },
+            )(),
+        }
+        ranked = rank_clusters([match], specs_by_key=specs, fresh_stores={"kns", "regard"})
+        self.assertEqual(ranked[0].store, "kns")
+        self.assertIsNotNone(canonical_gpu(ranked[0].gpu))
+        self.assertGreaterEqual(ranked[0].score, 50)
 
     def test_32_top_deals_prices_le_300k(self) -> None:
         matches = [
