@@ -38,6 +38,8 @@ class ThailandOffer:
     metadata: dict[str, Any] = field(default_factory=dict)
     # Marketplace / Lazada channel
     marketplace: bool = False
+    channel: str | None = None  # "direct" | "lazada" | ...
+    retailer_brand: str | None = None  # e.g. BaNANA when sold via Lazada
     seller_name: str | None = None
     seller_id: str | None = None
     seller_type: str | None = None

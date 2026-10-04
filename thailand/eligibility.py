@@ -121,12 +121,14 @@ def sort_value_rows(rows: list[dict[str, Any]]) -> list[dict[str, Any]]:
 
 
 def sort_cheapest_rows(rows: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    """User-facing default: price_rub ASC, then value score, then confidence."""
     return sorted(
         rows,
         key=lambda r: (
             r.get("price_rub") if r.get("price_rub") is not None else 10**12,
-            r.get("price_thb") if r.get("price_thb") is not None else 10**12,
             -(r.get("international_score") or 0),
+            -(r.get("international_confidence") or 0),
+            r.get("price_thb") if r.get("price_thb") is not None else 10**12,
         ),
     )
 

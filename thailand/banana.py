@@ -308,76 +308,42 @@ def _collect_browser(
     timeout: float,
     collected_at: datetime,
 ) -> tuple[list[ThailandOffer], list[str]]:
+    """Single bounded browser attempt (no repeated retries on Cloudflare)."""
     from thailand.browser import chromium_page
 
     offers: list[ThailandOffer] = []
     errors: list[str] = []
-    timeout_ms = int(max(5_000, timeout * 1000))
+    # Keep browser attempt short — Cloudflare usually fails immediately.
+    timeout_ms = int(min(max(5_000, timeout * 1000), 20_000))
+    url, gpu = SEARCH_URLS[0], "RTX 5070 Ti"
     try:
-        with chromium_page(timeout_ms=timeout_ms) as page:
-            for url, gpu in (
-                (SEARCH_URLS[0], "RTX 5070 Ti"),
-                (SEARCH_URLS[1], "RTX 5080"),
+        with chromium_page(timeout_ms=timeout_ms, block_heavy_resources=True) as page:
+            try:
+                page.goto(url, wait_until="domcontentloaded", timeout=timeout_ms)
+                page.wait_for_timeout(2000)
+                html = page.content()
+            except Exception as exc:  # noqa: BLE001
+                errors.append(type(exc).__name__)
+                return offers, errors
+            title = ""
+            try:
+                title = page.title() or ""
+            except Exception:  # noqa: BLE001
+                pass
+            if (
+                looks_like_challenge_page(html)
+                or "Attention Required" in title
+                or "Cloudflare" in title
             ):
-                try:
-                    page.goto(url, wait_until="domcontentloaded", timeout=timeout_ms)
-                    page.wait_for_timeout(3000)
-                    html = page.content()
-                except Exception as exc:  # noqa: BLE001
-                    errors.append(type(exc).__name__)
-                    continue
-                title = ""
-                try:
-                    title = page.title() or ""
-                except Exception:  # noqa: BLE001
-                    pass
-                if (
-                    looks_like_challenge_page(html)
-                    or "Attention Required" in title
-                    or "Cloudflare" in title
-                ):
-                    errors.append("challenge")
-                    continue
-                batch = parse_banana_html(
-                    html, catalog_gpu=gpu, collected_at=collected_at
-                )
-                if not batch:
-                    # Visible card fallback: product links + text
-                    try:
-                        cards = page.evaluate(
-                            """() => [...document.querySelectorAll('a[href*=\"/th/p/\"]')]
-                            .slice(0, 40).map(a => ({
-                              href: a.href,
-                              name: (a.getAttribute('title') || a.innerText || '').trim(),
-                              text: (a.closest('div')?.innerText || a.innerText || '').slice(0, 500)
-                            }))"""
-                        )
-                    except Exception:  # noqa: BLE001
-                        cards = []
-                    for card in cards or []:
-                        name = str(card.get("name") or "").strip()
-                        href = str(card.get("href") or "").strip()
-                        text = str(card.get("text") or name)
-                        if not name or not href:
-                            continue
-                        eid = href.rstrip("/").split("/")[-1] or href
-                        price = parse_thb_price(text)
-                        raw = {
-                            "name": name,
-                            "external_id": eid,
-                            "url": href,
-                            "price_thb": price,
-                            "available": True,
-                            "availability_status": "in_stock",
-                            "source": "bnn_browser_dom",
-                        }
-                        offer = parse_banana_product_dict(
-                            raw, catalog_gpu=gpu, collected_at=collected_at
-                        )
-                        if offer:
-                            offer.metadata["collection_mode"] = "browser"
-                            batch.append(offer)
-                offers.extend(batch)
+                errors.append("challenge")
+                return offers, errors
+            batch = parse_banana_html(
+                html, catalog_gpu=gpu, collected_at=collected_at
+            )
+            for o in batch:
+                o.channel = "direct"
+                o.metadata["collection_mode"] = "browser"
+            offers.extend(batch)
     except Exception as exc:  # noqa: BLE001
         errors.append(type(exc).__name__)
     return offers, errors
@@ -407,21 +373,35 @@ def collect(
     collection_mode = "failed"
     try:
         now = datetime.now(timezone.utc)
-        offers, errors, mode = _collect_http(client, timeout=timeout, collected_at=now)
+        # Short HTTP timeout for known Cloudflare walls.
+        http_timeout = min(timeout, 12.0)
+        offers, errors, mode = _collect_http(
+            client, timeout=http_timeout, collected_at=now
+        )
         if mode:
             collection_mode = mode
-        # Browser fallback when HTTP blocked/empty (plain Chromium, no stealth).
+        for o in offers:
+            o.channel = "direct"
+        # One bounded browser attempt only after HTTP 403/challenge.
         http_blocked = any(
             e.startswith("HTTP_403") or e in {"blocked", "challenge"} for e in errors
         )
-        if not offers and allow_browser and (http_blocked or not mode):
-            b_offers, b_errors = _collect_browser(timeout=timeout, collected_at=now)
+        if not offers and allow_browser and http_blocked:
+            b_offers, b_errors = _collect_browser(
+                timeout=min(timeout, 20.0), collected_at=now
+            )
             errors.extend(b_errors)
             if b_offers:
                 offers = b_offers
                 collection_mode = "browser"
-            elif "challenge" in b_errors:
+            else:
                 collection_mode = "failed"
+                if "challenge" in b_errors or any(
+                    e.startswith("HTTP_403") for e in errors
+                ):
+                    errors = ["Cloudflare"] + [
+                        e for e in errors if e != "Cloudflare"
+                    ]
         final = _dedupe(offers)
         # Split verified vs unverified
         from thailand.verification import is_verified_for_ranking

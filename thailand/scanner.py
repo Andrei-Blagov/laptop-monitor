@@ -15,9 +15,7 @@ from deal_ranking import RankedDeal
 from thailand.comparison import country_verdict
 from thailand.eligibility import (
     EXCLUDED_FX_UNUSABLE,
-    EXCLUDED_PRICE_ABOVE_CAP,
     annotate_offer_price_scope,
-    apply_near_price_trust_preference,
     effective_thb_cap,
     max_tracked_price_rub,
     offer_user_facing_eligible,
@@ -26,12 +24,15 @@ from thailand.eligibility import (
     sort_value_rows,
 )
 from thailand.fx import fetch_cbr_thb_rate, fx_usable_for_verdict, thb_to_rub
+from thailand.grouping import dedupe_user_facing_rows
 from thailand.matching import group_thai_offers, match_russian_to_thai
 from thailand.models import FxRate, StoreScanResult, ThailandOffer
 from thailand.registry import get_thailand_adapters
 from thailand.scoring import international_value_score
 from thailand.seller_trust import (
+    annotate_marketplace_identity,
     classify_seller_trust,
+    is_banana_it_seller,
     marketplace_confidence,
     store_display_label,
 )
@@ -73,18 +74,25 @@ def collect_thailand_offers(
     if not adapters:
         return [], [], [], 0.0
 
-    if parallel and len(adapters) > 1:
-        with ThreadPoolExecutor(max_workers=len(adapters)) as pool:
+    # Playwright sync API is not safe in worker threads — keep browser stores
+    # on the main thread; parallelize HTTP-only retailers.
+    browser_slugs = {"lazada", "banana"}
+    http_adapters = [a for a in adapters if a.slug not in browser_slugs]
+    browser_adapters = [a for a in adapters if a.slug in browser_slugs]
+
+    if parallel and len(http_adapters) > 1:
+        with ThreadPoolExecutor(max_workers=len(http_adapters)) as pool:
             futs = {
-                pool.submit(_collect_store, a, per_store_timeout): a for a in adapters
+                pool.submit(_collect_store, a, per_store_timeout): a
+                for a in http_adapters
             }
             try:
                 for fut in as_completed(futs, timeout=overall_timeout):
                     results.append(fut.result())
             except TimeoutError:
-                logger.warning("Thailand overall scan timeout")
+                logger.warning("Thailand overall scan timeout (http stores)")
                 done_stores = {r.store for r in results}
-                for a in adapters:
+                for a in http_adapters:
                     if a.slug not in done_stores:
                         results.append(
                             StoreScanResult(
@@ -95,7 +103,7 @@ def collect_thailand_offers(
                             )
                         )
     else:
-        for a in adapters:
+        for a in http_adapters:
             if time.perf_counter() - started > overall_timeout:
                 results.append(
                     StoreScanResult(
@@ -104,6 +112,14 @@ def collect_thailand_offers(
                 )
                 continue
             results.append(_collect_store(a, per_store_timeout))
+
+    for a in browser_adapters:
+        if time.perf_counter() - started > overall_timeout:
+            results.append(
+                StoreScanResult(store=a.slug, ok=False, offers=[], error="timeout")
+            )
+            continue
+        results.append(_collect_store(a, per_store_timeout))
 
     # Stable order
     order = {a.slug: i for i, a in enumerate(adapters)}
@@ -128,6 +144,8 @@ def _offer_to_top_row(
         screen_inch=o.screen_size_inch,
         screen_resolution=o.screen_resolution,
     )
+    if o.marketplace:
+        annotate_marketplace_identity(o)
     tier = o.seller_trust_tier or (
         classify_seller_trust(o) if o.marketplace else None
     )
@@ -146,6 +164,8 @@ def _offer_to_top_row(
         "ssd_gb": o.ssd_gb,
         "screen_size_inch": o.screen_size_inch,
         "screen_resolution": o.screen_resolution,
+        "sku": o.sku,
+        "manufacturer_part_number": o.manufacturer_part_number,
         "price_thb": o.price_thb,
         "price_rub": price_rub,
         "price_source": o.price_source,
@@ -159,7 +179,10 @@ def _offer_to_top_row(
         "international_raw": score.raw,
         "score_breakdown": score.breakdown,
         "marketplace": bool(o.marketplace),
+        "channel": o.channel or ("lazada" if o.marketplace else "direct"),
+        "retailer_brand": o.retailer_brand,
         "seller_name": o.seller_name,
+        "listing_id": o.listing_id,
         "seller_trust_tier": tier,
         "marketplace_confidence": mconf,
         "official_store": bool(o.official_store),
@@ -169,15 +192,12 @@ def _offer_to_top_row(
     }
 
 
-def build_thai_top(
+def _eligible_rows(
     offers: Sequence[ThailandOffer],
     *,
     fx: FxRate | None,
-    limit: int | None = None,
     verified_only: bool = True,
 ) -> list[dict[str, Any]]:
-    """Build TOP from verified purchasable offers within MAX_TRACKED_PRICE_RUB."""
-    limit = int(limit if limit is not None else config.THAILAND_TOP_LIMIT)
     if not fx_usable_for_verdict(fx):
         return []
     rows: list[dict[str, Any]] = []
@@ -188,8 +208,21 @@ def build_thai_top(
         if not ok:
             continue
         rows.append(_offer_to_top_row(o, price_rub=rub))
-    rows = sort_value_rows(rows)
-    rows = apply_near_price_trust_preference(rows)
+    return rows
+
+
+def build_thai_top(
+    offers: Sequence[ThailandOffer],
+    *,
+    fx: FxRate | None,
+    limit: int | None = None,
+    verified_only: bool = True,
+) -> list[dict[str, Any]]:
+    """User-facing TOP: cheapest RUB first among eligible offers (deduped)."""
+    limit = int(limit if limit is not None else config.THAILAND_TOP_LIMIT)
+    rows = _eligible_rows(offers, fx=fx, verified_only=verified_only)
+    rows, _removed = dedupe_user_facing_rows(rows)
+    rows = sort_cheapest_rows(rows)
     return rows[:limit]
 
 
@@ -199,16 +232,22 @@ def build_cheapest_eligible(
     fx: FxRate | None,
     limit: int | None = None,
 ) -> list[dict[str, Any]]:
+    """Alias of user-facing cheapest TOP (diagnostic name)."""
+    return build_thai_top(offers, fx=fx, limit=limit, verified_only=True)
+
+
+def build_value_ranked_eligible(
+    offers: Sequence[ThailandOffer],
+    *,
+    fx: FxRate | None,
+    limit: int | None = None,
+) -> list[dict[str, Any]]:
+    """Diagnostic value ranking (score DESC); not default Telegram order."""
     limit = int(limit if limit is not None else config.THAILAND_TOP_LIMIT)
-    if not fx_usable_for_verdict(fx):
-        return []
-    rows: list[dict[str, Any]] = []
-    for o in offers:
-        ok, _reason, rub = offer_user_facing_eligible(o, fx=fx, require_verified=True)
-        if not ok:
-            continue
-        rows.append(_offer_to_top_row(o, price_rub=rub))
-    return sort_cheapest_rows(rows)[:limit]
+    rows = _eligible_rows(offers, fx=fx, verified_only=True)
+    rows, _removed = dedupe_user_facing_rows(rows)
+    rows = sort_value_rows(rows)
+    return rows[:limit]
 
 
 def summarize_price_cap(
@@ -277,6 +316,10 @@ def run_thailand_scan(
 
         price_rub_map: dict[str, int | None] = {}
         for o in list(offers) + list(unverified):
+            if o.marketplace:
+                annotate_marketplace_identity(o)
+            elif not o.channel:
+                o.channel = "direct"
             annotate_offer_price_scope(o, fx=fx)
             if o.marketplace and not o.seller_trust_tier:
                 o.seller_trust_tier = classify_seller_trust(o)
@@ -328,6 +371,10 @@ def run_thailand_scan(
 
         top = build_thai_top(offers, fx=fx, verified_only=True)
         cheapest = build_cheapest_eligible(offers, fx=fx)
+        value_ranked = build_value_ranked_eligible(offers, fx=fx)
+        # Count duplicates removed for report
+        raw_eligible_rows = _eligible_rows(offers, fx=fx, verified_only=True)
+        _deduped, duplicates_removed = dedupe_user_facing_rows(raw_eligible_rows)
         cap_summary = summarize_price_cap(offers, fx=fx)
         eligible_offers = []
         over_cap_offers = []
@@ -338,6 +385,24 @@ def run_thailand_scan(
             ok, _, _ = offer_user_facing_eligible(o, fx=fx, require_verified=True)
             if ok:
                 eligible_offers.append(o)
+        direct_banana = [o for o in offers if o.store == "banana" and not o.marketplace]
+        lazada_banana = [
+            o
+            for o in offers
+            if o.marketplace
+            and (
+                o.retailer_brand == "BaNANA"
+                or is_banana_it_seller(o.seller_name)
+            )
+        ]
+        lazada_jib = [
+            o
+            for o in offers
+            if o.marketplace and (o.retailer_brand == "JIB" or (o.seller_name or "").upper().find("JIB") >= 0)
+        ]
+        official_brand = [
+            o for o in offers if o.marketplace and (o.official_store or o.mall)
+        ]
         groups = group_thai_offers(offers)
         match_runtime = time.perf_counter() - match_t0
 
@@ -415,6 +480,12 @@ def run_thailand_scan(
                 },
                 "thailand_top": top,
                 "cheapest_eligible_thailand": cheapest,
+                "value_ranked_eligible_thailand": value_ranked,
+                "duplicates_removed_from_top": duplicates_removed,
+                "direct_banana_offers": len(direct_banana),
+                "lazada_banana_offers": len(lazada_banana),
+                "lazada_jib_offers": len(lazada_jib),
+                "official_brand_store_offers": len(official_brand),
                 "unverified_count": len(unverified),
                 "thai_groups": len(groups),
                 "runtimes": {
@@ -422,6 +493,9 @@ def run_thailand_scan(
                     "collect_seconds": round(collect_runtime, 3),
                     "matching_seconds": round(match_runtime, 3),
                     "overall_seconds": round(time.perf_counter() - t0, 3),
+                    "per_store_seconds": {
+                        r.store: r.duration_seconds for r in store_results
+                    },
                 },
                 "_store_results": store_results,
                 "_fx": fx,
@@ -429,6 +503,7 @@ def run_thailand_scan(
                 "_comparison": comparison,
                 "_top": top,
                 "_match_over_cap_note": match_over_cap_note,
+                "_lazada_banana_offers": lazada_banana,
             }
         )
 

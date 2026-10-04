@@ -16,6 +16,7 @@ def chromium_page(
     *,
     locale: str = "th-TH",
     timeout_ms: int | None = None,
+    block_heavy_resources: bool | None = None,
 ) -> Iterator[object]:
     """
     Yield a Playwright page; always close browser in finally.
@@ -35,6 +36,10 @@ def chromium_page(
         if timeout_ms is not None
         else getattr(config, "THAILAND_BROWSER_TIMEOUT_MS", 45_000)
     )
+    if block_heavy_resources is None:
+        block_heavy_resources = bool(
+            getattr(config, "THAILAND_LAZADA_BLOCK_HEAVY_RESOURCES", True)
+        )
     with sync_playwright() as p:
         browser = p.chromium.launch(
             headless=True,
@@ -50,6 +55,19 @@ def chromium_page(
                     "Chrome/128.0.0.0 Safari/537.36"
                 ),
             )
+            if block_heavy_resources:
+                def _route(route) -> None:  # type: ignore[no-untyped-def]
+                    # Keep stylesheets — Lazada search DOM often depends on them.
+                    rtype = route.request.resource_type
+                    if rtype in {"image", "media", "font"}:
+                        route.abort()
+                    else:
+                        route.continue_()
+
+                try:
+                    context.route("**/*", _route)
+                except Exception:  # noqa: BLE001
+                    pass
             page = context.new_page()
             page.set_default_timeout(timeout_ms)
             yield page

@@ -16,7 +16,11 @@ import config
 from deal_ranking import canonical_gpu
 from stores.common import looks_like_challenge_page
 from thailand.models import StoreScanResult, ThailandOffer
-from thailand.seller_trust import classify_seller_trust, marketplace_confidence
+from thailand.seller_trust import (
+    annotate_marketplace_identity,
+    classify_seller_trust,
+    marketplace_confidence,
+)
 from thailand.specs_parse import (
     exclude_non_target_gpu,
     gpu_from_explicit_text,
@@ -44,9 +48,33 @@ logger = logging.getLogger(__name__)
 
 STORE = "lazada"
 BASE = "https://www.lazada.co.th"
-SEARCH_QUERIES = (
-    "RTX 5070 Ti notebook",
-    "RTX 5080 notebook",
+
+
+def looks_like_lazada_punish(html: str) -> bool:
+    """Lazada/Aliyun slide/punish interstitial (not Cloudflare; do not bypass)."""
+    low = (html or "").lower()
+    return any(
+        marker in low
+        for marker in (
+            "sufei-punish",
+            "bx-pu-qrcode",
+            "x5secdata",
+            "punish/baxia",
+            "captcha",
+        )
+    ) and ("alicdn.com" in low or "lazada" in low or "x5sec" in low)
+
+# Generic discovery + targeted trusted-seller discovery (one browser session).
+# Query seller tokens are discovery hints only — never override listing seller/GPU.
+LAZADA_SEARCH_PLAN: tuple[tuple[str, str | None], ...] = (
+    ("RTX 5070 Ti notebook", None),
+    ("RTX 5080 notebook", None),
+    ("BaNANA IT RTX 5070 Ti notebook", "BaNANA IT"),
+    ("BaNANA IT RTX 5080 notebook", "BaNANA IT"),
+    ("JIB Computer Group RTX 5070 Ti notebook", "JIB"),
+    ("ASUS Official Store RTX 5070 Ti notebook", "ASUS"),
+    ("GIGABYTE AORUS RTX 5070 Ti notebook", "GIGABYTE"),
+    ("Lenovo Official RTX 5070 Ti notebook", "Lenovo"),
 )
 
 
@@ -418,13 +446,51 @@ def parse_lazada_payload(
     return out
 
 
-def _collect_http(
+def _dedupe_offers(offers: list[ThailandOffer]) -> list[ThailandOffer]:
+    by_key: dict[str, ThailandOffer] = {}
+    for o in offers:
+        keys = [
+            o.external_id,
+            o.listing_id or "",
+            o.product_id or "",
+            (o.url or "").split("?")[0],
+        ]
+        key = next((k for k in keys if k), o.external_id)
+        prev = by_key.get(key)
+        if prev is None:
+            by_key[key] = o
+            continue
+        # Keep cheaper public price when duplicate.
+        if (o.price_thb or 10**12) < (prev.price_thb or 10**12):
+            by_key[key] = o
+    return list(by_key.values())
+
+
+def _collect_http_probe(
     client: httpx.Client, *, timeout: float, collected_at: datetime
+) -> tuple[list[ThailandOffer], list[str], str | None]:
+    """Fast HTTP probe — only first two generic queries (shell HTML expected)."""
+    return _collect_http(
+        client,
+        timeout=timeout,
+        collected_at=collected_at,
+        plan=LAZADA_SEARCH_PLAN[:2],
+    )
+
+
+def _collect_http(
+    client: httpx.Client,
+    *,
+    timeout: float,
+    collected_at: datetime,
+    plan: tuple[tuple[str, str | None], ...] | None = None,
 ) -> tuple[list[ThailandOffer], list[str], str | None]:
     offers: list[ThailandOffer] = []
     errors: list[str] = []
     mode: str | None = None
-    for q, gpu in zip(SEARCH_QUERIES, ("RTX 5070 Ti", "RTX 5080")):
+    for q, _hint in (plan if plan is not None else LAZADA_SEARCH_PLAN):
+        # _hint is discovery-only; never applied as seller override.
+        gpu = "RTX 5080" if "5080" in q else "RTX 5070 Ti"
         url = _search_url(q)
         try:
             resp = client.get(url, timeout=timeout)
@@ -483,67 +549,170 @@ def _parse_json_response_text(text: str) -> Any | None:
     return None
 
 
+def _parse_dom_cards(
+    cards: list[dict[str, Any]],
+    *,
+    catalog_gpu: str | None,
+    collected_at: datetime,
+) -> list[ThailandOffer]:
+    batch: list[ThailandOffer] = []
+    for card in cards or []:
+        name = str(card.get("name") or "").strip()
+        href = str(card.get("href") or "").strip()
+        text = str(card.get("text") or "")
+        if not name or not href:
+            continue
+        m = re.search(r"[Ii]-?(\d{6,})", href) or re.search(
+            r"/products/[^?]*-i(\d+)", href
+        )
+        item_id = m.group(1) if m else href.rstrip("/").split("/")[-1]
+        low_text = text.lower()
+        official = any(
+            x in low_text
+            for x in ("official store", "flagship store", "ร้านค้าอย่างเป็นทางการ")
+        )
+        mall = any(x in low_text for x in ("lazmall", "laz mall", "mall"))
+        seller = None
+        for line in text.splitlines():
+            line_s = line.strip()
+            if not line_s or len(line_s) < 2:
+                continue
+            low = line_s.lower()
+            if parse_thb_price(line_s) is not None and len(line_s) < 20:
+                continue
+            if any(
+                k in low
+                for k in (
+                    "official",
+                    "store",
+                    "jib",
+                    "banana",
+                    "asus",
+                    "lenovo",
+                    "advice",
+                    "mall",
+                    "gigabyte",
+                    "aorus",
+                    "msi",
+                    "acer",
+                    "computer",
+                    "smart",
+                )
+            ):
+                seller = line_s[:80]
+                break
+        if seller is None:
+            for line in reversed(text.splitlines()):
+                line_s = line.strip()
+                if len(line_s) < 3 or len(line_s) > 60:
+                    continue
+                if parse_thb_price(line_s) is not None:
+                    continue
+                if line_s.lower() in {name.lower(), "lazada"}:
+                    continue
+                seller = line_s[:80]
+                break
+        prices = re.findall(
+            r"(?:฿|THB|บาท)?\s*([0-9]{2,3}(?:,[0-9]{3})+)", text
+        )
+        price_verified = len(prices) == 1 and bool(gpu_from_explicit_text(name))
+        rating = None
+        rm = re.search(r"\b([0-5]\.\d)\b", text)
+        if rm:
+            try:
+                rating = float(rm.group(1))
+            except ValueError:
+                rating = None
+        sold = None
+        sm = re.search(r"([\d.,]+)\s*(?:sold|ชิ้น|ขายแล้ว)", text, re.I)
+        if sm:
+            sold = _parse_sold(sm.group(1))
+        raw = {
+            "name": name,
+            "itemId": item_id,
+            "url": href,
+            "price": parse_thb_price(text),
+            "seller_name": seller,
+            "seller_rating": rating,
+            "units_sold": sold,
+            "available": True,
+            "availability_status": "in_stock",
+            "source": "lazada_browser_dom",
+            "price_verified_for_variant": price_verified,
+            "official_store": official
+            or bool(seller and "official" in seller.lower()),
+            "mall": mall,
+        }
+        offer = parse_lazada_listing(
+            raw, catalog_gpu=catalog_gpu, collected_at=collected_at
+        )
+        if offer:
+            batch.append(offer)
+    return batch
+
+
 def _collect_browser(
     *, timeout: float, collected_at: datetime
 ) -> tuple[list[ThailandOffer], list[str]]:
+    """One Chromium session, generic + targeted seller queries, bounded waits."""
     from thailand.browser import chromium_page
 
     offers: list[ThailandOffer] = []
     errors: list[str] = []
-    timeout_ms = int(max(8_000, timeout * 1000))
+    timeout_ms = int(max(8_000, min(timeout * 1000, 90_000)))
+    wait_ms = int(getattr(config, "THAILAND_LAZADA_QUERY_WAIT_MS", 3500))
     try:
-        with chromium_page(timeout_ms=timeout_ms) as page:
-            for q, gpu in zip(SEARCH_QUERIES, ("RTX 5070 Ti", "RTX 5080")):
-                url = _search_url(q)
-                captured: list[Any] = []
+        # Do not block CSS — Lazada search cards often fail to hydrate without it.
+        with chromium_page(
+            timeout_ms=timeout_ms, block_heavy_resources=False
+        ) as page:
+            captured: list[Any] = []
 
-                def on_resp(resp) -> None:
-                    try:
-                        u = resp.url
-                        ct = (resp.headers.get("content-type") or "").lower()
-                        if resp.status != 200:
-                            return
-                        if not (
-                            "json" in ct
-                            or "mtop" in u
-                            or "search" in u
-                            or "list" in u
-                        ):
-                            return
-                        body = resp.text()
-                        if "itemId" not in body and "listItems" not in body:
-                            return
-                        parsed = _parse_json_response_text(body)
-                        if parsed is not None:
-                            captured.append(parsed)
-                    except Exception:  # noqa: BLE001
+            def on_resp(resp) -> None:
+                try:
+                    u = resp.url
+                    ct = (resp.headers.get("content-type") or "").lower()
+                    if resp.status != 200:
                         return
+                    if not (
+                        "json" in ct or "mtop" in u or "search" in u or "list" in u
+                    ):
+                        return
+                    body = resp.text()
+                    if "itemId" not in body and "listItems" not in body:
+                        return
+                    parsed = _parse_json_response_text(body)
+                    if parsed is not None:
+                        captured.append(parsed)
+                except Exception:  # noqa: BLE001
+                    return
 
-                page.on("response", on_resp)
+            page.on("response", on_resp)
+            for qi, (q, _seller_hint) in enumerate(LAZADA_SEARCH_PLAN):
+                # seller_hint is discovery-only; never applied as seller override.
+                gpu = "RTX 5080" if "5080" in q else "RTX 5070 Ti"
+                url = _search_url(q)
+                captured.clear()
                 try:
                     page.goto(url, wait_until="domcontentloaded", timeout=timeout_ms)
-                    page.wait_for_timeout(min(8000, timeout_ms // 2))
+                    # First query gets a slightly longer hydrate window.
+                    page.wait_for_timeout(max(wait_ms, 6000) if qi == 0 else wait_ms)
                     try:
-                        page.wait_for_load_state("networkidle", timeout=min(15000, timeout_ms))
+                        page.wait_for_selector(
+                            'a[href*="/products/"]',
+                            timeout=min(10_000 if qi == 0 else 6_000, timeout_ms),
+                        )
                     except Exception:  # noqa: BLE001
                         pass
                     html = page.content()
                 except Exception as exc:  # noqa: BLE001
                     errors.append(type(exc).__name__)
-                    try:
-                        page.remove_listener("response", on_resp)
-                    except Exception:  # noqa: BLE001
-                        pass
                     continue
-                try:
-                    page.remove_listener("response", on_resp)
-                except Exception:  # noqa: BLE001
-                    pass
-                if looks_like_challenge_page(html):
+                if looks_like_challenge_page(html) or looks_like_lazada_punish(html):
                     errors.append("challenge")
-                    continue
+                    break
                 batch: list[ThailandOffer] = []
-                for payload in captured:
+                for payload in list(captured):
                     batch.extend(
                         parse_lazada_payload(
                             payload, catalog_gpu=gpu, collected_at=collected_at
@@ -590,119 +759,24 @@ def _collect_browser(
                         )
                     except Exception:  # noqa: BLE001
                         cards = []
-                    for card in cards or []:
-                        name = str(card.get("name") or "").strip()
-                        href = str(card.get("href") or "").strip()
-                        text = str(card.get("text") or "")
-                        if not name or not href:
-                            continue
-                        m = re.search(r"[Ii]-?(\d{6,})", href) or re.search(
-                            r"/products/[^?]*-i(\d+)", href
-                        )
-                        item_id = m.group(1) if m else href.rstrip("/").split("/")[-1]
-                        low_text = text.lower()
-                        official = any(
-                            x in low_text
-                            for x in (
-                                "official store",
-                                "flagship store",
-                                "ร้านค้าอย่างเป็นทางการ",
-                            )
-                        )
-                        mall = any(
-                            x in low_text for x in ("lazmall", "laz mall", "mall")
-                        )
-                        seller = None
-                        for line in text.splitlines():
-                            line_s = line.strip()
-                            if not line_s or len(line_s) < 2:
-                                continue
-                            low = line_s.lower()
-                            if parse_thb_price(line_s) is not None and len(line_s) < 20:
-                                continue
-                            if any(
-                                k in low
-                                for k in (
-                                    "official",
-                                    "store",
-                                    "jib",
-                                    "banana",
-                                    "asus",
-                                    "lenovo",
-                                    "advice",
-                                    "mall",
-                                    "gigabyte",
-                                    "aorus",
-                                    "msi",
-                                    "acer",
-                                    "computer",
-                                    "smart",
-                                )
-                            ):
-                                seller = line_s[:80]
-                                break
-                        if seller is None:
-                            # Fallback: last meaningful non-price line often is seller.
-                            for line in reversed(text.splitlines()):
-                                line_s = line.strip()
-                                if len(line_s) < 3 or len(line_s) > 60:
-                                    continue
-                                if parse_thb_price(line_s) is not None:
-                                    continue
-                                if line_s.lower() in {name.lower(), "lazada"}:
-                                    continue
-                                seller = line_s[:80]
-                                break
-                        # Search card shows a single public price for default SKU.
-                        prices = re.findall(
-                            r"(?:฿|THB|บาท)?\s*([0-9]{2,3}(?:,[0-9]{3})+)", text
-                        )
-                        price_verified = len(prices) == 1 and bool(
-                            gpu_from_explicit_text(name)
-                        )
-                        # rating e.g. 4.9
-                        rating = None
-                        rm = re.search(r"\b([0-5]\.\d)\b", text)
-                        if rm:
-                            try:
-                                rating = float(rm.group(1))
-                            except ValueError:
-                                rating = None
-                        sold = None
-                        sm = re.search(
-                            r"([\d.,]+)\s*(?:sold|ชิ้น|ขายแล้ว)", text, re.I
-                        )
-                        if sm:
-                            sold = _parse_sold(sm.group(1))
-                        raw = {
-                            "name": name,
-                            "itemId": item_id,
-                            "url": href,
-                            "price": parse_thb_price(text),
-                            "seller_name": seller,
-                            "seller_rating": rating,
-                            "units_sold": sold,
-                            "available": True,
-                            "availability_status": "in_stock",
-                            "source": "lazada_browser_dom",
-                            "price_verified_for_variant": price_verified,
-                            "official_store": official
-                            or bool(seller and "official" in seller.lower()),
-                            "mall": mall,
-                        }
-                        offer = parse_lazada_listing(
-                            raw, catalog_gpu=gpu, collected_at=collected_at
-                        )
-                        if offer:
-                            batch.append(offer)
+                    batch = _parse_dom_cards(
+                        cards or [], catalog_gpu=gpu, collected_at=collected_at
+                    )
                 if not batch:
-                    errors.append("browser_empty")
+                    errors.append(f"browser_empty:{qi}")
                 for o in batch:
                     o.metadata["collection_mode"] = "browser"
+                    o.metadata["discovery_query"] = q
+                    # Never trust query seller hint as listing seller.
+                    annotate_marketplace_identity(o)
                 offers.extend(batch)
+            try:
+                page.remove_listener("response", on_resp)
+            except Exception:  # noqa: BLE001
+                pass
     except Exception as exc:  # noqa: BLE001
         errors.append(type(exc).__name__)
-    return offers, errors
+    return _dedupe_offers(offers), errors
 
 
 def collect(
@@ -737,22 +811,33 @@ def collect(
     collection_mode = "failed"
     try:
         now = datetime.now(timezone.utc)
-        offers, errors, mode = _collect_http(client, timeout=timeout, collected_at=now)
+        # Lazada search shell HTML rarely embeds products — probe 2 generic
+        # HTTP queries only, then one browser session for full generic+targeted plan.
+        offers, errors, mode = _collect_http_probe(
+            client, timeout=min(timeout, 20.0), collected_at=now
+        )
         if mode:
             collection_mode = mode
-        need_browser = not offers and allow_browser
-        if need_browser:
-            b_offers, b_errors = _collect_browser(timeout=timeout, collected_at=now)
+        # Prefer one browser session for full generic+targeted discovery.
+        if allow_browser:
+            b_offers, b_errors = _collect_browser(
+                timeout=timeout, collected_at=now
+            )
             errors.extend(b_errors)
             if b_offers:
-                offers = b_offers
-                collection_mode = "browser"
-            elif "challenge" in b_errors:
+                offers = _dedupe_offers(list(offers) + list(b_offers))
+                collection_mode = "browser" if not mode else f"{mode}+browser"
+            elif not offers and "challenge" in b_errors:
                 collection_mode = "failed"
-        by_id: dict[str, ThailandOffer] = {}
+        elif not offers:
+            collection_mode = "failed"
         for o in offers:
-            by_id.setdefault(o.external_id, o)
-        final = list(by_id.values())
+            annotate_marketplace_identity(o)
+            o.seller_trust_tier = classify_seller_trust(o)
+            o.marketplace_confidence = marketplace_confidence(
+                o, tier=o.seller_trust_tier
+            )
+        final = _dedupe_offers(offers)
         verified = [o for o in final if is_verified_for_ranking(o)]
         unverified = [o for o in final if not is_verified_for_ranking(o)]
         if not verified:

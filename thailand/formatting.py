@@ -119,16 +119,39 @@ def format_thailand_comparison_message(
     match_over_cap_note: str | None = None,
 ) -> str:
     lines = ["🇹🇭 <b>ТАИЛАНД — РАЗОВАЯ ПРОВЕРКА</b>", "", "Проверены:"]
+    banana_via_lazada = False
     for sr in store_results:
         mark = "✅" if sr.ok else "❌"
+        if sr.store == "banana":
+            label = "BaNANA direct"
+            err = (sr.error or "").lower()
+            if not sr.ok and (
+                "403" in err or "challenge" in err or "blocked" in err or "cloudflare" in err
+            ):
+                extra = " Cloudflare"
+            else:
+                extra = f" ({sr.error})" if (not sr.ok and sr.error) else ""
+            lines.append(f"{label} {mark}{extra}")
+            continue
         label = {
             "jib": "JIB",
             "advice": "Advice",
-            "banana": "BaNANA",
             "lazada": "Lazada",
         }.get(sr.store, sr.store)
         extra = f" ({sr.error})" if (not sr.ok and sr.error) else ""
         lines.append(f"{label} {mark}{extra}")
+        if sr.store == "lazada" and sr.ok:
+            # Detect BaNANA IT presence from offers if available on result
+            for o in list(sr.offers or []) + list(sr.unverified_candidates or []):
+                from thailand.seller_trust import is_banana_it_seller
+
+                if getattr(o, "retailer_brand", None) == "BaNANA" or is_banana_it_seller(
+                    getattr(o, "seller_name", None)
+                ):
+                    banana_via_lazada = True
+                    break
+    if banana_via_lazada:
+        lines.append("BaNANA IT через Lazada ✅")
 
     ok_count = sum(1 for s in store_results if s.ok)
     if ok_count == 0:
@@ -229,28 +252,28 @@ def format_thailand_alternatives_message(
         fx_usable is None and cap.get("fx_usable") is False
     ):
         return (
-            "🇹🇭 <b>ЛУЧШИЕ ПРЕДЛОЖЕНИЯ В ТАИЛАНДЕ ДО 300 000 ₽</b>\n\n"
+            "🇹🇭 <b>ЛУЧШИЕ ЦЕНЫ В ТАИЛАНДЕ ДО 300 000 ₽</b>\n\n"
             "Не удалось применить лимит 300 000 ₽:\n"
             "актуальный курс THB/RUB недоступен.\n\n"
             f"{FOOTER_LOCAL}"
         )[:TELEGRAM_SOFT]
     if not top and not unverified_count:
         return ""
-    lines = ["🇹🇭 <b>ЛУЧШИЕ ПРЕДЛОЖЕНИЯ В ТАИЛАНДЕ ДО 300 000 ₽</b>", ""]
+    lines = ["🇹🇭 <b>ЛУЧШИЕ ЦЕНЫ В ТАИЛАНДЕ ДО 300 000 ₽</b>", ""]
     if cap:
         lines.append("Лимит:")
         lines.append(f"≤{_rub(int(cap.get('max_tracked_price_rub') or max_tracked_price_rub()))} ₽")
         lines.append("")
-        lines.append("Найдено:")
-        lines.append(f"verified: {int(cap.get('verified_count') or 0)}")
-        lines.append(f"eligible до лимита: {int(cap.get('eligible_count') or 0)}")
-        lines.append(f"дороже лимита: {int(cap.get('over_cap_count') or 0)}")
+        lines.append(
+            f"Исключено дороже 300 000 ₽: {int(cap.get('over_cap_count') or 0)}"
+        )
         lines.append("")
-    urls: list[str] = []
     for i, row in enumerate(top[:limit], start=1):
         lines.append(f"{i}. {row.get('name') or '?'}")
         if row.get("gpu"):
             lines.append(str(row["gpu"]))
+        if row.get("cpu"):
+            lines.append(str(row["cpu"]))
         lines.append(
             _cfg(row.get("ram_gb"), row.get("ssd_gb"), row.get("screen_size_inch"))
         )
@@ -261,11 +284,20 @@ def format_thailand_alternatives_message(
         if row.get("availability_status") == "store_pickup_only":
             lines.append("pickup only")
         if row.get("international_score") is not None:
-            lines.append(f"International score: {row['international_score']:g}")
+            lines.append(f"Value score: {row['international_score']:g}")
         if row.get("international_confidence") is not None:
             lines.append(f"Confidence: {row['international_confidence']}%")
-        if row.get("url") and len(urls) < 3:
-            urls.append(str(row["url"]))
+        if row.get("url"):
+            lines.append(str(row["url"]))
+        alts = row.get("alt_channels") or []
+        if alts:
+            lines.append("Другие продавцы:")
+            for alt in alts[:2]:
+                alt_label = alt.get("store_label") or store_display_label(alt)
+                lines.append(
+                    f"• {alt_label}: {_thb(alt.get('price_thb'))} ฿ "
+                    f"(≈ {_rub(alt.get('price_rub'))} ₽)"
+                )
         lines.append("")
     if unverified_count > 0:
         lines.append(
@@ -273,9 +305,6 @@ def format_thailand_alternatives_message(
             "(конфигурация или наличие требуют подтверждения)."
         )
         lines.append("")
-    for u in urls:
-        lines.append(u)
-    lines.append("")
     lines.append(FOOTER_LOCAL)
     lines.append(FOOTER_FX)
     lines.append(FOOTER_CAP)

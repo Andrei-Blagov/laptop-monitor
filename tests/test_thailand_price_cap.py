@@ -98,7 +98,7 @@ class PriceCapTests(unittest.TestCase):
             },
         )
         self.assertIn("ДО 300 000", text)
-        self.assertIn("дороже лимита: 1", text)
+        self.assertIn("Исключено дороже 300 000 ₽: 1", text)
         self.assertIn("Показаны только предложения до 300 000", text)
 
     def test_best_excludes_over_cap(self) -> None:
@@ -131,7 +131,7 @@ class PriceCapTests(unittest.TestCase):
         self.assertGreaterEqual(summary["eligible_count"], 1)
         self.assertAlmostEqual(effective_thb_cap(_fx(2.5)) or 0, 120_000.0)
 
-    def test_sort_value_then_price(self) -> None:
+    def test_sort_cheapest_rub_first(self) -> None:
         cheap_5070 = _offer(external_id="c", price_thb=70_000, gpu="RTX 5070 Ti")
         mid_5080 = _offer(
             external_id="m",
@@ -141,8 +141,9 @@ class PriceCapTests(unittest.TestCase):
         )
         top = build_thai_top([cheap_5070, mid_5080], fx=_fx(2.5))
         self.assertEqual(len(top), 2)
-        # 5080 typically higher intl score than cheaper 5070 Ti
-        self.assertEqual(top[0]["external_id"], "m")
+        # User-facing TOP: cheapest RUB first (score is secondary).
+        self.assertEqual(top[0]["external_id"], "c")
+        self.assertEqual(top[1]["external_id"], "m")
 
 
 if __name__ == "__main__":

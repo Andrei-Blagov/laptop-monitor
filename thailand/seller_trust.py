@@ -23,7 +23,6 @@ TRUSTED_SELLER_NAMES = frozenset(
         "advice online",
         "advice",
         "banana it",
-        "banana",
         "msi official store",
         "msi",
         "gigabyte official store",
@@ -35,21 +34,61 @@ TRUSTED_SELLER_NAMES = frozenset(
     }
 )
 
+# Exact seller aliases for BaNANA IT marketplace identity (no fuzzy guessing).
+BANANA_IT_SELLER_ALIASES = frozenset(
+    {
+        "banana it",
+        "banana it store",
+        "banana it official store",
+        "bnn",
+        "banana",
+    }
+)
+
 
 def _norm_name(name: str | None) -> str:
     return " ".join(str(name or "").strip().lower().split())
+
+
+def is_banana_it_seller(name: str | None) -> bool:
+    n = _norm_name(name)
+    if not n:
+        return False
+    if n in BANANA_IT_SELLER_ALIASES:
+        return True
+    return n.startswith("banana it")
+
+
+def is_jib_seller(name: str | None) -> bool:
+    n = _norm_name(name)
+    return bool(n) and ("jib" in n)
 
 
 def is_seed_trusted_seller(name: str | None) -> bool:
     n = _norm_name(name)
     if not n:
         return False
+    if is_banana_it_seller(name):
+        return True
     if n in TRUSTED_SELLER_NAMES:
         return True
     for seed in TRUSTED_SELLER_NAMES:
         if seed in n or n in seed:
             return True
     return False
+
+
+def annotate_marketplace_identity(offer: ThailandOffer) -> ThailandOffer:
+    """Set channel / retailer_brand from verified listing seller identity."""
+    if not offer.marketplace:
+        offer.channel = offer.channel or "direct"
+        return offer
+    offer.channel = offer.channel or "lazada"
+    if is_banana_it_seller(offer.seller_name):
+        offer.retailer_brand = "BaNANA"
+    elif is_jib_seller(offer.seller_name):
+        offer.retailer_brand = "JIB"
+    return offer
 
 
 def classify_seller_trust(offer: ThailandOffer) -> str:
@@ -60,9 +99,10 @@ def classify_seller_trust(offer: ThailandOffer) -> str:
     """
     if not offer.marketplace:
         return TIER_A  # direct retailer channel
+    annotate_marketplace_identity(offer)
     if offer.official_store or offer.mall:
         return TIER_A
-    if is_seed_trusted_seller(offer.seller_name):
+    if is_banana_it_seller(offer.seller_name) or is_seed_trusted_seller(offer.seller_name):
         return TIER_A
 
     min_rating = float(getattr(config, "THAILAND_MARKETPLACE_MIN_SELLER_RATING", 4.7))
@@ -126,17 +166,22 @@ def store_display_label(offer: ThailandOffer | dict[str, Any]) -> str:
         store = str(offer.get("store") or "")
         marketplace = bool(offer.get("marketplace"))
         seller = offer.get("seller_name")
-        official = bool(offer.get("official_store"))
-        mall = bool(offer.get("mall"))
+        brand = offer.get("retailer_brand")
+        channel = offer.get("channel")
     else:
         store = offer.store
         marketplace = bool(offer.marketplace)
         seller = offer.seller_name
-        official = bool(offer.official_store)
-        mall = bool(offer.mall)
-    if store == "lazada" or marketplace:
+        brand = offer.retailer_brand
+        channel = offer.channel
+    if store == "lazada" or marketplace or channel == "lazada":
         name = str(seller or "unknown seller").strip()
+        if brand == "BaNANA" or is_banana_it_seller(name):
+            # Never mislabel as direct BaNANA.
+            return "Lazada · BaNANA IT"
         return f"Lazada · {name}"
+    if store == "banana":
+        return "BaNANA"
     return {
         "jib": "JIB",
         "advice": "Advice",
