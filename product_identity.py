@@ -177,20 +177,21 @@ def normalize_cpu(value: str | None) -> str | None:
         return None
     upper = text.upper().replace("Ё", "Е")
     upper = re.sub(r"\([^)]*\)", " ", upper)
-    upper = re.sub(r"\bPROCESSOR\b|\bCPU\b", " ", upper)
+    upper = re.sub(r"\bPROCESSOR\b|\bCPU\b|\bINTEL\b|\bAMD\b", " ", upper)
     upper = re.sub(r"\s+", " ", upper).strip()
 
-    model = re.search(r"\b(\d{4,5}[A-Z]{1,4})\b", upper)
+    # 14900HX / 8940HX / 255HX / 240H
+    model = re.search(r"\b(\d{3,5}[A-Z]{1,4})\b", upper)
     model_token = model.group(1) if model else None
 
     if "RYZEN" in upper:
-        series = re.search(r"RYZEN(?:\s+AI)?(?:\s+\d+)?", upper)
+        series = re.search(r"RYZEN(?:\s+AI)?(?:\s+[379])?", upper)
         series_token = series.group(0) if series else "RYZEN"
         if model_token:
             return f"{series_token} {model_token}"
         return series_token
 
-    if "CORE ULTRA" in upper or "ULTRA" in upper:
+    if "CORE ULTRA" in upper or re.search(r"\bULTRA\s+[79]\b", upper):
         series = re.search(r"CORE\s+ULTRA\s+\d+|ULTRA\s+\d+", upper)
         series_token = series.group(0) if series else "CORE ULTRA"
         if model_token:
@@ -204,6 +205,14 @@ def normalize_cpu(value: str | None) -> str | None:
             return f"{series_token} {model_token}"
         if series_token:
             return series_token
+
+    # Intel Core 7 / Core 9 (non-Ultra) e.g. Core 7 240H
+    core_series = re.search(r"\bCORE\s+([79])\b", upper)
+    if core_series:
+        series_token = f"CORE {core_series.group(1)}"
+        if model_token:
+            return f"{series_token} {model_token}"
+        return series_token
 
     return model_token or upper
 
@@ -554,6 +563,102 @@ def compare_identities(left: ProductIdentity, right: ProductIdentity) -> Identit
         missing_fields=missing,
         identifiers=identifiers,
         reason="Конфигурация совпадает, общего part number/EAN не найдено",
+    )
+
+
+_META_SPEC_KEYS = (
+    ("gpu", ("gpu",), normalize_gpu),
+    ("cpu", ("cpu",), normalize_cpu),
+    ("ram_gb", ("ram_gb", "ram"), normalize_ram_gb),
+    ("ssd_gb", ("ssd_gb", "ssd"), normalize_ssd_gb),
+    ("screen_size_inch", ("screen_size_inch", "screen_inch"), normalize_screen_size_inch),
+    ("screen_resolution", ("screen_resolution", "resolution"), normalize_resolution),
+    ("screen_refresh_hz", ("screen_refresh_hz", "refresh_hz"), normalize_refresh_hz),
+)
+
+
+def identity_from_collected_product(product: Any) -> ProductIdentity:
+    """
+    Build ProductIdentity from a collected Product using only known fields.
+
+    Uses product.metadata keys when present; otherwise safe title extraction
+    from product.name. Does not invent missing values.
+    """
+    from stores.common import extract_specs_from_name
+
+    meta = getattr(product, "metadata", None) or {}
+    if not isinstance(meta, Mapping):
+        meta = {}
+    name = str(getattr(product, "name", "") or "")
+    title_specs = extract_specs_from_name(name)
+
+    values: dict[str, Any] = {}
+    provenance: dict[str, str] = {}
+
+    for field_name, meta_keys, normalizer in _META_SPEC_KEYS:
+        raw = None
+        source = None
+        for key in meta_keys:
+            if key in meta and meta[key] is not None and meta[key] != "":
+                raw = meta[key]
+                source = "collected_metadata"
+                break
+        if raw is None:
+            title_key = "screen_inch" if field_name == "screen_size_inch" else field_name
+            if title_key in title_specs and title_specs[title_key] is not None:
+                raw = title_specs[title_key]
+                source = "product_title"
+            elif field_name == "screen_resolution" and "screen_resolution" in title_specs:
+                raw = title_specs["screen_resolution"]
+                source = "product_title"
+        if raw is None:
+            continue
+        normalized = normalizer(raw)
+        if normalized is None:
+            continue
+        values[field_name] = normalized
+        provenance[field_name] = source or "unknown"
+
+    source_identifiers: dict[str, Any] = {
+        "field_provenance": provenance,
+    }
+    # Preserve non-spec metadata breadcrumbs for diagnostics.
+    for key in ("availability_status", "member_price", "catalog_gpu", "mpn"):
+        if key in meta and meta[key] is not None:
+            source_identifiers[key] = meta[key]
+
+    return ProductIdentity(
+        store=str(getattr(product, "store", "") or ""),
+        external_id=str(getattr(product, "external_id", "") or ""),
+        sku=(str(product.sku) if getattr(product, "sku", None) else None),
+        name=name,
+        price=getattr(product, "price", None),
+        available=bool(getattr(product, "available", False)),
+        url=getattr(product, "url", None),
+        cpu=values.get("cpu"),
+        gpu=values.get("gpu"),
+        ram_gb=values.get("ram_gb"),
+        ssd_gb=values.get("ssd_gb"),
+        screen_size_inch=values.get("screen_size_inch"),
+        screen_resolution=values.get("screen_resolution"),
+        screen_refresh_hz=values.get("screen_refresh_hz"),
+        raw_characteristics={
+            k: str(v)
+            for k, v in meta.items()
+            if k
+            in {
+                "gpu",
+                "cpu",
+                "ram_gb",
+                "ssd_gb",
+                "screen_inch",
+                "screen_size_inch",
+                "screen_resolution",
+                "screen_refresh_hz",
+            }
+            and v is not None
+        },
+        source_identifiers=source_identifiers,
     )
 
 

@@ -82,7 +82,22 @@ def _availability_from_text(text: str) -> tuple[bool, str]:
     return False, "unknown"
 
 
-def parse_kns_catalog_html(html: str, *, now: datetime | None = None) -> list[Product]:
+def catalog_gpu_from_url(url: str) -> str | None:
+    """GPU implied by KNS filtered catalog URL (explicit catalog metadata)."""
+    low = url.lower()
+    if "rtx-5070ti" in low or "rtx-5070-ti" in low or "5070ti" in low:
+        return "RTX 5070 Ti"
+    if "rtx-5080" in low or "5080" in low:
+        return "RTX 5080"
+    return None
+
+
+def parse_kns_catalog_html(
+    html: str,
+    *,
+    now: datetime | None = None,
+    catalog_gpu: str | None = None,
+) -> list[Product]:
     if looks_like_challenge_page(html):
         raise RuntimeError("KNS challenge/error page detected")
     now = now or datetime.now(timezone.utc)
@@ -118,8 +133,12 @@ def parse_kns_catalog_html(html: str, *, now: datetime | None = None) -> list[Pr
                     break
         if not external_id or external_id in seen:
             continue
-        if not matches_target_gpu(name, (g or {}).get("item_name"), card_text):
-            continue
+        if not matches_target_gpu(
+            name, (g or {}).get("item_name"), card_text, catalog_gpu
+        ):
+            # GPU-filtered catalog pages already scope the listing.
+            if catalog_gpu is None:
+                continue
         price = parse_price((g or {}).get("price"))
         if price is None:
             # First large price before "руб" that isn't club
@@ -136,7 +155,11 @@ def parse_kns_catalog_html(html: str, *, now: datetime | None = None) -> list[Pr
         member = _card_member_price(card_text)
         url = urljoin(BASE_URL, href)
         specs = extract_specs_from_name(name)
+        if catalog_gpu and not specs.get("gpu"):
+            specs["gpu"] = catalog_gpu
         meta: dict = {"availability_status": avail_status, **specs}
+        if catalog_gpu:
+            meta["catalog_gpu"] = catalog_gpu
         if member is not None and member != price:
             meta["member_price"] = int(member)
         products.append(
@@ -161,11 +184,21 @@ def parse_kns_catalog_html(html: str, *, now: datetime | None = None) -> list[Pr
             name = clean_text(meta.get("item_name") or "")
             if not name:
                 continue
-            if not matches_target_gpu(name) and "videokarta_nvidia-geforce-rtx-5070" not in html and "videokarta_nvidia-geforce-rtx-5080" not in html:
+            if (
+                not matches_target_gpu(name, catalog_gpu)
+                and "videokarta_nvidia-geforce-rtx-5070" not in html
+                and "videokarta_nvidia-geforce-rtx-5080" not in html
+            ):
                 continue
             price = parse_price(meta.get("price"))
             if price is None:
                 continue
+            specs = extract_specs_from_name(name)
+            if catalog_gpu and not specs.get("gpu"):
+                specs["gpu"] = catalog_gpu
+            product_meta: dict = {**specs}
+            if catalog_gpu:
+                product_meta["catalog_gpu"] = catalog_gpu
             products.append(
                 Product(
                     store="kns",
@@ -176,6 +209,7 @@ def parse_kns_catalog_html(html: str, *, now: datetime | None = None) -> list[Pr
                     price=int(price),
                     available=True,
                     checked_at=now,
+                    metadata=product_meta,
                 )
             )
     return products
@@ -195,7 +229,13 @@ def fetch_target_laptops(
         out: list[Product] = []
         seen: set[str] = set()
         for html in html_pages:
-            for p in parse_kns_catalog_html(html):
+            gpu = None
+            # Prefer GPU from page markers when fixture HTML includes catalog URLs.
+            if "5070ti" in html.lower() or "5070-ti" in html.lower():
+                gpu = "RTX 5070 Ti"
+            elif "5080" in html.lower() and "5070" not in html.lower():
+                gpu = "RTX 5080"
+            for p in parse_kns_catalog_html(html, catalog_gpu=gpu):
                 if p.external_id in seen:
                     continue
                 seen.add(p.external_id)
@@ -205,15 +245,21 @@ def fetch_target_laptops(
     owns = client is None
     client = client or httpx.Client(headers=_headers(), follow_redirects=True, timeout=30.0)
     try:
-        pages: list[str] = []
+        out: list[Product] = []
+        seen: set[str] = set()
         for url in CATALOG_URLS:
             resp = client.get(url)
             if resp.status_code >= 400:
                 raise RuntimeError(f"KNS HTTP {resp.status_code} for {url}")
             if looks_like_challenge_page(resp.text):
                 raise RuntimeError("KNS challenge page")
-            pages.append(resp.text)
-        return fetch_target_laptops(html_pages=pages)
+            gpu = catalog_gpu_from_url(url)
+            for p in parse_kns_catalog_html(resp.text, catalog_gpu=gpu):
+                if p.external_id in seen:
+                    continue
+                seen.add(p.external_id)
+                out.append(p)
+        return out
     finally:
         if owns:
             client.close()

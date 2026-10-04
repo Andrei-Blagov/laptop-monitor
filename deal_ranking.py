@@ -420,8 +420,43 @@ def _select_reasons(reasons: list[str], breakdown: Mapping[str, float]) -> list[
     return reasons[:5]
 
 
-def _merge_spec_field(current: Any, incoming: Any) -> Any:
-    return current if current is not None and current != "" else incoming
+def _norm_spec_value(field: str, value: Any) -> Any:
+    if value is None or value == "":
+        return None
+    if field in {"gpu", "cpu", "screen_resolution"}:
+        return str(value).upper().replace(" ", "")
+    if field in {"ram_gb", "ssd_gb"}:
+        try:
+            return int(value)
+        except (TypeError, ValueError):
+            return value
+    if field == "screen_inch":
+        try:
+            return round(float(value), 2)
+        except (TypeError, ValueError):
+            return value
+    return value
+
+
+def _merge_spec_field(
+    current: Any,
+    incoming: Any,
+    *,
+    field: str,
+    conflicts: list[str],
+) -> Any:
+    if field in conflicts:
+        return None
+    if incoming is None or incoming == "":
+        return current
+    if current is None or current == "":
+        return incoming
+    if _norm_spec_value(field, current) == _norm_spec_value(field, incoming):
+        return current
+    # Conflicting known values → do not use for ranking/confidence.
+    if field not in conflicts:
+        conflicts.append(field)
+    return None
 
 
 def _extract_specs(
@@ -434,6 +469,7 @@ def _extract_specs(
 
     Prefer identity/cache from any offer in the cluster (not only the cheapest
     store), then fall back to title/URL extraction across offer names.
+    Conflicting known values across offers are dropped (SPEC_CONFLICT).
     """
     gpu = None
     ram_gb = None
@@ -441,6 +477,7 @@ def _extract_specs(
     screen_inch = None
     cpu = None
     screen_resolution = None
+    conflicts: list[str] = []
 
     offers = list(getattr(match, "offers", []) or [])
     # Cheapest/fresh best first, then remaining offers.
@@ -453,33 +490,55 @@ def _extract_specs(
             if spec is None:
                 continue
             gpu = _merge_spec_field(
-                gpu, getattr(spec, "gpu", None) or getattr(spec, "normalized_gpu", None)
+                gpu,
+                getattr(spec, "gpu", None) or getattr(spec, "normalized_gpu", None),
+                field="gpu",
+                conflicts=conflicts,
             )
-            ram_gb = _merge_spec_field(ram_gb, getattr(spec, "ram_gb", None))
-            ssd_gb = _merge_spec_field(ssd_gb, getattr(spec, "ssd_gb", None))
+            ram_gb = _merge_spec_field(
+                ram_gb, getattr(spec, "ram_gb", None), field="ram_gb", conflicts=conflicts
+            )
+            ssd_gb = _merge_spec_field(
+                ssd_gb, getattr(spec, "ssd_gb", None), field="ssd_gb", conflicts=conflicts
+            )
             screen_inch = _merge_spec_field(
                 screen_inch,
                 getattr(spec, "screen_inch", None)
                 or getattr(spec, "screen_size_inch", None),
+                field="screen_inch",
+                conflicts=conflicts,
             )
-            cpu = _merge_spec_field(cpu, getattr(spec, "cpu", None))
+            cpu = _merge_spec_field(
+                cpu, getattr(spec, "cpu", None), field="cpu", conflicts=conflicts
+            )
             screen_resolution = _merge_spec_field(
-                screen_resolution, getattr(spec, "screen_resolution", None)
+                screen_resolution,
+                getattr(spec, "screen_resolution", None),
+                field="screen_resolution",
+                conflicts=conflicts,
             )
 
     from stores.common import extract_specs_from_name
 
+    # Title fallback is weaker: fill only still-missing fields; never override.
     name_parts = [getattr(match, "name", None)]
     for offer in ordered_offers:
         name_parts.append(getattr(offer, "name", None))
         name_parts.append(getattr(offer, "url", None))
     name_blob = " ".join(x for x in name_parts if x)
     inferred = extract_specs_from_name(name_blob)
-    gpu = _merge_spec_field(gpu, inferred.get("gpu"))
-    ram_gb = _merge_spec_field(ram_gb, inferred.get("ram_gb"))
-    ssd_gb = _merge_spec_field(ssd_gb, inferred.get("ssd_gb"))
-    screen_inch = _merge_spec_field(screen_inch, inferred.get("screen_inch"))
-    cpu = _merge_spec_field(cpu, inferred.get("cpu"))
+    if gpu is None and "gpu" not in conflicts:
+        gpu = inferred.get("gpu")
+    if ram_gb is None and "ram_gb" not in conflicts:
+        ram_gb = inferred.get("ram_gb")
+    if ssd_gb is None and "ssd_gb" not in conflicts:
+        ssd_gb = inferred.get("ssd_gb")
+    if screen_inch is None and "screen_inch" not in conflicts:
+        screen_inch = inferred.get("screen_inch")
+    if cpu is None and "cpu" not in conflicts:
+        cpu = inferred.get("cpu")
+    if screen_resolution is None and "screen_resolution" not in conflicts:
+        screen_resolution = inferred.get("screen_resolution")
     return {
         "gpu": gpu,
         "ram_gb": ram_gb,
@@ -487,6 +546,7 @@ def _extract_specs(
         "screen_inch": screen_inch,
         "cpu": cpu,
         "screen_resolution": screen_resolution,
+        "spec_conflicts": list(conflicts),
     }
 
 

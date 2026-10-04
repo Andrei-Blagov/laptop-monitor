@@ -39,6 +39,76 @@ def _mpn_from_name(name: str) -> str | None:
     return None
 
 
+def _specs_from_jsonld_product(node: dict, name: str) -> dict[str, object]:
+    """Extract specs from JSON-LD + title using already-loaded page data only."""
+    blobs = [name]
+    desc = node.get("description")
+    if isinstance(desc, str) and desc.strip():
+        blobs.append(clean_text(desc))
+    props = node.get("additionalProperty") or node.get("additionalProperties") or []
+    if isinstance(props, dict):
+        props = [props]
+    label_map = {
+        "процессор": "cpu",
+        "cpu": "cpu",
+        "видеокарта": "gpu",
+        "графический адаптер": "gpu",
+        "gpu": "gpu",
+        "оперативная память": "ram",
+        "объем оперативной памяти": "ram",
+        "ram": "ram",
+        "ssd": "ssd",
+        "накопитель": "ssd",
+        "объем накопителя": "ssd",
+        "диагональ": "screen",
+        "диагональ экрана": "screen",
+        "экран": "screen",
+        "разрешение": "resolution",
+        "разрешение экрана": "resolution",
+    }
+    for prop in props:
+        if not isinstance(prop, dict):
+            continue
+        label = clean_text(str(prop.get("name") or prop.get("propertyID") or "")).lower()
+        value = prop.get("value")
+        if value is None:
+            continue
+        value_text = clean_text(str(value))
+        blobs.append(f"{label} {value_text}")
+        kind = label_map.get(label)
+        if kind == "cpu":
+            blobs.append(value_text)
+        elif kind == "gpu":
+            blobs.append(value_text)
+        elif kind == "ram":
+            blobs.append(f"{value_text} RAM")
+        elif kind == "ssd":
+            blobs.append(f"{value_text} SSD")
+        elif kind == "screen":
+            blobs.append(f'{value_text}"')
+        elif kind == "resolution":
+            blobs.append(value_text)
+    return extract_specs_from_name(" | ".join(blobs))
+
+
+def _specs_from_page_text(html: str, name: str) -> dict[str, object]:
+    """Best-effort specs from visible/structured text already on the product page."""
+    chunks = [name]
+    # Common definition-list / characteristic row patterns (no extra HTTP).
+    for pat in (
+        r"(?:процессор|cpu)\s*[:\-]\s*([^<\n]{5,80})",
+        r"(?:видеокарта|gpu|графический адаптер)\s*[:\-]\s*([^<\n]{5,80})",
+        r"(?:оперативная память|объем оперативной памяти|озу|ram)\s*[:\-]\s*([^<\n]{3,40})",
+        r"(?:ssd|накопитель|объем накопителя)\s*[:\-]\s*([^<\n]{3,40})",
+        r"(?:диагональ(?: экрана)?)\s*[:\-]\s*([^<\n]{2,20})",
+        r"(?:разрешение(?: экрана)?)\s*[:\-]\s*([^<\n]{5,30})",
+    ):
+        m = re.search(pat, html, re.I)
+        if m:
+            chunks.append(clean_text(re.sub(r"<[^>]+>", " ", m.group(1))))
+    return extract_specs_from_name(" | ".join(chunks))
+
+
 def parse_citilink_product_html(
     html: str, url: str, *, now: datetime | None = None
 ) -> Product | None:
@@ -90,8 +160,14 @@ def parse_citilink_product_html(
             if not external_id:
                 continue
             sku = node.get("mpn") or _mpn_from_name(name)
-            specs = extract_specs_from_name(name)
+            specs = _specs_from_jsonld_product(node, name)
+            page_specs = _specs_from_page_text(html, name)
+            for key, value in page_specs.items():
+                if key not in specs or specs[key] is None:
+                    specs[key] = value
             meta = {"availability_status": avail_status, **specs}
+            if node.get("mpn"):
+                meta["mpn"] = str(node.get("mpn"))
             return Product(
                 store="citilink",
                 external_id=external_id,
@@ -127,7 +203,7 @@ def parse_citilink_product_html(
     external_id = _product_id_from_url(url) or ""
     if not external_id:
         return None
-    specs = extract_specs_from_name(name)
+    specs = _specs_from_page_text(html, name)
     return Product(
         store="citilink",
         external_id=external_id,

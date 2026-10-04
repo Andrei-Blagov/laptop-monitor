@@ -17,7 +17,7 @@ from collection import (
 )
 from compare import build_comparison
 from deliver import deliver_alert_events
-from identity_sync import sync_product_identifiers
+from identity_sync import sync_product_identifiers, update_specs_cache_from_products
 from pipeline_lock import (
     DEFAULT_LOCK_PATH,
     PipelineLockError,
@@ -221,6 +221,20 @@ def run_pipeline(
                         error_message=store_res.error,
                     )
             if collection.any_ok:
+                # Persist collected specs before Product.metadata is dropped by SQLite.
+                try:
+                    specs_target = (
+                        Path(specs_path)
+                        if specs_path is not None
+                        else Path("data") / "product_specs.json"
+                    )
+                    update_specs_cache_from_products(
+                        collection.products,
+                        specs_target,
+                    )
+                except Exception:
+                    # Optional enrichment layer — must not fail successful collection.
+                    traceback.print_exc()
                 persist_collection(
                     collection,
                     db_path,
