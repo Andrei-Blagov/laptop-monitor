@@ -37,6 +37,7 @@ CALLBACK_MODEL_PREFIX = "hist:model:"
 CALLBACK_LIST = "hist:list"
 CALLBACK_MENU = "hist:menu"
 CALLBACK_REFRESH_PREFIX = "hist:refresh:"
+CALLBACK_PERIODS_PREFIX = "hist:periods:"
 
 HISTORY_PICKER_LIMIT = 10
 TELEGRAM_MESSAGE_SOFT_LIMIT = 3500
@@ -288,6 +289,13 @@ def build_history_picker_keyboard(
     return {"inline_keyboard": rows}
 
 
+def make_periods_callback(product_id: int) -> str:
+    data = f"{CALLBACK_PERIODS_PREFIX}{int(product_id)}"
+    if len(data.encode("utf-8")) > CALLBACK_DATA_LIMIT:
+        raise ValueError(f"callback_data too long: {data!r}")
+    return data
+
+
 def history_nav_keyboard(product_id: int) -> dict[str, Any]:
     return {
         "inline_keyboard": [
@@ -296,6 +304,12 @@ def history_nav_keyboard(product_id: int) -> dict[str, Any]:
                 {
                     "text": "🔄 Обновить",
                     "callback_data": make_refresh_callback(product_id),
+                },
+            ],
+            [
+                {
+                    "text": "📊 График",
+                    "callback_data": make_periods_callback(product_id),
                 },
             ],
             [{"text": "🏠 Меню", "callback_data": CALLBACK_MENU}],

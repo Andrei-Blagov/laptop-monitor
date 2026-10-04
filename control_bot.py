@@ -7,6 +7,7 @@ Admin-only buttons: run pipeline / top deals / price history / status / version.
 Does NOT run schema migrations — require migrate_db first.
 """
 
+import json
 import logging
 import sys
 import time
@@ -30,6 +31,7 @@ from model_price_history import (
     CALLBACK_LIST,
     CALLBACK_MENU,
     CALLBACK_MODEL_PREFIX,
+    CALLBACK_PERIODS_PREFIX,
     CALLBACK_REFRESH_PREFIX,
     build_history_picker_items,
     build_history_picker_keyboard,
@@ -38,6 +40,14 @@ from model_price_history import (
     format_model_history_message,
     history_nav_keyboard,
     parse_model_callback,
+)
+from price_history_chart import (
+    CALLBACK_CHART_PREFIX,
+    build_price_history_chart,
+    chart_period_keyboard,
+    chart_result_keyboard,
+    parse_chart_callback,
+    parse_periods_callback,
 )
 from store_freshness import freshness_age_minutes, get_fresh_store_slugs
 from storage import (
@@ -204,6 +214,68 @@ def answer_callback(
     )
 
 
+def send_photo(
+    client: httpx.Client,
+    token: str,
+    chat_id: str | int,
+    png_bytes: bytes,
+    *,
+    caption: str = "",
+    reply_markup: dict[str, Any] | None = None,
+    filename: str = "price_history.png",
+    timeout: float = 30.0,
+) -> bool:
+    """Multipart sendPhoto; never logs token-bearing URLs."""
+    url = _api(token, "sendPhoto")
+    data: dict[str, str] = {
+        "chat_id": str(chat_id),
+        "caption": caption or "",
+        "parse_mode": "HTML",
+    }
+    if reply_markup is not None:
+        data["reply_markup"] = json.dumps(reply_markup, ensure_ascii=False)
+    files = {"photo": (filename, png_bytes, "image/png")}
+    try:
+        resp = client.post(url, data=data, files=files, timeout=timeout)
+    except httpx.TimeoutException:
+        logger.error("Telegram sendPhoto timeout")
+        return False
+    except httpx.HTTPError as exc:
+        logger.error(
+            "%s",
+            telegram_http_error_summary(
+                method="sendPhoto", description=safe_exc_message(exc)
+            ),
+        )
+        return False
+    try:
+        payload = resp.json()
+    except ValueError:
+        logger.error(
+            "%s",
+            telegram_http_error_summary(
+                method="sendPhoto",
+                status_code=_http_status(resp),
+                description="invalid JSON",
+            ),
+        )
+        return False
+    ok, err = parse_telegram_response(payload)
+    status = _http_status(resp)
+    if (status is not None and status >= 400) or not ok:
+        logger.error(
+            "%s",
+            telegram_http_error_summary(
+                method="sendPhoto",
+                status_code=status,
+                api_ok=ok,
+                description=err,
+            ),
+        )
+        return False
+    return True
+
+
 def _reply_or_edit(
     client: httpx.Client,
     token: str,
@@ -275,6 +347,71 @@ def handle_history_model(
         message_id=message_id,
         reply_markup=markup,
     )
+
+
+def handle_chart_periods(
+    client: httpx.Client,
+    token: str,
+    chat_id: str | int,
+    product_id: int,
+    *,
+    message_id: int | None = None,
+) -> None:
+    report = build_model_history_report(DEFAULT_DB_PATH, product_id)
+    if not report.found:
+        handle_history_model(client, token, chat_id, product_id, message_id=message_id)
+        return
+    text = (
+        f"📊 <b>График цены</b>\n\n"
+        f"{report.name}\n\n"
+        "Выберите период:"
+    )
+    _reply_or_edit(
+        client,
+        token,
+        chat_id,
+        text,
+        message_id=message_id,
+        reply_markup=chart_period_keyboard(product_id),
+    )
+
+
+def handle_chart_render(
+    client: httpx.Client,
+    token: str,
+    chat_id: str | int,
+    product_id: int,
+    period: str,
+) -> None:
+    result = build_price_history_chart(DEFAULT_DB_PATH, product_id, period)  # type: ignore[arg-type]
+    nav = chart_result_keyboard(product_id)
+    if not result.ok or not result.png:
+        send_message(
+            client,
+            token,
+            chat_id,
+            result.error or "Не удалось построить график. Текстовая история доступна.",
+            with_keyboard=False,
+            reply_markup=nav,
+        )
+        return
+    ok = send_photo(
+        client,
+        token,
+        chat_id,
+        result.png,
+        caption=result.caption,
+        reply_markup=nav,
+    )
+    if not ok:
+        send_message(
+            client,
+            token,
+            chat_id,
+            "Не удалось построить график. Текстовая история доступна.",
+            with_keyboard=False,
+            reply_markup=nav,
+        )
 
 
 def _deliver_status_readonly(db_path: Path | str) -> dict[str, int]:
@@ -540,6 +677,25 @@ def process_update(client: httpx.Client, token: str, update: dict[str, Any]) -> 
                     product_id,
                     message_id=message_id,
                 )
+        elif data.startswith(CALLBACK_PERIODS_PREFIX):
+            product_id = parse_periods_callback(data)
+            if product_id is None:
+                send_message(client, token, chat_id, "Не удалось разобрать модель.")
+            else:
+                handle_chart_periods(
+                    client,
+                    token,
+                    chat_id,
+                    product_id,
+                    message_id=message_id,
+                )
+        elif data.startswith(CALLBACK_CHART_PREFIX):
+            parsed = parse_chart_callback(data)
+            if parsed is None:
+                send_message(client, token, chat_id, "Не удалось разобрать период.")
+            else:
+                period, product_id = parsed
+                handle_chart_render(client, token, chat_id, product_id, period)
         return
 
     if message:
