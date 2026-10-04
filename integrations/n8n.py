@@ -200,6 +200,379 @@ def _format_moscow(iso_value: Any) -> str:
         return str(iso_value)
 
 
+# --- Daily Digest v1 (pipeline.completed summaries only) ---
+
+DIGEST_INSTANCE_ID = "vps-prod"
+DIGEST_HISTORY_MAX_AGE_HOURS = 48
+DIGEST_HISTORY_MAX_RECORDS = 100
+DIGEST_WINDOW_HOURS = 24
+DIGEST_TOP_LIMIT = 5
+DIGEST_TOP_URL_LIMIT = 3
+
+
+def _parse_iso(value: Any) -> Any:
+    from datetime import datetime, timezone
+
+    if value is None:
+        return None
+    try:
+        text = str(value).replace("Z", "+00:00")
+        dt = datetime.fromisoformat(text)
+        if dt.tzinfo is None:
+            dt = dt.replace(tzinfo=timezone.utc)
+        return dt
+    except ValueError:
+        return None
+
+
+def _moscow_date_key(now: Any = None) -> str:
+    from datetime import datetime, timedelta, timezone
+
+    when = now or datetime.now(timezone.utc)
+    if when.tzinfo is None:
+        when = when.replace(tzinfo=timezone.utc)
+    msk = timezone(timedelta(hours=3))
+    return when.astimezone(msk).strftime("%Y-%m-%d")
+
+
+def make_run_summary(payload: Mapping[str, Any]) -> dict[str, Any]:
+    """Compact safe summary for rolling digest history (no secrets/raw body)."""
+    stores_out: list[dict[str, Any]] = []
+    for store in list(payload.get("stores") or []):
+        if not isinstance(store, Mapping):
+            continue
+        entry = {
+            "slug": store.get("slug"),
+            "display_name": store.get("display_name") or store.get("slug"),
+            "status": store.get("status"),
+        }
+        # Digest must not carry long errors.
+        stores_out.append(entry)
+    tops_out: list[dict[str, Any]] = []
+    for deal in list(payload.get("top_deals") or []):
+        if not isinstance(deal, Mapping):
+            continue
+        tops_out.append(
+            {
+                "rank": deal.get("rank"),
+                "name": deal.get("name"),
+                "store": deal.get("store"),
+                "price": deal.get("price"),
+                "score": deal.get("score"),
+                "url": deal.get("url"),
+                "saving": deal.get("saving") or deal.get("cross_store_saving"),
+            }
+        )
+    return {
+        "run_id": payload.get("run_id"),
+        "status": payload.get("status"),
+        "started_at": payload.get("started_at"),
+        "finished_at": payload.get("finished_at"),
+        "instance_id": payload.get("instance_id"),
+        "alerts_created": payload.get("alerts_created"),
+        "messages_sent": payload.get("messages_sent"),
+        "messages_failed": payload.get("messages_failed"),
+        "stores": stores_out,
+        "top_deals": tops_out,
+    }
+
+
+def prune_run_history(
+    history: Sequence[Mapping[str, Any]],
+    *,
+    now: Any = None,
+    max_age_hours: int = DIGEST_HISTORY_MAX_AGE_HOURS,
+    max_records: int = DIGEST_HISTORY_MAX_RECORDS,
+) -> list[dict[str, Any]]:
+    """Keep last max_age_hours and at most max_records (newest first)."""
+    from datetime import datetime, timedelta, timezone
+
+    when = now or datetime.now(timezone.utc)
+    if when.tzinfo is None:
+        when = when.replace(tzinfo=timezone.utc)
+    cutoff = when - timedelta(hours=max_age_hours)
+    kept: list[tuple[Any, dict[str, Any]]] = []
+    for raw in history:
+        if not isinstance(raw, Mapping):
+            continue
+        item = dict(raw)
+        ts = _parse_iso(item.get("finished_at") or item.get("started_at"))
+        if ts is None:
+            continue
+        if ts < cutoff:
+            continue
+        kept.append((ts, item))
+    kept.sort(key=lambda pair: pair[0], reverse=True)
+    return [item for _, item in kept[:max_records]]
+
+
+def archive_run_summary(
+    history: Sequence[Mapping[str, Any]] | None,
+    payload: Mapping[str, Any],
+    *,
+    now: Any = None,
+) -> list[dict[str, Any]]:
+    """Upsert summary by run_id, then prune retention window."""
+    summary = make_run_summary(payload)
+    run_key = str(summary.get("run_id") if summary.get("run_id") is not None else "")
+    out: list[dict[str, Any]] = []
+    replaced = False
+    for raw in history or []:
+        if not isinstance(raw, Mapping):
+            continue
+        existing = dict(raw)
+        if run_key and str(existing.get("run_id")) == run_key:
+            out.append(summary)
+            replaced = True
+        else:
+            out.append(existing)
+    if not replaced:
+        out.append(summary)
+    return prune_run_history(out, now=now)
+
+
+def filter_history_window(
+    history: Sequence[Mapping[str, Any]],
+    *,
+    now: Any = None,
+    window_hours: int = DIGEST_WINDOW_HOURS,
+    instance_id: str = DIGEST_INSTANCE_ID,
+) -> list[dict[str, Any]]:
+    from datetime import datetime, timedelta, timezone
+
+    when = now or datetime.now(timezone.utc)
+    if when.tzinfo is None:
+        when = when.replace(tzinfo=timezone.utc)
+    cutoff = when - timedelta(hours=window_hours)
+    out: list[dict[str, Any]] = []
+    for raw in history:
+        if not isinstance(raw, Mapping):
+            continue
+        if str(raw.get("instance_id") or "") != instance_id:
+            continue
+        ts = _parse_iso(raw.get("finished_at") or raw.get("started_at"))
+        if ts is None or ts < cutoff:
+            continue
+        out.append(dict(raw))
+    out.sort(
+        key=lambda item: _parse_iso(item.get("finished_at") or item.get("started_at"))
+        or datetime.min.replace(tzinfo=timezone.utc),
+        reverse=True,
+    )
+    return out
+
+
+def _price_in_cap(price: Any, *, max_price: int | None = None) -> bool:
+    cap = config.MAX_TRACKED_PRICE_RUB if max_price is None else max_price
+    try:
+        value = float(price)
+    except (TypeError, ValueError):
+        return False
+    return value <= float(cap)
+
+
+def _format_price_rub(price: Any) -> str:
+    try:
+        value = int(round(float(price)))
+    except (TypeError, ValueError):
+        return str(price)
+    return f"{value:,}".replace(",", " ") + " ₽"
+
+
+def select_digest_top_deals(
+    history_24h: Sequence[Mapping[str, Any]],
+    *,
+    limit: int = DIGEST_TOP_LIMIT,
+) -> list[dict[str, Any]]:
+    """TOP from latest success/partial run in window; fail-safe price cap."""
+    source = None
+    for item in history_24h:
+        st = str(item.get("status") or "").lower()
+        if st in {"success", "partial"}:
+            source = item
+            break
+    if source is None:
+        return []
+    deals: list[dict[str, Any]] = []
+    for deal in list(source.get("top_deals") or []):
+        if not isinstance(deal, Mapping):
+            continue
+        if not _price_in_cap(deal.get("price")):
+            continue
+        deals.append(dict(deal))
+        if len(deals) >= limit:
+            break
+    return deals
+
+
+def compute_digest_metrics(history_24h: Sequence[Mapping[str, Any]]) -> dict[str, Any]:
+    success = partial = failed = 0
+    alerts = sent = msg_failed = 0
+    for item in history_24h:
+        st = str(item.get("status") or "").lower()
+        if st == "success":
+            success += 1
+        elif st == "partial":
+            partial += 1
+        elif st == "failed":
+            failed += 1
+        try:
+            alerts += int(item.get("alerts_created") or 0)
+        except (TypeError, ValueError):
+            pass
+        try:
+            sent += int(item.get("messages_sent") or 0)
+        except (TypeError, ValueError):
+            pass
+        try:
+            msg_failed += int(item.get("messages_failed") or 0)
+        except (TypeError, ValueError):
+            pass
+    latest = history_24h[0] if history_24h else None
+    return {
+        "total_runs": len(history_24h),
+        "success": success,
+        "partial": partial,
+        "failed": failed,
+        "alerts_created": alerts,
+        "messages_sent": sent,
+        "messages_failed": msg_failed,
+        "latest": latest,
+    }
+
+
+def format_daily_digest_message(
+    history: Sequence[Mapping[str, Any]],
+    *,
+    now: Any = None,
+    test_mode: bool = False,
+    top_limit: int = DIGEST_TOP_LIMIT,
+) -> str:
+    """Build Daily Digest Telegram text from archived pipeline summaries."""
+    window = filter_history_window(history, now=now)
+    title = (
+        "🧪 Laptop Monitor — Daily Digest TEST"
+        if test_mode
+        else "📊 Laptop Monitor — Daily Digest"
+    )
+    if not window:
+        return (
+            f"{title}\n"
+            "\n"
+            "За последние 24 часа запусков не было."
+        )
+
+    metrics = compute_digest_metrics(window)
+    latest = metrics["latest"] or {}
+    latest_status = str(latest.get("status") or "unknown").upper()
+    latest_time = _format_moscow(latest.get("finished_at") or latest.get("started_at"))
+
+    store_lines: list[str] = []
+    for store in list(latest.get("stores") or []):
+        if not isinstance(store, Mapping):
+            continue
+        name = str(store.get("display_name") or store.get("slug") or "store")
+        st = str(store.get("status") or "").lower()
+        if st in {"ok", "success"}:
+            store_lines.append(f"✅ {name}")
+        else:
+            store_lines.append(f"⚠️ {name} — FAILED")
+
+    tops = select_digest_top_deals(window, limit=top_limit)
+    # Telegram hard limit ~4096; shrink TOP if needed.
+    top_block = _format_top_block(tops, url_limit=DIGEST_TOP_URL_LIMIT)
+    lines = [
+        title,
+        "Период: последние 24 часа",
+        "",
+        f"Запуски: {metrics['total_runs']}",
+        f"✅ SUCCESS: {metrics['success']}",
+        f"⚠️ PARTIAL: {metrics['partial']}",
+        f"🔴 FAILED: {metrics['failed']}",
+        "",
+        f"Ценовых событий: {metrics['alerts_created']}",
+        f"Telegram: {metrics['messages_sent']} sent / {metrics['messages_failed']} failed",
+        "",
+        "Магазины:",
+    ]
+    lines.extend(store_lines or ["• (нет данных)"])
+    lines.extend(["", f"ТОП ДО {config.MAX_TRACKED_PRICE_RUB:,}".replace(",", " ") + " ₽:"])
+    if top_block:
+        lines.extend(top_block)
+    else:
+        lines.append("• (нет предложений в окне)")
+    lines.extend(["", "Последний запуск:", f"{latest_time} — {latest_status}"])
+    text = "\n".join(lines)
+    if len(text) <= 3900:
+        return text
+    # Retry with fewer TOP rows / no URLs.
+    tops3 = select_digest_top_deals(window, limit=3)
+    top_block = _format_top_block(tops3, url_limit=0)
+    lines = [
+        title,
+        "Период: последние 24 часа",
+        "",
+        f"Запуски: {metrics['total_runs']}",
+        f"✅ SUCCESS: {metrics['success']}",
+        f"⚠️ PARTIAL: {metrics['partial']}",
+        f"🔴 FAILED: {metrics['failed']}",
+        "",
+        f"Ценовых событий: {metrics['alerts_created']}",
+        f"Telegram: {metrics['messages_sent']} sent / {metrics['messages_failed']} failed",
+        "",
+        "Магазины:",
+    ]
+    lines.extend(store_lines or ["• (нет данных)"])
+    lines.extend(["", "ТОП ДО 300 000 ₽:"])
+    lines.extend(top_block or ["• (нет предложений в окне)"])
+    lines.extend(["", "Последний запуск:", f"{latest_time} — {latest_status}"])
+    return "\n".join(lines)
+
+
+def _format_top_block(
+    deals: Sequence[Mapping[str, Any]],
+    *,
+    url_limit: int,
+) -> list[str]:
+    lines: list[str] = []
+    for i, deal in enumerate(deals, start=1):
+        name = str(deal.get("name") or "—")
+        store = str(deal.get("store") or "—")
+        price = _format_price_rub(deal.get("price"))
+        line = f"{i}. {name} — {price} — {store}"
+        saving = deal.get("saving")
+        try:
+            if saving is not None and float(saving) > 0:
+                line += f" (экономия {_format_price_rub(saving)})"
+        except (TypeError, ValueError):
+            pass
+        lines.append(line)
+        if i <= url_limit:
+            url = deal.get("url")
+            if url:
+                lines.append(f"   {url}")
+    return lines
+
+
+def should_send_digest(
+    *,
+    last_sent_date: str | None,
+    now: Any = None,
+    test_mode: bool = False,
+) -> tuple[bool, str]:
+    """
+    Production dedupe by MSK calendar date.
+    Test mode never blocks and does not use production key.
+    Returns (should_send, date_key).
+    """
+    date_key = _moscow_date_key(now)
+    if test_mode:
+        return True, date_key
+    if last_sent_date and str(last_sent_date) == date_key:
+        return False, date_key
+    return True, date_key
+
+
 def sign_webhook(body: bytes, secret: str, *, timestamp: str | None = None) -> tuple[str, str]:
     ts = timestamp or str(int(time.time()))
     message = ts.encode("utf-8") + b"." + body

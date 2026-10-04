@@ -153,7 +153,7 @@ Production OPS status:
 | Pipeline Events receiver (HMAC) | **active** |
 | Failure Alert (PARTIAL / FAILED) | **active** (same workflow, after HMAC) |
 | Host n8n watchdog | **active** |
-| Daily digest | **disabled** (post-v0.2.0) |
+| Daily Digest v1 (09:00 Europe/Moscow) | **active** (summaries only; no detailed price history yet) |
 
 **Before** pointing laptop-monitor at n8n:
 

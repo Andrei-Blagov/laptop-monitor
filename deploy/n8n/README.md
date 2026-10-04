@@ -10,12 +10,12 @@ n8n is an optional automation / analytics layer:
 | `pipeline.completed` receiver (HMAC) | **active** |
 | Failure alert (PARTIAL / FAILED) | **active** (inside receiver workflow) |
 | Host n8n watchdog (systemd) | **active** |
-| Daily digest | **disabled** (post-v0.2.0) |
+| Daily Digest v1 (09:00 Europe/Moscow) | **active** |
 
 ## Security
 
 - Do **not** mount `/var/run/docker.sock` into n8n
-- Do **not** give n8n shell access to the VPS
+- Do **not** give n8n shell / SQLite access to laptop-monitor
 - Verify webhook HMAC:
 
 Headers:
@@ -41,7 +41,7 @@ On the n8n side (not in Git):
 - `NODE_FUNCTION_ALLOW_BUILTIN=crypto`
 - `N8N_BLOCK_ENV_ACCESS_IN_NODE=false`
 - `LAPTOP_MONITOR_TELEGRAM_BOT_TOKEN` / `LAPTOP_MONITOR_TELEGRAM_CHAT_ID`
-  for Failure Alert (direct Telegram; not stored in workflow JSON)
+  for Failure Alert + Daily Digest (not stored in workflow JSON)
 
 See [`HMAC.md`](HMAC.md).
 
@@ -58,11 +58,31 @@ No separate public webhook.
 - Dedupe key: `run_id` (workflow static data; one Telegram message per run)
 - Message text: see `integrations.n8n.format_failure_alert_message`
 
+## Daily Digest v1
+
+Workflow: **Laptop Monitor — Daily Digest** (`LmDailyDigest01`)
+
+- Schedule: `0 9 * * *` with workflow timezone **Europe/Moscow**
+- Source: rolling `pipelineHistory` archived in Pipeline Events static data
+  after HMAC (no SQLite access)
+- Retention: 48h or max 100 summaries
+- Window: last 24h, `instance_id=vps-prod` only
+- TOP: from latest success/partial in window, max 5, fail-safe `<=300000`
+- Alerts section: `alerts_created` count only (no detailed drops / historical lows)
+- Dedupe: one send per MSK calendar date (`lastDigestSentDate`); Telegram failure
+  does **not** mark the date sent
+- Manual test path sends `🧪 ... TEST` and does not write production dedupe key
+
+Logic reference: `integrations.n8n.format_daily_digest_message` (and helpers).
+
+**v1 note:** uses `pipeline.completed` summaries only. Detailed price changes /
+historical lows are **not** included (planned for Daily Digest v2).
+
 ## Templates
 
-1. `pipeline-event-receiver.json` — webhook + HMAC + status route + failure alert
+1. `pipeline-event-receiver.json` — webhook + HMAC + archive + status route + failure alert + history export
 2. `failure-alert.json` — pointer/docs stub (logic lives in the receiver)
-3. `daily-digest.json` — skeleton (still disabled)
+3. `daily-digest.json` — schedule + Execute Workflow + Telegram digest
 
 ## Payload sketch
 

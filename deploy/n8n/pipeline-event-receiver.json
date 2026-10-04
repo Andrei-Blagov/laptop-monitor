@@ -14,7 +14,10 @@
       "name": "Webhook",
       "type": "n8n-nodes-base.webhook",
       "typeVersion": 2.1,
-      "position": [0, 0],
+      "position": [
+        0,
+        0
+      ],
       "webhookId": "laptop-monitor-pipeline"
     },
     {
@@ -26,7 +29,10 @@
       "name": "Verify HMAC",
       "type": "n8n-nodes-base.code",
       "typeVersion": 2,
-      "position": [260, 0]
+      "position": [
+        260,
+        0
+      ]
     },
     {
       "parameters": {
@@ -56,7 +62,10 @@
       "name": "HMAC OK?",
       "type": "n8n-nodes-base.if",
       "typeVersion": 2,
-      "position": [520, 0]
+      "position": [
+        520,
+        0
+      ]
     },
     {
       "parameters": {
@@ -70,7 +79,10 @@
       "name": "Reject 401",
       "type": "n8n-nodes-base.respondToWebhook",
       "typeVersion": 1.1,
-      "position": [780, 200]
+      "position": [
+        780,
+        200
+      ]
     },
     {
       "parameters": {
@@ -155,7 +167,10 @@
       "name": "Status route",
       "type": "n8n-nodes-base.switch",
       "typeVersion": 3,
-      "position": [780, -40]
+      "position": [
+        780,
+        -40
+      ]
     },
     {
       "parameters": {
@@ -176,7 +191,10 @@
       "name": "Tag success",
       "type": "n8n-nodes-base.set",
       "typeVersion": 3.4,
-      "position": [1040, -200]
+      "position": [
+        1040,
+        -200
+      ]
     },
     {
       "parameters": {
@@ -197,7 +215,10 @@
       "name": "Tag partial",
       "type": "n8n-nodes-base.set",
       "typeVersion": 3.4,
-      "position": [1040, -40]
+      "position": [
+        1040,
+        -40
+      ]
     },
     {
       "parameters": {
@@ -218,7 +239,10 @@
       "name": "Tag failed",
       "type": "n8n-nodes-base.set",
       "typeVersion": 3.4,
-      "position": [1040, 120]
+      "position": [
+        1040,
+        120
+      ]
     },
     {
       "parameters": {
@@ -239,7 +263,10 @@
       "name": "Tag other",
       "type": "n8n-nodes-base.set",
       "typeVersion": 3.4,
-      "position": [1040, 280]
+      "position": [
+        1040,
+        280
+      ]
     },
     {
       "parameters": {
@@ -250,7 +277,10 @@
       "name": "Failure alert",
       "type": "n8n-nodes-base.code",
       "typeVersion": 2,
-      "position": [1300, 40]
+      "position": [
+        1300,
+        40
+      ]
     },
     {
       "parameters": {
@@ -264,44 +294,200 @@
       "name": "Accept 200",
       "type": "n8n-nodes-base.respondToWebhook",
       "typeVersion": 1.1,
-      "position": [1560, 0]
+      "position": [
+        1560,
+        0
+      ]
+    },
+    {
+      "parameters": {
+        "mode": "runOnceForAllItems",
+        "jsCode": "// Archive verified pipeline.completed summary into workflow static data.\n// Retention: 48h or max 100. No secrets / raw body / headers.\nconst item = $input.first().json || {};\nconst staticData = $getWorkflowStaticData('global');\nstaticData.pipelineHistory = Array.isArray(staticData.pipelineHistory) ? staticData.pipelineHistory : [];\n\nfunction parseIso(v) {\n  if (!v) return null;\n  const d = new Date(v);\n  return Number.isNaN(d.getTime()) ? null : d;\n}\n\nconst stores = (Array.isArray(item.stores) ? item.stores : []).map((s) => ({\n  slug: s && s.slug,\n  display_name: (s && (s.display_name || s.slug)) || 'store',\n  status: s && s.status,\n}));\nconst top_deals = (Array.isArray(item.top_deals) ? item.top_deals : []).map((d) => ({\n  rank: d && d.rank,\n  name: d && d.name,\n  store: d && d.store,\n  price: d && d.price,\n  score: d && d.score,\n  url: d && d.url,\n  saving: d && (d.saving || d.cross_store_saving),\n}));\nconst summary = {\n  run_id: item.run_id,\n  status: item.status,\n  started_at: item.started_at,\n  finished_at: item.finished_at,\n  instance_id: item.instance_id,\n  alerts_created: item.alerts_created,\n  messages_sent: item.messages_sent,\n  messages_failed: item.messages_failed,\n  stores,\n  top_deals,\n};\n\nconst runKey = summary.run_id === undefined || summary.run_id === null ? '' : String(summary.run_id);\nlet next = [];\nlet replaced = false;\nfor (const prev of staticData.pipelineHistory) {\n  if (runKey && String(prev.run_id) === runKey) {\n    next.push(summary);\n    replaced = true;\n  } else {\n    next.push(prev);\n  }\n}\nif (!replaced) next.push(summary);\n\nconst now = Date.now();\nconst cutoff = now - 48 * 3600 * 1000;\nnext = next\n  .map((row) => ({ row, ts: parseIso(row.finished_at || row.started_at) }))\n  .filter((x) => x.ts && x.ts.getTime() >= cutoff)\n  .sort((a, b) => b.ts - a.ts)\n  .slice(0, 100)\n  .map((x) => x.row);\n\nstaticData.pipelineHistory = next;\nreturn [{ json: { ...item, archived: true, history_size: next.length } }];\n"
+      },
+      "id": "lm-arch-001",
+      "name": "Archive run summary",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        650,
+        -40
+      ]
+    },
+    {
+      "parameters": {},
+      "id": "lm-ewt-001",
+      "name": "When called by Digest",
+      "type": "n8n-nodes-base.executeWorkflowTrigger",
+      "typeVersion": 1.1,
+      "position": [
+        0,
+        420
+      ]
+    },
+    {
+      "parameters": {
+        "mode": "runOnceForAllItems",
+        "jsCode": "// Called by Daily Digest via Execute Workflow — return rolling history only.\nconst staticData = $getWorkflowStaticData('global');\nconst history = Array.isArray(staticData.pipelineHistory) ? staticData.pipelineHistory : [];\nreturn [{ json: { history, history_size: history.length } }];\n"
+      },
+      "id": "lm-exp-001",
+      "name": "Export history",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        260,
+        420
+      ]
     }
   ],
   "connections": {
     "Webhook": {
-      "main": [[{ "node": "Verify HMAC", "type": "main", "index": 0 }]]
+      "main": [
+        [
+          {
+            "node": "Verify HMAC",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
     },
     "Verify HMAC": {
-      "main": [[{ "node": "HMAC OK?", "type": "main", "index": 0 }]]
+      "main": [
+        [
+          {
+            "node": "HMAC OK?",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
     },
     "HMAC OK?": {
       "main": [
-        [{ "node": "Status route", "type": "main", "index": 0 }],
-        [{ "node": "Reject 401", "type": "main", "index": 0 }]
+        [
+          {
+            "node": "Archive run summary",
+            "type": "main",
+            "index": 0
+          }
+        ],
+        [
+          {
+            "node": "Reject 401",
+            "type": "main",
+            "index": 0
+          }
+        ]
       ]
     },
     "Status route": {
       "main": [
-        [{ "node": "Tag success", "type": "main", "index": 0 }],
-        [{ "node": "Tag partial", "type": "main", "index": 0 }],
-        [{ "node": "Tag failed", "type": "main", "index": 0 }],
-        [{ "node": "Tag other", "type": "main", "index": 0 }]
+        [
+          {
+            "node": "Tag success",
+            "type": "main",
+            "index": 0
+          }
+        ],
+        [
+          {
+            "node": "Tag partial",
+            "type": "main",
+            "index": 0
+          }
+        ],
+        [
+          {
+            "node": "Tag failed",
+            "type": "main",
+            "index": 0
+          }
+        ],
+        [
+          {
+            "node": "Tag other",
+            "type": "main",
+            "index": 0
+          }
+        ]
       ]
     },
     "Tag success": {
-      "main": [[{ "node": "Accept 200", "type": "main", "index": 0 }]]
+      "main": [
+        [
+          {
+            "node": "Accept 200",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
     },
     "Tag partial": {
-      "main": [[{ "node": "Failure alert", "type": "main", "index": 0 }]]
+      "main": [
+        [
+          {
+            "node": "Failure alert",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
     },
     "Tag failed": {
-      "main": [[{ "node": "Failure alert", "type": "main", "index": 0 }]]
+      "main": [
+        [
+          {
+            "node": "Failure alert",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
     },
     "Tag other": {
-      "main": [[{ "node": "Accept 200", "type": "main", "index": 0 }]]
+      "main": [
+        [
+          {
+            "node": "Accept 200",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
     },
     "Failure alert": {
-      "main": [[{ "node": "Accept 200", "type": "main", "index": 0 }]]
+      "main": [
+        [
+          {
+            "node": "Accept 200",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Archive run summary": {
+      "main": [
+        [
+          {
+            "node": "Status route",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "When called by Digest": {
+      "main": [
+        [
+          {
+            "node": "Export history",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
     }
   },
   "settings": {
@@ -309,9 +495,9 @@
   },
   "active": false,
   "meta": {
-    "templateNote": "HMAC fail-closed + status routing + Failure Alert (PARTIAL/FAILED) with run_id dedupe. Telegram via LAPTOP_MONITOR_TELEGRAM_* env. NEVER use JSON.stringify(parsedBody) as exact raw body."
+    "templateNote": "HMAC fail-closed with exact raw body + archive summaries to static data + Failure Alert + ExecuteWorkflow export for Daily Digest. NEVER use JSON.stringify(parsedBody) as exact raw body."
   },
   "id": "LmPipeEvntRecv01",
   "isArchived": false,
-  "versionId": "lm-pipe-v2-failure-alert-fields"
+  "versionId": "lm-pipe-v3-daily-digest-archive"
 }
