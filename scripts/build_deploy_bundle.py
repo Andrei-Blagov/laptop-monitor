@@ -18,6 +18,7 @@ ALLOWLIST_FILES = (
     "requirements.txt",
     "README.md",
     "CHANGELOG.md",
+    ".gitattributes",
     ".dockerignore",
     ".env.example",
     "admin_notify.py",
@@ -147,20 +148,28 @@ def build_deploy_bundle(
     # Deterministic-ish: sort by relative posix path, fixed mtime.
     members = sorted(members, key=lambda p: p.relative_to(root).as_posix())
 
+    def _archive_bytes(path: Path) -> bytes:
+        data = path.read_bytes()
+        # Linux runtime expects LF for VERSION / shell units even on Windows builders.
+        if path.name == "VERSION" or path.suffix in {".sh", ".service", ".timer"}:
+            data = data.replace(b"\r\n", b"\n").replace(b"\r", b"\n")
+        return data
+
     buf = io.BytesIO()
     with tarfile.open(fileobj=buf, mode="w:gz", compresslevel=9) as tar:
         for path in members:
             rel = path.relative_to(root).as_posix()
             if _should_skip(rel):
                 continue
+            payload = _archive_bytes(path)
             info = tar.gettarinfo(str(path), arcname=f"laptop-monitor-{ver}/{rel}")
             info.uid = 0
             info.gid = 0
             info.uname = "root"
             info.gname = "root"
             info.mtime = 0
-            with path.open("rb") as fh:
-                tar.addfile(info, fh)
+            info.size = len(payload)
+            tar.addfile(info, io.BytesIO(payload))
 
     data = buf.getvalue()
     archive_path.write_bytes(data)

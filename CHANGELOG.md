@@ -20,6 +20,10 @@ Post-v0.2.0 production features packaged as a stable release.
 - Production **n8n pinned** to immutable image `2.42.1` (`sha256:e7634e62…`)
 - Telegram / httpx logging does not expose bot token URLs
 
+### Packaging
+
+- Clean release bundle normalizes `VERSION` / systemd / shell scripts to LF for Linux VPS deploy
+
 ### Unchanged from v0.2.0
 
 - Global price cap **≤ 300 000 ₽** for TOP / alerts / cross-store tracking
