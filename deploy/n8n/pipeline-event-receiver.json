@@ -159,6 +159,7 @@
     },
     {
       "parameters": {
+        "includeOtherFields": true,
         "assignments": {
           "assignments": [
             {
@@ -179,6 +180,7 @@
     },
     {
       "parameters": {
+        "includeOtherFields": true,
         "assignments": {
           "assignments": [
             {
@@ -199,6 +201,7 @@
     },
     {
       "parameters": {
+        "includeOtherFields": true,
         "assignments": {
           "assignments": [
             {
@@ -219,6 +222,7 @@
     },
     {
       "parameters": {
+        "includeOtherFields": true,
         "assignments": {
           "assignments": [
             {
@@ -309,5 +313,5 @@
   },
   "id": "LmPipeEvntRecv01",
   "isArchived": false,
-  "versionId": "lm-pipe-v2-failure-alert"
+  "versionId": "lm-pipe-v2-failure-alert-fields"
 }
