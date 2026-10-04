@@ -84,6 +84,10 @@ BTN_TOP = "ctrl:top"
 BTN_STATUS = "ctrl:status"
 BTN_VERSION = "ctrl:version"
 BTN_HISTORY = "ctrl:hist"
+BTN_MARKETS = "ctrl:markets"
+BTN_TH_SCAN = "ctrl:th_scan"
+BTN_TH_COMPARE = "ctrl:th_cmp"
+BTN_RU_TOP = "ctrl:ru_top"
 
 
 def _api(token: str, method: str) -> str:
@@ -105,8 +109,30 @@ def _keyboard() -> dict[str, Any]:
                 {"text": "📈 История цены", "callback_data": BTN_HISTORY},
             ],
             [
+                {"text": "🌍 Рынки", "callback_data": BTN_MARKETS},
+            ],
+            [
                 {"text": "Статус", "callback_data": BTN_STATUS},
                 {"text": "Версия", "callback_data": BTN_VERSION},
+            ],
+        ]
+    }
+
+
+def _markets_keyboard() -> dict[str, Any]:
+    return {
+        "inline_keyboard": [
+            [
+                {"text": "🇷🇺 Россия", "callback_data": BTN_RU_TOP},
+            ],
+            [
+                {"text": "🇹🇭 Проверить Таиланд", "callback_data": BTN_TH_SCAN},
+            ],
+            [
+                {"text": "🇷🇺🇹🇭 Сравнить сейчас", "callback_data": BTN_TH_COMPARE},
+            ],
+            [
+                {"text": "🏠 Меню", "callback_data": CALLBACK_MENU},
             ],
         ]
     }
@@ -601,6 +627,73 @@ def build_top_text(db_path: Path | str = DEFAULT_DB_PATH) -> str:
     )
 
 
+def handle_markets_menu(
+    client: httpx.Client,
+    token: str,
+    chat_id: str | int,
+    *,
+    message_id: int | None = None,
+) -> None:
+    _reply_or_edit(
+        client,
+        token,
+        chat_id,
+        "<b>🌍 Рынки</b>\nВыберите действие:",
+        message_id=message_id,
+        reply_markup=_markets_keyboard(),
+    )
+
+
+def handle_thailand_manual(
+    client: httpx.Client,
+    token: str,
+    chat_id: str | int,
+    *,
+    compare: bool,
+) -> None:
+    """Admin-only on-demand Thailand scan using saved Russian DB (no RU collection)."""
+    send_message(
+        client,
+        token,
+        chat_id,
+        "🇹🇭 Запускаю проверку Таиланда…",
+        with_keyboard=False,
+    )
+    try:
+        from buy_thailand_flow import run_buy_thailand_flow
+        from telegram_sender import TelegramSender
+
+        tg_token, default_chat = config.get_telegram_credentials()
+        sender = TelegramSender(tg_token, str(chat_id or default_chat))
+        flow = run_buy_thailand_flow(
+            db_path=DEFAULT_DB_PATH,
+            sender=sender,
+            deliver=True,
+            manual=True,
+            force_thailand=True,
+        )
+        if not flow.get("messages"):
+            status = flow.get("thailand_scan_status") or "unknown"
+            send_message(
+                client,
+                token,
+                chat_id,
+                f"Таиланд: статус {status}. Сообщений нет.",
+                with_keyboard=False,
+            )
+        elif compare and flow.get("thailand_scan_status") == "failed":
+            # Messages already include failure text via sender; ensure UX note.
+            pass
+    except Exception as exc:
+        send_message(
+            client,
+            token,
+            chat_id,
+            f"Ошибка проверки Таиланда: {type(exc).__name__}",
+            with_keyboard=False,
+        )
+
+
 def handle_run(client: httpx.Client, token: str, chat_id: str | int) -> None:
     send_message(
         client,
@@ -647,6 +740,16 @@ def process_update(client: httpx.Client, token: str, update: dict[str, Any]) -> 
             handle_run(client, token, chat_id)
         elif data == BTN_TOP:
             send_message(client, token, chat_id, build_top_text())
+        elif data == BTN_MARKETS:
+            handle_markets_menu(
+                client, token, chat_id, message_id=message_id
+            )
+        elif data == BTN_RU_TOP:
+            send_message(client, token, chat_id, build_top_text())
+        elif data == BTN_TH_SCAN:
+            handle_thailand_manual(client, token, chat_id, compare=False)
+        elif data == BTN_TH_COMPARE:
+            handle_thailand_manual(client, token, chat_id, compare=True)
         elif data == BTN_STATUS:
             send_message(client, token, chat_id, build_status_text())
         elif data == BTN_VERSION:

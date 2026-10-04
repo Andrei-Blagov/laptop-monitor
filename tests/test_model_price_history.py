@@ -38,7 +38,9 @@ from storage import (
 
 
 def _now() -> datetime:
-    return datetime(2026, 10, 4, 8, 0, 0, tzinfo=timezone.utc)
+    # Wall-clock based so STORE_FRESHNESS TTL does not expire mid-day on a
+    # hardcoded fixture timestamp (tests seed store_runs at this instant).
+    return datetime.now(timezone.utc).replace(microsecond=0)
 
 
 def _product(

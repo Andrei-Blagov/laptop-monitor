@@ -57,6 +57,9 @@ def build_pipeline_completed_payload(
     top_deals: Sequence[Mapping[str, Any]] | None = None,
     adapters_meta: Sequence[Mapping[str, Any]] | None = None,
     error_summary: str | None = None,
+    buy_opportunities_count: int | None = None,
+    thailand_scan_triggered: bool | None = None,
+    thailand_scan_status: str | None = None,
 ) -> dict[str, Any]:
     stores_out: list[dict[str, Any]] = []
     meta_by_slug = {str(m.get("slug")): m for m in (adapters_meta or [])}
@@ -104,6 +107,13 @@ def build_pipeline_completed_payload(
         "messages_failed": messages_failed,
         "top_deals": tops,
     }
+    # Optional backward-compatible fields (Thailand / buy opportunity).
+    if buy_opportunities_count is not None:
+        payload["buy_opportunities_count"] = buy_opportunities_count
+    if thailand_scan_triggered is not None:
+        payload["thailand_scan_triggered"] = bool(thailand_scan_triggered)
+    if thailand_scan_status is not None:
+        payload["thailand_scan_status"] = thailand_scan_status
     summary = safe_error_summary(error_summary)
     if summary:
         payload["error_summary"] = summary

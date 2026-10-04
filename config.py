@@ -78,6 +78,37 @@ SCORE_SAVING_TIER_4: int = 30_000
 TOP_DEALS_LIMIT: int = 10
 TELEGRAM_TOP_SOFT_LIMIT: int = 3500
 
+# --- Buy opportunity signal (Russia) ---
+BUY_MIN_CONFIDENCE: int = 80
+BUY_RULE_A_MAX_OVER_HIST_PCT: float = 0.05  # <= hist_min * 1.05
+BUY_RULE_B_MIN_SCORE: float = 75.0
+BUY_RULE_B_MAX_OVER_HIST_PCT: float = 0.03
+BUY_RULE_C_MIN_SCORE: float = 65.0
+BUY_RULE_C_MAX_OVER_HIST_PCT: float = 0.01
+BUY_STRONG_MAX_OVER_HIST_PCT: float = 0.03
+BUY_STRONG_MIN_SCORE: float = 75.0
+BUY_COOLDOWN_HOURS: float = 24.0
+BUY_BYPASS_PRICE_IMPROVE_PCT: float = 0.03
+BUY_BYPASS_PRICE_DROP_RUB: int = 5_000
+
+# --- Thailand on-demand scan ---
+THAILAND_PER_STORE_TIMEOUT_SECONDS: float = 45.0
+THAILAND_OVERALL_TIMEOUT_SECONDS: float = 120.0
+THAILAND_SNAPSHOT_RETENTION: int = 20
+THAILAND_TOP_LIMIT: int = 5
+THAILAND_FX_STALE_MAX_HOURS: float = 36.0
+# Country verdict bands on equivalent hardware (abs % price delta).
+COUNTRY_VERDICT_EQUAL_PCT: float = 0.03
+COUNTRY_VERDICT_SLIGHT_PCT: float = 0.08
+# International value score raw component maxima (sum 88 → normalize to 0..100).
+INTL_SCORE_GPU_MAX: float = 25.0
+INTL_SCORE_PRICE_MAX: float = 25.0
+INTL_SCORE_CPU_MAX: float = 15.0
+INTL_SCORE_RAM_MAX: float = 10.0
+INTL_SCORE_SSD_MAX: float = 5.0
+INTL_SCORE_SCREEN_MAX: float = 8.0
+INTL_SCORE_RAW_MAX: float = 88.0
+
 # Deprecated aliases (kept for import compatibility; unused by scoring v2).
 RANK_GPU_5080_BONUS: float = SCORE_GPU_5080
 RANK_GPU_5070TI_BONUS: float = SCORE_GPU_5070TI
