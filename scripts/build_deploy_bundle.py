@@ -151,8 +151,20 @@ def build_deploy_bundle(
 
     def _archive_bytes(path: Path) -> bytes:
         data = path.read_bytes()
-        # Linux runtime expects LF for VERSION / shell units even on Windows builders.
-        if path.name == "VERSION" or path.suffix in {".sh", ".service", ".timer"}:
+        # Linux runtime / Docker build context expect LF even on Windows builders.
+        # Also avoids BuildKit stale-file reuse when size matches but CRLF differs.
+        if path.name == "VERSION" or path.suffix in {
+            ".sh",
+            ".service",
+            ".timer",
+            ".py",
+            ".md",
+            ".txt",
+            ".yml",
+            ".yaml",
+            ".json",
+            ".example",
+        }:
             data = data.replace(b"\r\n", b"\n").replace(b"\r", b"\n")
         return data
 
@@ -168,7 +180,9 @@ def build_deploy_bundle(
             info.gid = 0
             info.uname = "root"
             info.gname = "root"
-            info.mtime = 0
+            # Non-zero mtime: Docker BuildKit may key file identity by
+            # (path, size, mtime); mtime=0 caused stale VERSION/content reuse.
+            info.mtime = 1
             info.size = len(payload)
             tar.addfile(info, io.BytesIO(payload))
 
