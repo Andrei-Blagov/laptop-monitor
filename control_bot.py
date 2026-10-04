@@ -808,6 +808,10 @@ def main() -> int:
     for handler in logging.getLogger().handlers:
         handler.addFilter(_ContextFilter())
 
+    # httpx logs full request URLs at INFO; those include the bot token.
+    logging.getLogger("httpx").setLevel(logging.WARNING)
+    logging.getLogger("httpcore").setLevel(logging.WARNING)
+
     try:
         require_schema_ready(DEFAULT_DB_PATH)
     except RuntimeError as exc:
