@@ -1,5 +1,21 @@
 # Changelog
 
+## 0.5.1 — 2026-10-04
+
+Thailand scans decoupled from the Russian pipeline critical path.
+
+- Asynchronous file queue: `data/thailand_jobs/{pending,processing,archive,failed}`
+- Dedicated Thailand worker (`python -m thailand.worker --drain`) via Docker + systemd `.path`
+- Automatic BUY and manual Telegram **🌍 Рынки** enqueue jobs; they no longer block pipeline/control bot
+- Atomic enqueue / claim, dedupe, stale processing recovery (max 2 attempts), archive/failed retention
+- Filesystem process lock for `buy_opportunity_state.json` RMW
+- `pipeline.completed` reports Thailand as `queued` (optional `thailand_job_id`) before the worker finishes
+- Worker never writes Russian SQLite products / pipeline_runs / store_runs
+
+### Unchanged
+
+- BUY thresholds / Deal Ranking / Thailand parsers / FX / SQLite schema / n8n workflows / Russian timers
+
 ## 0.5.0 — 2026-10-04
 
 Buy Opportunity signal and on-demand Thailand market comparison (verified offers only).

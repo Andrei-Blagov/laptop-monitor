@@ -82,10 +82,20 @@ Allowlist-only. Excludes: `.git`, tests, Windows scripts, local DB, logs, `.env`
 | `.env` | secrets on host |
 | `pipeline` | oneshot via systemd / manual |
 | `control-bot` | long-polling admin bot |
+| `thailand-worker` | oneshot via `laptop-monitor-thailand.path` (`--drain`) |
 | `backup` | `python -m scripts.backup_db` |
 
 Pipeline and control-bot use `shm_size: 256mb` for Chromium (Citilink). No published ports.
 Control-bot does **not** keep Chromium open; browser starts only during pipeline / manual Run.
+
+### Thailand async architecture
+
+```
+Russian pipeline → BUY evaluate → enqueue pending job → pipeline.completed → exit
+systemd.path (DirectoryNotEmpty pending/) → thailand-worker --drain → Telegram follow-up
+```
+
+Queue: `data/thailand_jobs/{pending,processing,archive,failed}/`. Worker never writes Russian SQLite products.
 
 ## Explicit DB migration
 
@@ -133,6 +143,15 @@ Semantics:
 | `laptop-monitor-control.service` | `Type=oneshot` + `RemainAfterExit=yes`: starts detached `control-bot`, then systemd shows **active (exited)**. Docker `restart: unless-stopped` recovers container crashes. `systemctl stop` runs `compose stop control-bot`. |
 | `laptop-monitor.timer` | Schedules pipeline every 2h (`Persistent=true`). Usually waits for the next `OnCalendar` elapse. **With `Persistent=true`, systemd may still run one catch-up activation** when the timer is first started if a calendar slot was missed while the unit was inactive — watch `laptop-monitor.service` after start; if a catch-up run begins, do **not** start a second manual pipeline. No `Requires=` on the oneshot service. |
 | `laptop-monitor-backup.timer` | Daily 03:15 (`Persistent=true`). Usually waits for next 03:15; catch-up activation is possible on first start — watch the backup oneshot if it fires. |
+| `laptop-monitor-thailand.path` | Watches `data/thailand_jobs/pending`; when non-empty activates oneshot worker. Idle state: **active (waiting)**. |
+| `laptop-monitor-thailand.service` | `compose.sh run --rm --no-deps thailand-worker`. Idle: **inactive/dead**. |
+
+```bash
+sudo install -m 0644 deploy/systemd/laptop-monitor-thailand.path /etc/systemd/system/
+sudo install -m 0644 deploy/systemd/laptop-monitor-thailand.service /etc/systemd/system/
+sudo systemctl daemon-reload
+sudo systemctl enable --now laptop-monitor-thailand.path
+```
 
 Verify after enable:
 

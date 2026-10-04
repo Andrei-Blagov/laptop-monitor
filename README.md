@@ -22,11 +22,11 @@
 | **CROSS_STORE** | Cheapest vs second among fresh offers; metadata содержит весь список |
 | **Specs coverage** | Collected metadata → `product_specs.json` для всех stores; safe title parse; Regard/ANDPRO re-enrich on cache miss; non-destructive merge / `SPEC_CONFLICT` |
 | **Ranking v2** | Explainable score **0..100** + **confidence**; GPU / price-value / CPU / RAM / SSD / screen / historical opportunity / cross-store saving (**weights unchanged**) |
-| **Buy Opportunity** | Explainable BUY / STRONG_BUY + cooldown; при новом signal — best-effort Thailand scan |
-| **Thailand markets** | On-demand only (не в 2h registry): JIB verified; Advice/BaNANA experimental/fail-safe; CBR THB→RUB; RU/TH comparison |
+| **Buy Opportunity** | Explainable BUY / STRONG_BUY + cooldown; при новом signal — enqueue Thailand job |
+| **Thailand markets** | On-demand async worker (не в 2h registry): JIB verified; Advice/BaNANA experimental/fail-safe; CBR THB→RUB |
 | **Price History** | Telegram: карточка истории (v1) + PNG-графики 30 / 90 / all-time (v2), read-only |
 | **Control bot** | Long polling; Run / TOP / История / **🌍 Рынки** / Status / Version; admin allowlist |
-| **Scheduler** | Primary: **systemd timer** → `run_pipeline.py`. Manual: Telegram bot |
+| **Scheduler** | Primary: **systemd timer** → `run_pipeline.py`. Thailand: **systemd.path** → async worker |
 | **n8n OPS** | Pipeline Events (HMAC) + Failure Alert + Daily Digest; host watchdog; pinned **2.42.1** immutable digest |
 | **Migration** | Явная команда `python -m scripts.migrate_db` |
 | **Deploy** | Clean tar.gz bundle → `/opt/laptop-monitor` |
@@ -34,7 +34,10 @@
 ### Россия vs Таиланд
 
 - **Россия** мониторится каждые ~2 часа (Regard / ANDPRO / KNS / Citilink) как раньше
-- **Таиланд** не крутится по расписанию: scan только при новом BUY signal или вручную из Telegram **🌍 Рынки**
+- **Таиланд** не в Russian critical path:
+  - Russian pipeline → BUY evaluate → enqueue job → `pipeline.completed` → exit
+  - `laptop-monitor-thailand.path` → worker container → Thailand scan / comparison Telegram
+- Scan только при новом BUY signal или вручную из Telegram **🌍 Рынки** (enqueue-only в control bot)
 - Сравнение предполагает локальную покупку в Таиланде (без авиа / таможни / пересылки)
 - В automatic TOP / country verdict попадают только **verified** Thai offers (GPU + availability confirmed)
 
@@ -198,7 +201,7 @@ Control bot при старте проверяет schema и завершает�
 - Статус
 - Версия
 
-**🌍 Рынки:** ручная проверка Таиланда и RU/TH comparison без запуска Russian collection. Thailand scan также может стартовать автоматически после нового BUY signal.
+**🌍 Рынки:** ставит Thailand job в очередь (без Russian collection и без ожидания JIB/CBR в bot). Worker присылает comparison отдельным сообщением. Автоматический BUY тоже только enqueue.
 
 Env: `TELEGRAM_BOT_TOKEN`, `TELEGRAM_CHAT_ID`, `TELEGRAM_ADMIN_CHAT_ID`, `LAPTOP_MONITOR_INSTANCE`.
 

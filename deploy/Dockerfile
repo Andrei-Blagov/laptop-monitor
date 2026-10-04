@@ -32,6 +32,7 @@ COPY scripts/diagnose_model_price_history.py ./scripts/diagnose_model_price_hist
 COPY scripts/diagnose_price_history_chart.py ./scripts/diagnose_price_history_chart.py
 COPY scripts/diagnose_deal_ranking_v2.py ./scripts/diagnose_deal_ranking_v2.py
 COPY scripts/diagnose_spec_coverage.py ./scripts/diagnose_spec_coverage.py
+COPY scripts/diagnose_thailand_async.py ./scripts/diagnose_thailand_async.py
 
 RUN mkdir -p /app/data /app/logs \
     && useradd --create-home --uid 10001 appuser \
