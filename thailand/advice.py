@@ -12,14 +12,26 @@ from typing import Any
 import httpx
 
 import config
+from deal_ranking import canonical_gpu
 from stores.common import looks_like_challenge_page
 from thailand.models import StoreScanResult, ThailandOffer
 from thailand.specs_parse import (
     exclude_non_target_gpu,
+    gpu_from_explicit_text,
     is_target_laptop_gpu,
     normalize_availability,
     parse_thb_price,
     specs_from_text,
+)
+from thailand.verification import (
+    AVAIL_SOURCE_STRUCTURED_API,
+    AVAIL_SOURCE_UNKNOWN,
+    GPU_SOURCE_EXPLICIT_TITLE,
+    GPU_SOURCE_SEARCH_QUERY,
+    GPU_SOURCE_STRUCTURED_API,
+    GPU_SOURCE_UNKNOWN,
+    PRICE_SOURCE_STRUCTURED_API,
+    compute_verification,
 )
 
 logger = logging.getLogger(__name__)
@@ -66,10 +78,22 @@ def parse_advice_product_dict(
         return None
     if exclude_non_target_gpu(name):
         return None
-    gpu_hint = catalog_gpu or raw.get("gpu")
-    specs = specs_from_text(name, catalog_gpu=str(gpu_hint) if gpu_hint else None)
-    # Prefer explicit structured fields over title inference.
-    for key in ("cpu", "gpu", "brand", "warranty", "screen_resolution"):
+    specs = specs_from_text(
+        name,
+        catalog_gpu=str(catalog_gpu) if catalog_gpu else None,
+        apply_catalog_gpu=False,
+    )
+    gpu_source = GPU_SOURCE_UNKNOWN
+    gpu = None
+    if raw.get("gpu"):
+        gpu = str(raw["gpu"])
+        gpu_source = GPU_SOURCE_STRUCTURED_API
+    else:
+        title_gpu = gpu_from_explicit_text(name)
+        if title_gpu:
+            gpu = title_gpu
+            gpu_source = GPU_SOURCE_EXPLICIT_TITLE
+    for key in ("cpu", "brand", "warranty", "screen_resolution"):
         if raw.get(key):
             specs[key] = raw[key]
     for key, cast in (("ram_gb", int), ("ssd_gb", int), ("screen_size_inch", float)):
@@ -80,24 +104,25 @@ def parse_advice_product_dict(
                 )
             except (TypeError, ValueError):
                 pass
-    gpu = specs.get("gpu") or raw.get("gpu")
-    if not is_target_laptop_gpu(
-        str(gpu) if gpu else None, name, str(catalog_gpu) if catalog_gpu else None
-    ):
+    candidate = canonical_gpu(str(catalog_gpu)) if catalog_gpu else None
+    # Structured/title GPU required — search/category context alone is not enough.
+    if not is_target_laptop_gpu(gpu):
         return None
+
     price = parse_thb_price(raw.get("price_thb") or raw.get("price") or raw.get("sale_price"))
     regular = parse_thb_price(raw.get("regular_price_thb") or raw.get("regular_price"))
     if price is None:
         return None
     avail_text = str(raw.get("availability_status") or raw.get("availability") or "")
     available, status = normalize_availability(
-        available_flag=raw.get("available"),
-        status_text=avail_text,
+        available_flag=raw.get("available") if (avail_text or raw.get("available") is not None) else None,
+        status_text=avail_text or None,
     )
+    avail_confirmed = bool(avail_text) or raw.get("available") is not None
     url = str(raw.get("url") or f"{BASE}/product/{eid}")
     mpn = raw.get("manufacturer_part_number") or specs.get("manufacturer_part_number")
     sku = raw.get("sku") or mpn
-    return ThailandOffer(
+    offer = ThailandOffer(
         store=STORE,
         external_id=eid,
         name=name,
@@ -106,12 +131,17 @@ def parse_advice_product_dict(
         regular_price_thb=regular if regular and regular != price else None,
         available=available,
         availability_status=status,
+        availability_confirmed=avail_confirmed,
+        availability_source=AVAIL_SOURCE_STRUCTURED_API if avail_confirmed else AVAIL_SOURCE_UNKNOWN,
+        price_source=PRICE_SOURCE_STRUCTURED_API,
         collected_at=collected_at,
         sku=str(sku) if sku else None,
         manufacturer_part_number=str(mpn) if mpn else None,
         brand=str(specs["brand"]) if specs.get("brand") else None,
         cpu=str(specs["cpu"]) if specs.get("cpu") else None,
         gpu=str(gpu) if gpu else None,
+        gpu_source=gpu_source,
+        candidate_gpu=candidate,
         ram_gb=int(specs["ram_gb"]) if specs.get("ram_gb") is not None else None,
         ssd_gb=int(specs["ssd_gb"]) if specs.get("ssd_gb") is not None else None,
         screen_size_inch=(
@@ -125,8 +155,12 @@ def parse_advice_product_dict(
             else None
         ),
         warranty=str(raw["warranty"]) if raw.get("warranty") else None,
-        metadata={"source": raw.get("source") or "advice_json"},
+        metadata={
+            "source": raw.get("source") or "advice_json",
+            "candidate_gpu_source": GPU_SOURCE_SEARCH_QUERY if candidate else None,
+        },
     )
+    return compute_verification(offer)
 
 
 def parse_advice_json_payload(

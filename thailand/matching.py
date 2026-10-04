@@ -7,7 +7,8 @@ from typing import Any, Sequence
 
 from deal_ranking import RankedDeal, canonical_gpu, classify_cpu
 from thailand.models import CrossCountryMatch, ThailandOffer
-from thailand.specs_parse import is_purchasable_for_best, strip_regional_sku_suffix
+from thailand.specs_parse import strip_regional_sku_suffix
+from thailand.verification import is_purchasable_confirmed
 
 
 @dataclass
@@ -252,8 +253,7 @@ def group_thai_offers(offers: Sequence[ThailandOffer]) -> list[ThaiGroup]:
         purchasable = [
             o
             for o in g.offers
-            if is_purchasable_for_best(o.availability_status, o.available)
-            and o.price_thb is not None
+            if is_purchasable_confirmed(o) and o.price_thb is not None
         ]
         pool = purchasable or []
         if pool:

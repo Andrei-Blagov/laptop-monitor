@@ -187,8 +187,9 @@ def format_thailand_alternatives_message(
     top: Sequence[dict[str, Any]],
     *,
     limit: int = 5,
+    unverified_count: int = 0,
 ) -> str:
-    if not top:
+    if not top and not unverified_count:
         return ""
     lines = ["🇹🇭 <b>ЛУЧШИЕ АЛЬТЕРНАТИВЫ В ТАИЛАНДЕ</b>", ""]
     urls: list[str] = []
@@ -207,8 +208,16 @@ def format_thailand_alternatives_message(
             lines.append("pickup only")
         if row.get("international_score") is not None:
             lines.append(f"International score: {row['international_score']:g}")
+        if row.get("international_confidence") is not None:
+            lines.append(f"Confidence: {row['international_confidence']}%")
         if row.get("url") and len(urls) < 3:
             urls.append(str(row["url"]))
+        lines.append("")
+    if unverified_count > 0:
+        lines.append(
+            f"⚠️ Ещё найдено {unverified_count} непроверенных предложений "
+            "(конфигурация или наличие требуют подтверждения)."
+        )
         lines.append("")
     for u in urls:
         lines.append(u)

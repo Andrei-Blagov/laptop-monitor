@@ -113,10 +113,13 @@ class PipelineIsolationTests(unittest.TestCase):
 
             slow.collect = collect
             ga.return_value = [slow]
-            results, offers, dur = collect_thailand_offers(overall_timeout=1, parallel=False)
+            results, offers, unverified, dur = collect_thailand_offers(
+                overall_timeout=1, parallel=False
+            )
             self.assertEqual(results[0].error, "timeout")
             # Russian status not involved — just ensure no raise
             self.assertEqual(offers, [])
+            self.assertEqual(unverified, [])
 
     def test_buy_report_if_thai_fails(self) -> None:
         from buy_opportunity import evaluate_buy_rules

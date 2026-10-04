@@ -40,10 +40,14 @@ def _match(**kwargs) -> CrossCountryMatch:
         available=True,
         collected_at=datetime.now(timezone.utc),
         gpu="RTX 5070 Ti",
+        gpu_source="structured_api",
         ram_gb=32,
         ssd_gb=1024,
         screen_size_inch=16.0,
         cpu="Intel Core Ultra 9 275HX",
+        availability_status="in_stock",
+        availability_confirmed=True,
+        verification_status="VERIFIED",
     )
     base = dict(
         level="EQUIVALENT",
@@ -91,6 +95,8 @@ class VerdictTests(unittest.TestCase):
         self.assertTrue(any("Россия дешевле" in r for r in c.reasons))
 
     def test_config_differs_blocks_price_verdict(self) -> None:
+        from thailand.comparison import VERDICT_INCOMPLETE_CONFIG
+
         m = _match(
             level="SAME_FAMILY",
             thai_price_rub=241500,
@@ -99,7 +105,40 @@ class VerdictTests(unittest.TestCase):
             differences=["ram:32vs64", "ssd:1024vs2048"],
         )
         c = country_verdict(m, fx=_fx())
-        self.assertIn(c.verdict, {VERDICT_CONFIG_DIFFERS, "THAILAND_BETTER_SPEC_HIGHER_PRICE"})
+        self.assertIn(
+            c.verdict,
+            {
+                VERDICT_CONFIG_DIFFERS,
+                "THAILAND_BETTER_SPEC_HIGHER_PRICE",
+                VERDICT_INCOMPLETE_CONFIG,
+            },
+        )
+
+    def test_insufficient_verification_gate(self) -> None:
+        from thailand.comparison import VERDICT_INSUFFICIENT_THAI
+
+        m = _match()
+        m.thai_offer.availability_confirmed = False
+        m.thai_offer.verification_status = "UNVERIFIED"
+        c = country_verdict(m, fx=_fx())
+        self.assertEqual(c.verdict, VERDICT_INSUFFICIENT_THAI)
+
+    def test_same_family_incomplete_no_clearly_better(self) -> None:
+        from thailand.comparison import VERDICT_INCOMPLETE_CONFIG, VERDICT_THAI_CLEARLY
+
+        m = _match(
+            level="SAME_FAMILY",
+            thai_price_rub=210000,
+            delta_rub=-20000,
+            delta_percent=-0.087,
+            differences=["cpu_unknown", "ram_unknown", "ssd_unknown"],
+        )
+        m.thai_offer.cpu = None
+        m.thai_offer.ram_gb = None
+        m.thai_offer.ssd_gb = None
+        c = country_verdict(m, fx=_fx())
+        self.assertEqual(c.verdict, VERDICT_INCOMPLETE_CONFIG)
+        self.assertNotEqual(c.verdict, VERDICT_THAI_CLEARLY)
 
     def test_no_comparable(self) -> None:
         c = country_verdict(None, fx=_fx())

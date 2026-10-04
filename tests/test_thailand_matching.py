@@ -11,7 +11,11 @@ from thailand.matching import (
     same_family,
 )
 from thailand.models import ThailandOffer
-from thailand.specs_parse import is_purchasable_for_best, strip_regional_sku_suffix
+from thailand.specs_parse import strip_regional_sku_suffix
+from thailand.verification import (
+    GPU_SOURCE_STRUCTURED_API,
+    is_purchasable_confirmed,
+)
 
 
 def _thai(**kwargs) -> ThailandOffer:
@@ -27,11 +31,15 @@ def _thai(**kwargs) -> ThailandOffer:
         manufacturer_part_number="83F500NWTA",
         brand="Msi",
         gpu="RTX 5070 Ti",
+        gpu_source=GPU_SOURCE_STRUCTURED_API,
         cpu="Intel Core Ultra 9 275HX",
         ram_gb=32,
         ssd_gb=1024,
         screen_size_inch=16.0,
         availability_status="in_stock",
+        availability_confirmed=True,
+        availability_source="structured_api",
+        verification_status="VERIFIED",
     )
     base.update(kwargs)
     return ThailandOffer(**base)
@@ -169,7 +177,7 @@ class MatchingTests(unittest.TestCase):
 
     def test_pickup_only_retained(self) -> None:
         o = _thai(availability_status="store_pickup_only", available=True)
-        self.assertTrue(is_purchasable_for_best(o.availability_status, o.available))
+        self.assertTrue(is_purchasable_confirmed(o))
         g = group_thai_offers([o])[0]
         self.assertIsNotNone(g.best)
         self.assertEqual(g.best.availability_status, "store_pickup_only")

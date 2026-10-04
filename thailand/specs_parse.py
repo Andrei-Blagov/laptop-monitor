@@ -58,7 +58,7 @@ def is_target_laptop_gpu(gpu: str | None, *extra: str | None) -> bool:
 
 
 def exclude_non_target_gpu(text: str) -> bool:
-    """True if text clearly indicates a non-target GPU (5070 non-Ti, 5060, 5090, desktop)."""
+    """True if text clearly indicates a non-target GPU (5050/5060/5070 non-Ti/5090/desktop)."""
     u = text.upper()
     # Desktop VGA / discrete graphics cards (Thai stores prefix VGA)
     if re.search(r"\bVGA\b|การ์ดแสดงผล|GRAPHICS\s*CARD|DESKTOP\s*GPU", u):
@@ -66,6 +66,8 @@ def exclude_non_target_gpu(text: str) -> bool:
     if re.search(r"RTX\s*5090", u):
         return True
     if re.search(r"RTX\s*5060", u):
+        return True
+    if re.search(r"RTX\s*5050", u):
         return True
     # RTX 5070 without Ti
     if re.search(r"RTX\s*5070(?!\s*TI)", u) and "5070 TI" not in u and "5070TI" not in u:
@@ -157,6 +159,12 @@ def normalize_availability(
     available_flag: bool | None = None,
     status_text: str | None = None,
 ) -> tuple[bool, str]:
+    """
+    Returns (available, availability_status).
+
+    When neither status_text nor available_flag is informative:
+    available=False, status=unknown (never invent in_stock).
+    """
     text = status_text or ""
     for pat, status in _AVAIL_MAP:
         if pat.search(text):
@@ -166,12 +174,13 @@ def normalize_availability(
                 return True, status
             if status == "store_pickup_only":
                 return True, status
-            return True, status
+            # online_available / in_stock family
+            return True, status if status != "online_available" else "online_available"
     if available_flag is False:
         return False, "out_of_stock"
     if available_flag is True:
         return True, "in_stock"
-    return True, "unknown"
+    return False, "unknown"
 
 
 def parse_thb_price(value: object) -> int | None:
@@ -192,18 +201,47 @@ def parse_thb_price(value: object) -> int | None:
     return n if n > 0 else None
 
 
-def specs_from_text(name: str, *, catalog_gpu: str | None = None) -> dict[str, Any]:
+def gpu_from_explicit_text(text: str | None) -> str | None:
+    """Authoritative GPU only from explicit product text (title/detail), never search query."""
+    if not text:
+        return None
+    # Prefer explicit graphics line markers when present.
+    for m in re.finditer(
+        r"(?:กราฟิก|GPU|Graphics)\s*[:：]\s*[^<\n]{0,80}?(RTX\s*50\d0(?:\s*Ti)?)",
+        text,
+        re.I,
+    ):
+        key = canonical_gpu(m.group(1))
+        if key:
+            return key
+    specs = extract_specs_from_name(text)
+    gpu = specs.get("gpu")
+    return str(gpu) if isinstance(gpu, str) else None
+
+
+def specs_from_text(
+    name: str,
+    *,
+    catalog_gpu: str | None = None,
+    apply_catalog_gpu: bool = False,
+) -> dict[str, Any]:
     """
     Safe specs extraction.
 
-    catalog_gpu: GPU known from search/catalog context (not invented from VRAM).
+    catalog_gpu / search context is NEVER written to authoritative gpu unless
+    apply_catalog_gpu=True (legacy/tests only — production JIB must keep False).
     """
     specs = extract_specs_from_name(name)
     out: dict[str, Any] = dict(specs)
-    if catalog_gpu and not out.get("gpu"):
-        cg = canonical_gpu(catalog_gpu)
-        if cg:
-            out["gpu"] = cg
+    cg = canonical_gpu(catalog_gpu) if catalog_gpu else None
+    if cg:
+        out["candidate_gpu"] = cg
+    if apply_catalog_gpu and not out.get("gpu") and cg:
+        # Intentionally opt-in only — unsafe for search_suggestion discovery.
+        out["gpu"] = cg
+        out["gpu_source"] = "search_query"
+    elif out.get("gpu"):
+        out["gpu_source"] = "explicit_title"
     # Thai titles often encode screen as leading digits in model (16IAX / G16 / 15 MAX)
     if out.get("screen_inch") is None:
         m = re.search(
@@ -228,9 +266,10 @@ def specs_from_text(name: str, *, catalog_gpu: str | None = None) -> dict[str, A
 
 
 def is_purchasable_for_best(status: str | None, available: bool) -> bool:
+    """Legacy helper — unknown/None availability is NOT purchasable for automatic best."""
     if not available:
         return False
-    if status in {"out_of_stock"}:
+    if status in {"out_of_stock", "unknown", None}:
         return False
     if status == "preorder":
         return False
@@ -238,6 +277,4 @@ def is_purchasable_for_best(status: str | None, available: bool) -> bool:
         "in_stock",
         "online_available",
         "store_pickup_only",
-        "unknown",
-        None,
     }

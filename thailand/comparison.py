@@ -5,6 +5,11 @@ from __future__ import annotations
 import config
 from thailand.fx import fx_usable_for_verdict
 from thailand.models import CountryComparison, CrossCountryMatch, FxRate
+from thailand.verification import (
+    VERIFIED,
+    gpu_is_authoritative,
+    is_purchasable_confirmed,
+)
 
 VERDICT_RUSSIA_CLEARLY = "RUSSIA_CLEARLY_BETTER"
 VERDICT_RUSSIA_SLIGHTLY = "RUSSIA_SLIGHTLY_BETTER"
@@ -15,6 +20,8 @@ VERDICT_NO_COMPARABLE = "NO_COMPARABLE_MODEL"
 VERDICT_FX_UNAVAILABLE = "FX_UNAVAILABLE"
 VERDICT_CONFIG_DIFFERS = "CONFIGURATION_DIFFERS"
 VERDICT_THAI_SPEC_HIGHER = "THAILAND_BETTER_SPEC_HIGHER_PRICE"
+VERDICT_INSUFFICIENT_THAI = "INSUFFICIENT_THAI_VERIFICATION"
+VERDICT_INCOMPLETE_CONFIG = "INCOMPLETE_CONFIG_COMPARISON"
 
 
 def _price_band_verdict(delta_percent: float) -> str:
@@ -52,6 +59,50 @@ def _spec_advantage(differences: list[str]) -> str | None:
     return None
 
 
+def _thai_offer_ready_for_auto_verdict(match: CrossCountryMatch) -> tuple[bool, list[str]]:
+    offer = match.thai_offer
+    reasons: list[str] = []
+    if offer.verification_status != VERIFIED and not (
+        gpu_is_authoritative(offer) and is_purchasable_confirmed(offer) and offer.price_thb
+    ):
+        reasons.append("Thai offer not VERIFIED")
+    if not gpu_is_authoritative(offer):
+        reasons.append("GPU not confirmed by product evidence")
+    if not offer.availability_confirmed:
+        reasons.append("availability not confirmed")
+    return (len(reasons) == 0), reasons
+
+
+def _config_sufficient_for_price_verdict(match: CrossCountryMatch) -> bool:
+    """EQUIVALENT/EXACT with confirmed sides; SAME_FAMILY needs full config."""
+    if match.level == "EXACT":
+        return True
+    if match.level == "EQUIVALENT":
+        unknowns = [d for d in (match.differences or []) if d.endswith("_unknown")]
+        return not unknowns
+    if match.level == "SAME_FAMILY":
+        offer = match.thai_offer
+        # Incomplete Thai specs → informational only, no CLEARLY/SLIGHTLY better.
+        if (
+            offer.cpu is None
+            or offer.ram_gb is None
+            or offer.ssd_gb is None
+            or offer.screen_size_inch is None
+        ):
+            return False
+        unknowns = [d for d in (match.differences or []) if d.endswith("_unknown")]
+        hard = [
+            d
+            for d in (match.differences or [])
+            if d.startswith("ram:")
+            or d.startswith("ssd:")
+            or d.startswith("screen:")
+            or d in {"cpu", "gpu"}
+        ]
+        return not unknowns and not hard
+    return False
+
+
 def country_verdict(
     match: CrossCountryMatch | None,
     *,
@@ -67,6 +118,18 @@ def country_verdict(
         return CountryComparison(
             verdict=VERDICT_NO_COMPARABLE,
             reasons=["только альтернативы, не та же конфигурация"],
+            match=match,
+        )
+
+    ready, unverified_reasons = _thai_offer_ready_for_auto_verdict(match)
+    if not ready:
+        return CountryComparison(
+            verdict=VERDICT_INSUFFICIENT_THAI,
+            reasons=unverified_reasons
+            + [
+                "Предложение найдено, но конфигурация/наличие "
+                "на стороне магазина пока не подтверждены."
+            ],
             match=match,
         )
 
@@ -93,6 +156,33 @@ def country_verdict(
         or d.startswith("screen:")
         or d in {"cpu", "gpu"}
     ]
+
+    if not _config_sufficient_for_price_verdict(match):
+        reasons = [
+            "SAME_FAMILY: конфигурация подтверждена не полностью"
+            if match.level == "SAME_FAMILY"
+            else "конфигурация подтверждена не полностью"
+        ]
+        if match.delta_percent is not None:
+            pct = abs(match.delta_percent) * 100
+            if match.delta_percent < 0:
+                reasons.append(
+                    f"Тайская цена ниже примерно на {pct:.1f}%, "
+                    "но конфигурация подтверждена не полностью."
+                )
+            elif match.delta_percent > 0:
+                reasons.append(
+                    f"Российская цена ниже примерно на {pct:.1f}%, "
+                    "но конфигурация подтверждена не полностью."
+                )
+        if hard_diffs:
+            reasons.append(f"отличия: {', '.join(hard_diffs)}")
+        return CountryComparison(
+            verdict=VERDICT_INCOMPLETE_CONFIG,
+            reasons=reasons,
+            match=match,
+        )
+
     if match.level == "SAME_FAMILY" and hard_diffs:
         adv = _spec_advantage(hard_diffs)
         reasons = [f"конфигурация отличается: {', '.join(hard_diffs)}"]
@@ -145,4 +235,11 @@ def verdict_label_ru(verdict: str) -> str:
         VERDICT_FX_UNAVAILABLE: "Курс недоступен — сравнение ограничено",
         VERDICT_CONFIG_DIFFERS: "Конфигурации отличаются",
         VERDICT_THAI_SPEC_HIGHER: "Таиланд: выше спецификация при более высокой цене",
+        VERDICT_INSUFFICIENT_THAI: (
+            "Предложение найдено, но конфигурация/наличие "
+            "на стороне магазина пока не подтверждены."
+        ),
+        VERDICT_INCOMPLETE_CONFIG: (
+            "Цена сравнима информационно; конфигурация подтверждена не полностью"
+        ),
     }.get(verdict, verdict)

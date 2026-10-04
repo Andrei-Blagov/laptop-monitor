@@ -27,6 +27,14 @@ class ThailandOffer:
     regular_price_thb: int | None = None
     availability_status: str | None = None
     warranty: str | None = None
+    # Provenance / verification (Thailand hardening)
+    gpu_source: str | None = None
+    candidate_gpu: str | None = None
+    availability_source: str | None = None
+    availability_confirmed: bool = False
+    price_source: str | None = None
+    verification_status: str | None = None
+    verification_reasons: list[str] = field(default_factory=list)
     metadata: dict[str, Any] = field(default_factory=dict)
 
     def to_dict(self) -> dict[str, Any]:
@@ -42,6 +50,7 @@ class StoreScanResult:
     offers: list[ThailandOffer] = field(default_factory=list)
     error: str | None = None
     duration_seconds: float | None = None
+    unverified_candidates: list[ThailandOffer] = field(default_factory=list)
 
     @property
     def count(self) -> int:

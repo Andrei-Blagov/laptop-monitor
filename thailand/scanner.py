@@ -18,7 +18,11 @@ from thailand.matching import group_thai_offers, match_russian_to_thai
 from thailand.models import FxRate, StoreScanResult, ThailandOffer
 from thailand.registry import get_thailand_adapters
 from thailand.scoring import international_value_score
-from thailand.specs_parse import is_purchasable_for_best
+from thailand.verification import (
+    international_confidence,
+    is_purchasable_confirmed,
+    is_verified_for_ranking,
+)
 from thailand.storage import write_scan_snapshot
 
 logger = logging.getLogger(__name__)
@@ -39,7 +43,7 @@ def collect_thailand_offers(
     overall_timeout: float | None = None,
     per_store_timeout: float | None = None,
     parallel: bool = True,
-) -> tuple[list[StoreScanResult], list[ThailandOffer], float]:
+) -> tuple[list[StoreScanResult], list[ThailandOffer], list[ThailandOffer], float]:
     overall_timeout = float(
         overall_timeout
         if overall_timeout is not None
@@ -54,7 +58,7 @@ def collect_thailand_offers(
     started = time.perf_counter()
     results: list[StoreScanResult] = []
     if not adapters:
-        return [], [], 0.0
+        return [], [], [], 0.0
 
     if parallel and len(adapters) > 1:
         with ThreadPoolExecutor(max_workers=len(adapters)) as pool:
@@ -92,9 +96,11 @@ def collect_thailand_offers(
     order = {a.slug: i for i, a in enumerate(adapters)}
     results.sort(key=lambda r: order.get(r.store, 99))
     offers: list[ThailandOffer] = []
+    unverified: list[ThailandOffer] = []
     for r in results:
         offers.extend(r.offers)
-    return results, offers, time.perf_counter() - started
+        unverified.extend(getattr(r, "unverified_candidates", None) or [])
+    return results, offers, unverified, time.perf_counter() - started
 
 
 def build_thai_top(
@@ -102,18 +108,21 @@ def build_thai_top(
     *,
     fx: FxRate | None,
     limit: int | None = None,
+    verified_only: bool = True,
 ) -> list[dict[str, Any]]:
+    """Build TOP from verified purchasable offers only (default)."""
     limit = int(limit if limit is not None else config.THAILAND_TOP_LIMIT)
     rows: list[dict[str, Any]] = []
     for o in offers:
-        if not is_purchasable_for_best(o.availability_status, o.available):
+        if verified_only and not is_verified_for_ranking(o):
+            continue
+        if not is_purchasable_confirmed(o):
             continue
         if o.price_thb is None:
             continue
         rub = thb_to_rub(o.price_thb, fx) if fx_usable_for_verdict(fx) else thb_to_rub(
             o.price_thb, fx if fx and not fx.error else None
         )
-        # For scoring use RUB if available; else skip price component via None
         score = international_value_score(
             price_rub=rub,
             gpu=o.gpu,
@@ -123,12 +132,14 @@ def build_thai_top(
             screen_inch=o.screen_size_inch,
             screen_resolution=o.screen_resolution,
         )
+        conf = international_confidence(o)
         rows.append(
             {
                 "store": o.store,
                 "external_id": o.external_id,
                 "name": o.name,
                 "gpu": o.gpu,
+                "gpu_source": o.gpu_source,
                 "cpu": o.cpu,
                 "ram_gb": o.ram_gb,
                 "ssd_gb": o.ssd_gb,
@@ -136,10 +147,14 @@ def build_thai_top(
                 "screen_resolution": o.screen_resolution,
                 "price_thb": o.price_thb,
                 "price_rub": rub,
+                "price_source": o.price_source,
                 "availability_status": o.availability_status,
+                "availability_source": o.availability_source,
+                "verification_status": o.verification_status,
                 "warranty": o.warranty,
                 "url": o.url,
                 "international_score": score.score,
+                "international_confidence": conf,
                 "international_raw": score.raw,
                 "score_breakdown": score.breakdown,
             }
@@ -178,11 +193,11 @@ def run_thailand_scan(
     try:
         fx = fetch_cbr_thb_rate()
         fx_runtime = time.perf_counter() - t0
-        store_results, offers, collect_runtime = collect_thailand_offers()
+        store_results, offers, unverified, collect_runtime = collect_thailand_offers()
         match_t0 = time.perf_counter()
 
         price_rub_map: dict[str, int | None] = {}
-        for o in offers:
+        for o in list(offers) + list(unverified):
             key = f"{o.store}:{o.external_id}"
             price_rub_map[key] = thb_to_rub(o.price_thb, fx) if fx else None
 
@@ -200,8 +215,10 @@ def run_thailand_scan(
         matches = []
         comparison = None
         if primary_deal is not None:
+            # Prefer verified offers for matching; fall back to all discovered.
+            match_pool = offers or unverified
             matches = match_russian_to_thai(
-                primary_deal, offers, thai_price_rub=price_rub_map
+                primary_deal, match_pool, thai_price_rub=price_rub_map
             )
             best_match = None
             for m in matches:
@@ -212,7 +229,7 @@ def run_thailand_scan(
         else:
             best_match = None
 
-        top = build_thai_top(offers, fx=fx)
+        top = build_thai_top(offers, fx=fx, verified_only=True)
         groups = group_thai_offers(offers)
         match_runtime = time.perf_counter() - match_t0
 
@@ -243,6 +260,8 @@ def run_thailand_scan(
                     }
                     for r in store_results
                 ],
+                "verified_offers": [o.to_dict() for o in offers],
+                "unverified_candidates": [o.to_dict() for o in unverified],
                 "offers": [o.to_dict() for o in offers],
                 "trigger_models": [
                     s.cluster_name for s in (trigger_signals or [])
@@ -281,6 +300,7 @@ def run_thailand_scan(
                     "reasons": comparison.reasons if comparison else [],
                 },
                 "thailand_top": top,
+                "unverified_count": len(unverified),
                 "thai_groups": len(groups),
                 "runtimes": {
                     "fx_seconds": round(fx_runtime, 3),

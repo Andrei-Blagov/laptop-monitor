@@ -115,7 +115,10 @@ def run_buy_thailand_flow(
                 )
             )
             top = scan_result.get("_top") or scan_result.get("thailand_top") or []
-            alt = format_thailand_alternatives_message(top)
+            unverified_n = len(scan_result.get("unverified_candidates") or [])
+            alt = format_thailand_alternatives_message(
+                top, unverified_count=unverified_n
+            )
             if alt and scan_result.get("status") != "failed":
                 messages.append(alt)
 
