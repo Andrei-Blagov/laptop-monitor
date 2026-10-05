@@ -243,18 +243,21 @@ def state_process_lock(
         try:
             fd = os.open(str(lock_path), os.O_CREAT | os.O_EXCL | os.O_RDWR)
             break
-        except FileExistsError:
-            if time.monotonic() >= deadline:
-                # Stale lock recovery: if older than timeout*3, steal.
-                try:
-                    age = time.time() - lock_path.stat().st_mtime
-                    if age > float(timeout) * 3:
-                        lock_path.unlink(missing_ok=True)  # type: ignore[arg-type]
-                        continue
-                except OSError:
-                    pass
-                raise TimeoutError("buy_opportunity state lock timeout")
-            time.sleep(0.02)
+        except (FileExistsError, PermissionError):
+            # PermissionError: Windows sharing violation while the holder
+            # still has the lock file open. Wait, same as FileExistsError.
+            pass
+        if time.monotonic() >= deadline:
+            # Stale lock recovery: if older than timeout*3, steal.
+            try:
+                age = time.time() - lock_path.stat().st_mtime
+                if age > float(timeout) * 3:
+                    lock_path.unlink(missing_ok=True)  # type: ignore[arg-type]
+                    continue
+            except OSError:
+                pass
+            raise TimeoutError("buy_opportunity state lock timeout")
+        time.sleep(0.02)
     try:
         # Optional POSIX advisory lock for extra safety when available.
         try:

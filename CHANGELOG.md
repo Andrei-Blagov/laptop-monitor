@@ -1,5 +1,21 @@
 # Changelog
 
+## 0.7.0 — 2026-10-05
+
+Targeted Thailand comparison for a chosen Russian model, and safer HTTP 429 handling.
+
+- Automatic BUY / STRONG_BUY enqueues one Thailand job that compares that exact Russian model and then the general Thailand TOP
+- Manual search from the Russian TOP: Markets → find a model in Thailand, with a human-readable picker (model, GPU, price)
+- Match levels EXACT / SAME_FAMILY / EQUIVALENT / NOT_FOUND. SAME_FAMILY requires a real platform code; an MSI `9S7` prefix is not a family
+- Retailer-prefixed SKUs stay one exact model (`ASUS-G614PR-TS113W` and `G614PR-TS113W`)
+- Model-specific comparison is sent before the market TOP. An exact model above 300 000 ₽ is shown in the comparison and kept out of the TOP. Out of stock is reported as found, not missing
+- HTTP 429 is `RATE_LIMITED`: Retry-After is honored, otherwise a 60 minute pause, no immediate retry, and it does not increment the generic failure breaker
+- A bare legacy `HTTP_ERROR` is not guessed to be a 429
+
+### Unchanged
+
+- Deal Ranking / BUY rules and the 14-day maturity threshold / Russian pipeline / SQLite schema / n8n workflows / Russian timers
+
 ## 0.6.0 — 2026-10-05
 
 Thailand coverage: three direct stores, source health, and stricter GPU provenance.
