@@ -14,6 +14,7 @@ JOB_SCHEMA_VERSION = 1
 TRIGGER_BUY = "buy_signal"
 TRIGGER_MANUAL_CHECK = "manual_check"
 TRIGGER_MANUAL_COMPARE = "manual_compare"
+TRIGGER_MANUAL_MODEL = "manual_model_compare"
 
 SECRET_KEY_FRAGMENTS = (
     "token",
@@ -124,6 +125,7 @@ def build_job(
     instance_id: str | None = None,
     requested_chat_id: str | int | None = None,
     job_id: str | None = None,
+    target_model: Mapping[str, Any] | None = None,
 ) -> dict[str, Any]:
     from deal_ranking import target_price_for_gpu
 
@@ -158,6 +160,7 @@ def build_job(
         "instance_id": instance_id,
         "signals": sig_dicts,
         "russian_context": ctx_dicts,
+        "target_model": dict(target_model) if target_model else None,
         "requested_chat_id": (
             str(requested_chat_id) if requested_chat_id is not None else None
         ),

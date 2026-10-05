@@ -133,6 +133,7 @@ THAILAND_STORE_BANANA_ENABLED: bool = False
 THAILAND_STORE_LAZADA_ENABLED: bool = False
 THAILAND_SOURCE_FAILURE_THRESHOLD: int = 3
 THAILAND_SOURCE_COOLDOWN_HOURS: float = 24.0
+THAILAND_RATE_LIMIT_DEFAULT_MINUTES: float = 60.0
 THAILAND_SOURCE_HEALTH_PATH: str = "data/thailand_source_health.json"
 # Playwright stays on the main thread; do not run several browsers at once.
 THAILAND_BROWSER_MAX_CONCURRENCY: int = 1

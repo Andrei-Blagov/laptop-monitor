@@ -7,6 +7,7 @@ Admin-only buttons: run pipeline / top deals / price history / status / version.
 Does NOT run schema migrations — require migrate_db first.
 """
 
+import hashlib
 import json
 import logging
 import sys
@@ -88,6 +89,8 @@ BTN_MARKETS = "ctrl:markets"
 BTN_TH_SCAN = "ctrl:th_scan"
 BTN_TH_COMPARE = "ctrl:th_cmp"
 BTN_RU_TOP = "ctrl:ru_top"
+BTN_TH_FIND = "ctrl:th_find"
+CALLBACK_MODEL_PICK = "tm:"
 
 
 def _api(token: str, method: str) -> str:
@@ -130,6 +133,9 @@ def _markets_keyboard() -> dict[str, Any]:
             ],
             [
                 {"text": "🇷🇺🇹🇭 Сравнить сейчас", "callback_data": BTN_TH_COMPARE},
+            ],
+            [
+                {"text": "🔎 Найти модель из ТОП РФ в Таиланде", "callback_data": BTN_TH_FIND},
             ],
             [
                 {"text": "🏠 Меню", "callback_data": CALLBACK_MENU},
@@ -663,6 +669,86 @@ def handle_markets_menu(
     )
 
 
+def model_callback_token(cluster_name: str) -> str:
+    return hashlib.sha256(cluster_name.encode("utf-8")).hexdigest()[:8]
+
+
+def unique_russian_top(db_path: Path | str = DEFAULT_DB_PATH, *, limit: int = 10):
+    from russian_deals import load_russian_ranked_deals
+
+    deals = load_russian_ranked_deals(db_path, limit=limit)
+    out = []
+    seen: set[str] = set()
+    for deal in deals:
+        name = deal.cluster_name or ""
+        if not name or name in seen:
+            continue
+        seen.add(name)
+        out.append(deal)
+        if len(out) >= limit:
+            break
+    return out
+
+
+def model_picker_keyboard(deals) -> dict[str, Any]:
+    from thailand.target_model import build_target_model
+
+    rows = []
+    for index, deal in enumerate(deals[:10], start=1):
+        code = build_target_model(deal).get("canonical_model_code") or deal.cluster_name
+        price = f"{int(deal.price):,}".replace(",", " ") if deal.price is not None else "н/д"
+        label = f"{index}. {code} · {price} ₽"
+        token = CALLBACK_MODEL_PICK + model_callback_token(deal.cluster_name)
+        rows.append([{"text": label[:60], "callback_data": token}])
+    rows.append([{"text": "🏠 Меню", "callback_data": CALLBACK_MENU}])
+    return {"inline_keyboard": rows}
+
+
+def handle_thailand_model_picker(
+    client: httpx.Client,
+    token: str,
+    chat_id: str | int,
+    *,
+    db_path: Path | str = DEFAULT_DB_PATH,
+    message_id: int | None = None,
+) -> None:
+    deals = unique_russian_top(db_path, limit=10)
+    if not deals:
+        send_message(client, token, chat_id, "Нет свежего российского ТОП для поиска.", with_keyboard=False)
+        return
+    _reply_or_edit(
+        client,
+        token,
+        chat_id,
+        "<b>Найти модель из ТОП РФ в Таиланде</b>\nВыберите модель:",
+        message_id=message_id,
+        reply_markup=model_picker_keyboard(deals),
+    )
+
+
+def handle_thailand_model_pick(
+    client: httpx.Client,
+    token: str,
+    chat_id: str | int,
+    token_id: str,
+    *,
+    db_path: Path | str = DEFAULT_DB_PATH,
+) -> None:
+    """Resolve the clicked model now and enqueue. Does not wait for the scan."""
+    deals = unique_russian_top(db_path, limit=10)
+    deal = next((d for d in deals if model_callback_token(d.cluster_name) == token_id), None)
+    if deal is None:
+        send_message(client, token, chat_id, "Эта модель уже не в текущем ТОП. Откройте список ещё раз.", with_keyboard=False)
+        return
+    from buy_thailand_flow import enqueue_model_thailand_job
+
+    result = enqueue_model_thailand_job(deal, chat_id=chat_id)
+    if result.get("ok"):
+        send_message(client, token, chat_id, "Ищу эту модель в Таиланде…", with_keyboard=False)
+    else:
+        send_message(client, token, chat_id, "Не удалось поставить поиск в очередь.", with_keyboard=False)
+
+
 def handle_thailand_manual(
     client: httpx.Client,
     token: str,
@@ -762,6 +848,12 @@ def process_update(client: httpx.Client, token: str, update: dict[str, Any]) -> 
             handle_thailand_manual(client, token, chat_id, compare=False)
         elif data == BTN_TH_COMPARE:
             handle_thailand_manual(client, token, chat_id, compare=True)
+        elif data == BTN_TH_FIND:
+            handle_thailand_model_picker(client, token, chat_id, message_id=message_id)
+        elif data.startswith(CALLBACK_MODEL_PICK):
+            handle_thailand_model_pick(
+                client, token, chat_id, data[len(CALLBACK_MODEL_PICK):]
+            )
         elif data == BTN_STATUS:
             send_message(client, token, chat_id, build_status_text())
         elif data == BTN_VERSION:

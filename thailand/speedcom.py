@@ -254,16 +254,42 @@ def _failure(started: float, code: str, detail: str) -> StoreScanResult:
     )
 
 
+def _retry_after_seconds(response: httpx.Response) -> int | None:
+    raw = response.headers.get("Retry-After")
+    if not raw:
+        return None
+    try:
+        return max(1, int(raw.strip()))
+    except ValueError:
+        return None
+
+
+def _catalog_has_code(offers: list[ThailandOffer], codes: list[str]) -> bool:
+    from thailand.grouping import normalize_model_code
+    from thailand.target_model import offer_codes
+
+    wanted = {normalize_model_code(c) for c in codes if c}
+    wanted = {c for c in wanted if len(c) >= 6}
+    if not wanted:
+        return True
+    found: set[str] = set()
+    for offer in offers:
+        found.update(offer_codes(offer))
+    return bool(wanted & found)
+
+
 def collect(
     *,
     timeout: float = 60.0,
     client: httpx.Client | None = None,
+    target_codes: list[str] | None = None,
 ) -> StoreScanResult:
     started = time.perf_counter()
     own = client is None
     http = client or httpx.Client(headers=_headers(), follow_redirects=True, timeout=timeout)
     discovered: list[ThailandOffer] = []
     seen: set[str] = set()
+    requests = 0
     try:
         for collection in COLLECTIONS:
             page = 1
@@ -271,14 +297,18 @@ def collect(
                 url = f"{BASE}/collections/{collection}/products.json?limit=250&page={page}"
                 try:
                     resp = http.get(url)
-                    if resp.status_code == 429:
-                        time.sleep(2.0)
-                        resp = http.get(url)
+                    requests += 1
                 except httpx.TimeoutException:
                     return _failure(started, "TIMEOUT", "timeout")
                 except httpx.HTTPError as exc:
                     code, detail = classify_store_failure(type(exc).__name__)
                     return _failure(started, code, detail)
+                if resp.status_code == 429:
+                    # One 429 ends the scan. Do not retry in the same job.
+                    result = _failure(started, "RATE_LIMITED", "HTTP_429")
+                    result.retry_after_seconds = _retry_after_seconds(resp)
+                    result.request_count = requests
+                    return result
                 if resp.status_code >= 400:
                     code, detail = classify_store_failure(status_code=resp.status_code)
                     return _failure(started, code, detail)
@@ -304,6 +334,46 @@ def collect(
                 if len(products) < 250:
                     break
                 page += 1
+        codes = [str(c) for c in (target_codes or []) if c][:1]
+        if codes and not _catalog_has_code(discovered, codes):
+            from urllib.parse import quote
+
+            url = (
+                f"{BASE}/search/suggest.json?q={quote(codes[0])}"
+                "&resources[type]=product&resources[limit]=5"
+            )
+            try:
+                resp = http.get(url)
+                requests += 1
+            except httpx.HTTPError:
+                resp = None
+            if resp is not None and resp.status_code == 429:
+                result = _failure(started, "RATE_LIMITED", "HTTP_429")
+                result.retry_after_seconds = _retry_after_seconds(resp)
+                result.request_count = requests
+                result.offers = [o for o in discovered if is_verified_for_ranking(o)]
+                result.unverified_candidates = [
+                    o for o in discovered if not is_verified_for_ranking(o)
+                ]
+                result.ok = bool(result.offers)
+                return result
+            if resp is not None and resp.status_code < 400 and "json" in (
+                resp.headers.get("content-type") or ""
+            ).lower():
+                try:
+                    payload = resp.json()
+                except ValueError:
+                    payload = {}
+                products = (
+                    (payload.get("resources") or {}).get("results") or {}
+                ).get("products") or []
+                now = datetime.now(timezone.utc)
+                for product in products:
+                    if isinstance(product, dict):
+                        for offer in parse_speedcom_product(product, collected_at=now):
+                            if offer.external_id not in seen:
+                                seen.add(offer.external_id)
+                                discovered.append(offer)
         verified = [o for o in discovered if is_verified_for_ranking(o)]
         unverified = [o for o in discovered if not is_verified_for_ranking(o)]
         result = StoreScanResult(
@@ -316,6 +386,7 @@ def collect(
             collection_mode="http",
             discovered_count=len(discovered),
             verified_count=len(verified),
+            request_count=requests,
         )
         return result
     finally:

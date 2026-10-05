@@ -23,6 +23,7 @@ from russian_deals import load_russian_ranked_deals
 from telegram_sender import MessageSender, TelegramSender
 from thailand.formatting import (
     format_buy_opportunity_message,
+    format_target_model_message,
     format_thailand_alternatives_message,
     format_thailand_comparison_message,
 )
@@ -30,10 +31,12 @@ from thailand.job_models import (
     TRIGGER_BUY,
     TRIGGER_MANUAL_CHECK,
     TRIGGER_MANUAL_COMPARE,
+    TRIGGER_MANUAL_MODEL,
     build_job,
     russian_context_to_deal,
     signal_from_dict,
 )
+from thailand.target_model import build_target_model
 from thailand.job_queue import enqueue_job
 from version import get_version
 
@@ -54,6 +57,9 @@ def _safe_enqueue(
 ) -> dict[str, Any]:
     """enqueue_job, with filesystem/permission errors reported as a failed result."""
     try:
+        matched = next((d for d in deals if d.cluster_name == signal.cluster_name), None)
+        chosen = matched if matched is not None else (deals[0] if deals else None)
+        target = build_target_model(chosen, level=signal.level) if chosen is not None else None
         job = build_job(
             trigger_type=TRIGGER_BUY,
             signals=[signal],
@@ -63,6 +69,7 @@ def _safe_enqueue(
             app_version=get_version(),
             instance_id=instance_id or config.get_instance_id(),
             requested_chat_id=None,
+            target_model=target,
         )
         enq = enqueue_job(job, root=jobs_dir)
         if enq.get("ok") and not enq.get("job_id"):
@@ -326,6 +333,37 @@ def enqueue_manual_thailand_job(
         return out
 
 
+def enqueue_model_thailand_job(
+    deal: RankedDeal,
+    *,
+    chat_id: str | int,
+    jobs_dir: Path | str | None = None,
+    instance_id: str | None = None,
+) -> dict[str, Any]:
+    """Manual Russian-TOP model search. Does not touch BUY state or cooldown."""
+    target = build_target_model(deal)
+    code = target.get("canonical_model_code") or deal.cluster_name
+    job = build_job(
+        trigger_type=TRIGGER_MANUAL_MODEL,
+        signals=[],
+        russian_deals=[deal],
+        dedupe_key=f"{TRIGGER_MANUAL_MODEL}|{code}",
+        app_version=get_version(),
+        instance_id=instance_id or config.get_instance_id(),
+        requested_chat_id=chat_id,
+        target_model=target,
+    )
+    enq = enqueue_job(job, root=jobs_dir)
+    return {
+        "ok": bool(enq.get("ok") or enq.get("duplicate")),
+        "thailand_job_id": enq.get("job_id") or job["job_id"],
+        "thailand_scan_status": "queued" if enq.get("ok") or enq.get("duplicate") else "enqueue_failed",
+        "trigger_type": TRIGGER_MANUAL_MODEL,
+        "target_model": target,
+        "error": enq.get("error"),
+    }
+
+
 def execute_thailand_job(
     job: dict[str, Any],
     *,
@@ -360,12 +398,14 @@ def execute_thailand_job(
     primary = signals[0] if signals else None
 
     try:
+        target_model = job.get("target_model") if isinstance(job.get("target_model"), dict) else None
         scan_result = scan(
             trigger_type=trigger,
             russian_deals=deals,
             trigger_signals=[primary] if primary else None,
             snapshot_dir=snapshot_dir,
             write_snapshot=True,
+            target_model=target_model,
         )
     except Exception as exc:  # noqa: BLE001
         logger.warning(
@@ -380,17 +420,21 @@ def execute_thailand_job(
     out["stores"] = scan_result.get("stores")
 
     messages: list[str] = []
-    messages.append(
-        format_thailand_comparison_message(
-            store_results=scan_result.get("_store_results") or [],
-            fx=scan_result.get("_fx"),
-            match=scan_result.get("_best_match"),
-            comparison=scan_result.get("_comparison"),
-            russian_signal=primary,
-            match_over_cap_note=scan_result.get("_match_over_cap_note")
-            or (scan_result.get("matching") or {}).get("over_cap_note"),
+    target_search = scan_result.get("target_search")
+    if target_model and isinstance(target_search, dict):
+        messages.append(format_target_model_message(target_model, target_search))
+    else:
+        messages.append(
+            format_thailand_comparison_message(
+                store_results=scan_result.get("_store_results") or [],
+                fx=scan_result.get("_fx"),
+                match=scan_result.get("_best_match"),
+                comparison=scan_result.get("_comparison"),
+                russian_signal=primary,
+                match_over_cap_note=scan_result.get("_match_over_cap_note")
+                or (scan_result.get("matching") or {}).get("over_cap_note"),
+            )
         )
-    )
     top = scan_result.get("_top") or scan_result.get("thailand_top") or []
     unverified_n = len(scan_result.get("unverified_candidates") or [])
     alt = format_thailand_alternatives_message(

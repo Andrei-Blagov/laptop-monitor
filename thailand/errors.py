@@ -11,6 +11,7 @@ TIMEOUT = "TIMEOUT"
 NETWORK_ERROR = "NETWORK_ERROR"
 PARSE_ERROR = "PARSE_ERROR"
 HTTP_ERROR = "HTTP_ERROR"
+RATE_LIMITED = "RATE_LIMITED"
 UNSUPPORTED = "UNSUPPORTED"
 
 ERROR_CODES = frozenset(
@@ -22,6 +23,7 @@ ERROR_CODES = frozenset(
         NETWORK_ERROR,
         PARSE_ERROR,
         HTTP_ERROR,
+        RATE_LIMITED,
         UNSUPPORTED,
     }
 )
@@ -36,10 +38,12 @@ def classify_store_failure(
     text = (detail or "").strip()
     low = text.lower()
     tech = text or (f"HTTP_{status_code}" if status_code else "unknown")
+    if status_code == 429 or "too many requests" in low or low.strip() in {"429", "http_429", "rate_limited"}:
+        return RATE_LIMITED, tech if text else "HTTP_429"
     if any(k in low for k in ("challenge", "just a moment", "cf-browser", "captcha", "sufei")):
         return CHALLENGE, tech
     if status_code in {401, 403} or any(
-        k in low for k in ("403", "401", "429", "blocked", "cloudflare", "access denied", "forbidden")
+        k in low for k in ("403", "401", "blocked", "cloudflare", "access denied", "forbidden")
     ):
         return BLOCKED, tech if text else f"HTTP_{status_code or 403}"
     if status_code is not None and status_code >= 400:

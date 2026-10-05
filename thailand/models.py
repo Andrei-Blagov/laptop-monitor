@@ -81,6 +81,8 @@ class StoreScanResult:
     verified_count: int | None = None
     circuit_breaker_status: str | None = None
     policy_disabled: bool = False
+    request_count: int | None = None
+    retry_after_seconds: int | None = None
 
     @property
     def count(self) -> int:

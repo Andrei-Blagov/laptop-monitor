@@ -134,6 +134,9 @@ def format_thailand_comparison_message(
         if getattr(sr, "policy_disabled", False) or getattr(sr, "circuit_breaker_status", None) == "open":
             lines.append(f"{label} — временно отключён")
             continue
+        if sr.error_code == "RATE_LIMITED" or sr.collection_mode == "rate_limited":
+            lines.append(f"{label} — временно не проверялся из-за лимита запросов")
+            continue
         if sr.error_code == "NO_RESULTS":
             lines.append(f"{label} — предложений нет")
             continue
@@ -237,6 +240,105 @@ def format_thailand_comparison_message(
     lines.append(FOOTER_LOCAL)
     lines.append(FOOTER_FX)
     lines.append(FOOTER_CAP)
+    return "\n".join(lines)[:TELEGRAM_SOFT]
+
+
+def format_target_model_message(
+    target: dict[str, Any],
+    search: dict[str, Any],
+) -> str:
+    """First Thailand message: this Russian model, then the market TOP is separate."""
+    lines = ["🇹🇭 <b>ЭТА МОДЕЛЬ В ТАИЛАНДЕ</b>", ""]
+    title = target.get("cluster_name") or target.get("canonical_model_code") or "Модель"
+    lines.append(str(title))
+    bits = [str(target.get("gpu") or ""), str(target.get("cpu") or "")]
+    spec = " / ".join(b for b in bits if b)
+    if spec:
+        lines.append(spec)
+    lines.append("")
+    lines.append("Россия:")
+    price = target.get("price")
+    store = target.get("store") or ""
+    lines.append(f"{_rub(price) if price is not None else 'н/д'} ₽ — {store}")
+    lines.append("")
+    lines.append("Таиланд:")
+    level = search.get("match_level") or "NOT_FOUND"
+    exact = list(search.get("exact_matches") or [])
+    family = list(search.get("same_family_matches") or [])
+    equivalent = list(search.get("equivalent_matches") or [])
+    if level == "NOT_FOUND":
+        lines.append("Точная модификация в Таиланде не найдена.")
+    elif exact:
+        primary = exact[0]
+        lines.append("EXACT")
+        label = {
+            "jib": "JIB",
+            "advice": "Advice",
+            "speedcom": "SpeedCom",
+            "invadeit": "InvadeIT",
+            "itcity": "IT City",
+        }.get(str(primary.get("store")), str(primary.get("store")))
+        lines.append(label)
+        if primary.get("price_thb") is not None:
+            lines.append(f"{_thb(primary.get('price_thb'))} ฿")
+        rub = primary.get("price_rub")
+        if rub is not None:
+            lines.append(f"≈ {_rub(rub)} ₽")
+        if primary.get("out_of_stock"):
+            lines.append("Найдена, сейчас нет в наличии.")
+        elif primary.get("over_cap"):
+            lines.append("Точная модель найдена, но цена выше вашего лимита 300 000 ₽.")
+        else:
+            lines.append("в наличии")
+        ru = target.get("price")
+        if rub is not None and ru is not None and not primary.get("out_of_stock"):
+            delta = int(ru) - int(rub)
+            lines.append("")
+            lines.append("Разница:")
+            if delta > 0:
+                lines.append(f"Таиланд дешевле на {_rub(delta)} ₽")
+            elif delta < 0:
+                lines.append(f"Россия дешевле на {_rub(abs(delta))} ₽")
+            else:
+                lines.append("Цены совпадают")
+        others = exact[1:3]
+        if others:
+            lines.append("")
+            lines.append("Другие магазины:")
+            for alt in others:
+                alt_label = {
+                    "jib": "JIB",
+                    "speedcom": "SpeedCom",
+                    "invadeit": "InvadeIT",
+                    "itcity": "IT City",
+                    "advice": "Advice",
+                }.get(str(alt.get("store")), str(alt.get("store")))
+                lines.append(
+                    f"{alt_label} — {_thb(alt.get('price_thb'))} ฿ (≈ {_rub(alt.get('price_rub'))} ₽)"
+                )
+    if not exact and family:
+        lines.append("Точная модификация в Таиланде не найдена.")
+        lines.append("")
+        lines.append("SAME_FAMILY")
+        row = family[0]
+        lines.append(str(row.get("name") or ""))
+        lines.append("Региональный код отличается.")
+    if not exact and not family and equivalent:
+        lines.append("Точной модели нет. Ближайшая эквивалентная конфигурация:")
+        lines.append(str(equivalent[0].get("name") or ""))
+    for skipped in search.get("stores_skipped") or []:
+        if skipped.get("reason") in {"RATE_LIMITED", "rate_limited"}:
+            name = {
+                "speedcom": "SpeedCom",
+                "jib": "JIB",
+                "invadeit": "InvadeIT",
+                "itcity": "IT City",
+                "advice": "Advice",
+            }.get(str(skipped.get("store")), str(skipped.get("store")))
+            lines.append("")
+            lines.append(f"{name} временно не проверялся из-за лимита запросов.")
+    lines.append("")
+    lines.append(FOOTER_LOCAL)
     return "\n".join(lines)[:TELEGRAM_SOFT]
 
 

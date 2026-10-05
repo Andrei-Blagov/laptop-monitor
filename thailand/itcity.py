@@ -238,6 +238,7 @@ def collect(
     *,
     timeout: float = 60.0,
     client: httpx.Client | None = None,
+    target_codes: list[str] | None = None,
 ) -> StoreScanResult:
     started = time.perf_counter()
     own = client is None
@@ -270,7 +271,12 @@ def collect(
             "Content-Type": "application/json",
         }
         now = datetime.now(timezone.utc)
-        for query in QUERIES:
+        queries = list(QUERIES)
+        for code in list(target_codes or [])[:1]:
+            if code and code not in queries:
+                queries.append(str(code))
+        requests = 1  # storefront page that publishes the search config
+        for query in queries:
             for page_no in range(3):
                 try:
                     resp = http.post(
@@ -278,11 +284,16 @@ def collect(
                         headers=headers,
                         json={"query": query, "hitsPerPage": 40, "page": page_no},
                     )
+                    requests += 1
                 except httpx.TimeoutException:
                     return _failure(started, "TIMEOUT", "timeout")
                 except httpx.HTTPError as exc:
                     code, detail = classify_store_failure(type(exc).__name__)
                     return _failure(started, code, detail)
+                if resp.status_code == 429:
+                    result = _failure(started, "RATE_LIMITED", "HTTP_429")
+                    result.request_count = requests
+                    return result
                 if resp.status_code >= 400:
                     code, detail = classify_store_failure(status_code=resp.status_code)
                     return _failure(started, code, detail)
@@ -314,6 +325,7 @@ def collect(
             collection_mode="http",
             discovered_count=len(discovered),
             verified_count=len(verified),
+            request_count=requests,
         )
     finally:
         if own:

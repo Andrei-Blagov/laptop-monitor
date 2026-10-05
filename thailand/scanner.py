@@ -2,6 +2,7 @@ from __future__ import annotations
 
 """On-demand Thailand market scan orchestrator."""
 
+import inspect
 import logging
 import time
 from concurrent.futures import ThreadPoolExecutor, as_completed
@@ -28,7 +29,7 @@ from thailand.grouping import dedupe_user_facing_rows
 from thailand.matching import group_thai_offers, match_russian_to_thai
 from thailand.models import FxRate, StoreScanResult, ThailandOffer
 from thailand.registry import ThailandStoreAdapter, get_thailand_adapters
-from thailand.source_health import load_health, record_observation, should_skip
+from thailand.source_health import load_health, record_observation, skip_reason
 from thailand.scoring import international_value_score
 from thailand.seller_trust import (
     annotate_marketplace_identity,
@@ -57,7 +58,11 @@ def derive_scan_status(store_results: Sequence[StoreScanResult]) -> str:
     ]
     if not relevant:
         return "failed"
-    failures = [r for r in relevant if not r.ok]
+    failures = [
+        r
+        for r in relevant
+        if not r.ok and r.error_code != "RATE_LIMITED" and r.collection_mode != "rate_limited"
+    ]
     if not failures:
         return "ok"
     if len(failures) == len(relevant):
@@ -92,9 +97,29 @@ def _skipped_result(adapter: ThailandStoreAdapter) -> StoreScanResult:
     )
 
 
-def _collect_store(adapter, timeout: float) -> StoreScanResult:
+def _rate_limited_result(adapter: ThailandStoreAdapter) -> StoreScanResult:
+    return StoreScanResult(
+        store=adapter.slug,
+        ok=True,
+        offers=[],
+        error_code="RATE_LIMITED",
+        collection_mode="rate_limited",
+        duration_seconds=0.0,
+        discovered_count=0,
+        verified_count=0,
+    )
+
+
+def _collect_store(adapter, timeout: float, target_codes: list[str] | None = None) -> StoreScanResult:
+    kwargs: dict[str, Any] = {"timeout": timeout}
     try:
-        return adapter.collect(timeout=timeout)
+        params = inspect.signature(adapter.collect).parameters
+        if "target_codes" in params and target_codes:
+            kwargs["target_codes"] = target_codes
+    except (TypeError, ValueError):
+        pass
+    try:
+        return adapter.collect(**kwargs)
     except Exception as exc:  # noqa: BLE001
         logger.warning("Thailand store %s failed: %s", adapter.slug, type(exc).__name__)
         from thailand.errors import classify_store_failure
@@ -116,6 +141,7 @@ def collect_thailand_offers(
     overall_timeout: float | None = None,
     per_store_timeout: float | None = None,
     parallel: bool = True,
+    target_codes: list[str] | None = None,
 ) -> tuple[list[StoreScanResult], list[ThailandOffer], list[ThailandOffer], float]:
     overall_timeout = float(
         overall_timeout
@@ -133,8 +159,12 @@ def collect_thailand_offers(
     for adapter in all_adapters:
         if not adapter.enabled:
             continue
-        if should_skip(adapter.slug):
+        reason = skip_reason(adapter.slug)
+        if reason == "circuit":
             placeholders.append(_skipped_result(adapter))
+            continue
+        if reason == "rate_limit":
+            placeholders.append(_rate_limited_result(adapter))
             continue
         adapters.append(adapter)
     started = time.perf_counter()
@@ -151,7 +181,7 @@ def collect_thailand_offers(
     if parallel and len(http_adapters) > 1:
         with ThreadPoolExecutor(max_workers=len(http_adapters)) as pool:
             futs = {
-                pool.submit(_collect_store, a, per_store_timeout): a
+                pool.submit(_collect_store, a, per_store_timeout, target_codes): a
                 for a in http_adapters
             }
             try:
@@ -186,7 +216,7 @@ def collect_thailand_offers(
                     )
                 )
                 continue
-            results.append(_collect_store(a, per_store_timeout))
+            results.append(_collect_store(a, per_store_timeout, target_codes))
 
     for a in browser_adapters:
         if time.perf_counter() - started > overall_timeout:
@@ -201,10 +231,10 @@ def collect_thailand_offers(
                 )
             )
             continue
-        results.append(_collect_store(a, per_store_timeout))
+        results.append(_collect_store(a, per_store_timeout, target_codes))
 
     for result in results:
-        if result.policy_disabled or result.collection_mode == "skipped":
+        if result.policy_disabled or result.collection_mode in {"skipped", "rate_limited"}:
             continue
         try:
             record_observation(
@@ -213,6 +243,7 @@ def collect_thailand_offers(
                 error_code=result.error_code,
                 offer_count=result.count,
                 runtime_seconds=result.duration_seconds,
+                retry_after_seconds=result.retry_after_seconds,
             )
         except Exception:  # noqa: BLE001
             logger.warning("thailand health write failed for %s", result.store)
@@ -391,6 +422,7 @@ def run_thailand_scan(
     trigger_signals: Sequence[BuySignal] | None = None,
     snapshot_dir: Path | str | None = None,
     write_snapshot: bool = True,
+    target_model: dict[str, Any] | None = None,
 ) -> dict[str, Any]:
     """
     Best-effort Thailand scan. Never raises to caller for store failures.
@@ -409,7 +441,10 @@ def run_thailand_scan(
     try:
         fx = fetch_cbr_thb_rate()
         fx_runtime = time.perf_counter() - t0
-        store_results, offers, unverified, collect_runtime = collect_thailand_offers()
+        codes = [str(c) for c in (target_model or {}).get("model_codes") or [] if c][:1]
+        store_results, offers, unverified, collect_runtime = collect_thailand_offers(
+            target_codes=codes or None
+        )
         match_t0 = time.perf_counter()
 
         price_rub_map: dict[str, int | None] = {}
@@ -505,6 +540,21 @@ def run_thailand_scan(
         match_runtime = time.perf_counter() - match_t0
 
         status = derive_scan_status(store_results)
+        target_search = None
+        if target_model:
+            from thailand.target_model import search_collected_offers
+
+            skipped = [
+                {"store": r.store, "reason": r.error_code or r.collection_mode}
+                for r in store_results
+                if r.collection_mode in {"rate_limited", "skipped", "disabled"} or r.error_code == "RATE_LIMITED"
+            ]
+            target_search = search_collected_offers(
+                target_model,
+                list(offers) + list(unverified),
+                fx=fx,
+                stores_skipped=skipped,
+            )
 
         finished_at = datetime.now(timezone.utc)
         result.update(
@@ -527,10 +577,16 @@ def run_thailand_scan(
                         "offers_verified": r.verified_count,
                         "circuit_breaker_status": r.circuit_breaker_status,
                         "policy_disabled": r.policy_disabled,
+                        "request_count": r.request_count,
                     }
                     for r in store_results
                 ],
                 "source_health": load_health().get("stores") or {},
+                "target_model": target_model,
+                "target_search": target_search,
+                "request_counts": {
+                    r.store: r.request_count for r in store_results if r.request_count is not None
+                },
                 "all_verified_offers": [o.to_dict() for o in offers],
                 "eligible_offers": [o.to_dict() for o in eligible_offers],
                 "over_cap_offers_count": len(over_cap_offers),
