@@ -148,6 +148,10 @@ THAILAND_WORKER_STATE_PATH = "data/thailand_worker_state.json"
 # Country verdict bands on equivalent hardware (abs % price delta).
 COUNTRY_VERDICT_EQUAL_PCT: float = 0.03
 COUNTRY_VERDICT_SLIGHT_PCT: float = 0.08
+# Purchase recommendation: (Russia − Thailand) / Russia, in percent points.
+# These do not change ranking or BUY rules.
+RECOMMENDATION_COUNTRY_SLIGHT_PCT: float = 5.0
+RECOMMENDATION_COUNTRY_CLEAR_PCT: float = 10.0
 # International value score raw component maxima (sum 88 → normalize to 0..100).
 INTL_SCORE_GPU_MAX: float = 25.0
 INTL_SCORE_PRICE_MAX: float = 25.0

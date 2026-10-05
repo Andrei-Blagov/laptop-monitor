@@ -660,6 +660,15 @@ def run_thailand_scan(
             }
         )
 
+        if target_model and russian_deals:
+            from purchase_recommendation import build_recommendation
+
+            result["recommendation"] = build_recommendation(
+                russian_deals[0],
+                target_search if isinstance(target_search, dict) else None,
+                stores=result.get("stores") or [],
+            ).to_dict()
+
         if write_snapshot:
             snap_payload = {
                 k: v for k, v in result.items() if not str(k).startswith("_")

@@ -424,9 +424,9 @@ class BuyTargetJobTests(unittest.TestCase):
 
         result = execute_thailand_job(job, deliver=False, scan_fn=scan_fn, state_path=Path(tempfile.mkdtemp()) / "s.json")
         self.assertEqual(calls["n"], 1)
-        self.assertEqual(len(result["messages"]), 2)
-        self.assertIn("ЭТА МОДЕЛЬ В ТАИЛАНДЕ", result["messages"][0])
-        self.assertIn("ЛУЧШИЕ ЦЕНЫ", result["messages"][1])
+        self.assertEqual(len(result["messages"]), 1)
+        self.assertIn("ЧТО ПОКУПАТЬ СЕЙЧАС", result["messages"][0])
+        self.assertNotIn("ЛУЧШИЕ ЦЕНЫ", result["messages"][0])
         self.assertNotIn("РАЗОВАЯ ПРОВЕРКА", result["messages"][0])
 
 

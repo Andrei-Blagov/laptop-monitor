@@ -92,7 +92,9 @@ BTN_TH_SCAN = "ctrl:th_scan"
 BTN_TH_COMPARE = "ctrl:th_cmp"
 BTN_RU_TOP = "ctrl:ru_top"
 BTN_TH_FIND = "ctrl:th_find"
+BTN_RECOMMEND = "ctrl:recommend"
 CALLBACK_MODEL_PICK = "tm:"
+CALLBACK_RECOMMEND = "rq:"
 
 
 def _api(token: str, method: str) -> str:
@@ -112,6 +114,9 @@ def _keyboard() -> dict[str, Any]:
             ],
             [
                 {"text": "📈 История цены", "callback_data": BTN_HISTORY},
+            ],
+            [
+                {"text": "🎯 Что покупать сейчас", "callback_data": BTN_RECOMMEND},
             ],
             [
                 {"text": "🌍 Рынки", "callback_data": BTN_MARKETS},
@@ -754,6 +759,73 @@ def model_picker_keyboard(deals) -> dict[str, Any]:
     return {"inline_keyboard": rows}
 
 
+def recommendation_keyboard(deals) -> dict[str, Any]:
+    rows = [[{"text": "🏆 Лучший вариант", "callback_data": CALLBACK_RECOMMEND + "best"}]]
+    for index, deal in enumerate(deals[:5], start=1):
+        token = CALLBACK_RECOMMEND + model_callback_token(deal.cluster_name)
+        rows.append([{"text": picker_button_label(deal, index), "callback_data": token}])
+    rows.append([{"text": "🏠 Меню", "callback_data": CALLBACK_MENU}])
+    return {"inline_keyboard": rows}
+
+
+def handle_recommendation_menu(
+    client: httpx.Client,
+    token: str,
+    chat_id: str | int,
+    *,
+    db_path: Path | str = DEFAULT_DB_PATH,
+    message_id: int | None = None,
+) -> None:
+    deals = unique_russian_top(db_path, limit=5)
+    if not deals:
+        send_message(
+            client,
+            token,
+            chat_id,
+            "Нет свежих данных. Сначала запустите проверку.",
+            with_keyboard=False,
+        )
+        return
+    _reply_or_edit(
+        client,
+        token,
+        chat_id,
+        "<b>Что покупать сейчас</b>\nВыберите модель или лучший вариант:",
+        message_id=message_id,
+        reply_markup=recommendation_keyboard(deals),
+    )
+
+
+def handle_recommendation_pick(
+    client: httpx.Client,
+    token: str,
+    chat_id: str | int,
+    token_id: str,
+    *,
+    db_path: Path | str = DEFAULT_DB_PATH,
+) -> None:
+    """Enqueue one targeted job. The scan runs in the Thailand worker, not here."""
+    deals = unique_russian_top(db_path, limit=5)
+    if not deals:
+        send_message(client, token, chat_id, "Нет свежих данных. Сначала запустите проверку.", with_keyboard=False)
+        return
+    if token_id == "best":
+        deal = deals[0]
+    else:
+        deal = next((item for item in deals if model_callback_token(item.cluster_name) == token_id), None)
+    if deal is None:
+        send_message(client, token, chat_id, "Эта модель уже не в текущем ТОП. Откройте список ещё раз.", with_keyboard=False)
+        return
+    from buy_thailand_flow import enqueue_recommendation_job
+
+    result = enqueue_recommendation_job(deal, chat_id=chat_id)
+    if result.get("ok"):
+        name = friendly_model_label(deal) or deal.cluster_name
+        send_message(client, token, chat_id, f"Анализирую лучший вариант...\n{name}", with_keyboard=False)
+    else:
+        send_message(client, token, chat_id, "Не удалось поставить рекомендацию в очередь.", with_keyboard=False)
+
+
 def handle_thailand_model_picker(
     client: httpx.Client,
     token: str,
@@ -905,6 +977,12 @@ def process_update(client: httpx.Client, token: str, update: dict[str, Any]) -> 
             handle_thailand_manual(client, token, chat_id, compare=False)
         elif data == BTN_TH_COMPARE:
             handle_thailand_manual(client, token, chat_id, compare=True)
+        elif data == BTN_RECOMMEND:
+            handle_recommendation_menu(client, token, chat_id, message_id=message_id)
+        elif data.startswith(CALLBACK_RECOMMEND):
+            handle_recommendation_pick(
+                client, token, chat_id, data[len(CALLBACK_RECOMMEND):]
+            )
         elif data == BTN_TH_FIND:
             handle_thailand_model_picker(client, token, chat_id, message_id=message_id)
         elif data.startswith(CALLBACK_MODEL_PICK):

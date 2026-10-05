@@ -27,11 +27,16 @@ from thailand.formatting import (
     format_thailand_alternatives_message,
     format_thailand_comparison_message,
 )
+from purchase_recommendation import (
+    build_recommendation,
+    format_purchase_recommendation,
+)
 from thailand.job_models import (
     TRIGGER_BUY,
     TRIGGER_MANUAL_CHECK,
     TRIGGER_MANUAL_COMPARE,
     TRIGGER_MANUAL_MODEL,
+    TRIGGER_MANUAL_RECOMMENDATION,
     build_job,
     russian_context_to_deal,
     signal_from_dict,
@@ -364,6 +369,40 @@ def enqueue_model_thailand_job(
     }
 
 
+def enqueue_recommendation_job(
+    deal: RankedDeal,
+    *,
+    chat_id: str | int,
+    jobs_dir: Path | str | None = None,
+    instance_id: str | None = None,
+) -> dict[str, Any]:
+    """Fresh targeted Thailand job for one recommendation. Does not touch BUY state."""
+    from datetime import datetime, timezone
+
+    target = build_target_model(deal)
+    code = target.get("canonical_model_code") or deal.cluster_name
+    bucket = datetime.now(timezone.utc).strftime("%Y%m%d%H%M")
+    job = build_job(
+        trigger_type=TRIGGER_MANUAL_RECOMMENDATION,
+        signals=[],
+        russian_deals=[deal],
+        dedupe_key=f"{TRIGGER_MANUAL_RECOMMENDATION}|{code}|{bucket}",
+        app_version=get_version(),
+        instance_id=instance_id or config.get_instance_id(),
+        requested_chat_id=chat_id,
+        target_model=target,
+    )
+    enq = enqueue_job(job, root=jobs_dir)
+    return {
+        "ok": bool(enq.get("ok") or enq.get("duplicate")),
+        "thailand_job_id": enq.get("job_id") or job["job_id"],
+        "thailand_scan_status": "queued" if enq.get("ok") or enq.get("duplicate") else "enqueue_failed",
+        "trigger_type": TRIGGER_MANUAL_RECOMMENDATION,
+        "target_model": target,
+        "error": enq.get("error"),
+    }
+
+
 def execute_thailand_job(
     job: dict[str, Any],
     *,
@@ -421,7 +460,19 @@ def execute_thailand_job(
 
     messages: list[str] = []
     target_search = scan_result.get("target_search")
-    if target_model and isinstance(target_search, dict):
+    recommend_trigger = trigger in {TRIGGER_BUY, TRIGGER_MANUAL_RECOMMENDATION}
+    if recommend_trigger and deals:
+        rec = build_recommendation(
+            deals[0],
+            target_search if isinstance(target_search, dict) else None,
+            stores=scan_result.get("stores") or [],
+        )
+        scan_result["recommendation"] = rec.to_dict()
+        top_rows = scan_result.get("_top") or scan_result.get("thailand_top") or []
+        messages.append(
+            format_purchase_recommendation(deals[0], rec, alternatives=list(top_rows)[:2])
+        )
+    elif target_model and isinstance(target_search, dict):
         messages.append(format_target_model_message(target_model, target_search))
     else:
         messages.append(
@@ -435,16 +486,17 @@ def execute_thailand_job(
                 or (scan_result.get("matching") or {}).get("over_cap_note"),
             )
         )
-    top = scan_result.get("_top") or scan_result.get("thailand_top") or []
-    unverified_n = len(scan_result.get("unverified_candidates") or [])
-    alt = format_thailand_alternatives_message(
-        top,
-        unverified_count=unverified_n,
-        price_cap=scan_result.get("price_cap"),
-        fx_usable=scan_result.get("fx_usable_for_verdict"),
-    )
-    if alt and status != "failed":
-        messages.append(alt)
+    if not recommend_trigger:
+        top = scan_result.get("_top") or scan_result.get("thailand_top") or []
+        unverified_n = len(scan_result.get("unverified_candidates") or [])
+        alt = format_thailand_alternatives_message(
+            top,
+            unverified_count=unverified_n,
+            price_cap=scan_result.get("price_cap"),
+            fx_usable=scan_result.get("fx_usable_for_verdict"),
+        )
+        if alt and status != "failed":
+            messages.append(alt)
     out["messages"] = [m for m in messages if m][:2]
 
     if deliver and sender is not None:

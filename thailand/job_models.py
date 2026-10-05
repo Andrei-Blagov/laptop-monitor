@@ -15,6 +15,7 @@ TRIGGER_BUY = "buy_signal"
 TRIGGER_MANUAL_CHECK = "manual_check"
 TRIGGER_MANUAL_COMPARE = "manual_compare"
 TRIGGER_MANUAL_MODEL = "manual_model_compare"
+TRIGGER_MANUAL_RECOMMENDATION = "manual_recommendation"
 
 SECRET_KEY_FRAGMENTS = (
     "token",
@@ -52,6 +53,8 @@ def deal_to_russian_context(deal: RankedDeal) -> dict[str, Any]:
         "score": deal.score,
         "confidence": deal.confidence,
         "historical_min": deal.historical_min,
+        "history_started_at": deal.history_started_at,
+        "cluster_key": deal.cluster_key,
         "target_price": None,  # filled by caller if known
         "external_id": offer.get("external_id"),
         "sku": offer.get("sku") or offer.get("article"),
@@ -87,6 +90,8 @@ def russian_context_to_deal(ctx: Mapping[str, Any]) -> RankedDeal:
         confidence=int(ctx.get("confidence") or 0),
         historical_min=ctx.get("historical_min"),
         screen_resolution=ctx.get("screen_resolution"),
+        cluster_key=ctx.get("cluster_key"),
+        history_started_at=ctx.get("history_started_at"),
     )
 
 
@@ -111,6 +116,8 @@ def signal_from_dict(data: Mapping[str, Any]) -> BuySignal:
         rule_ids=list(data.get("rule_ids") or []),
         over_hist_pct=data.get("over_hist_pct"),
         fingerprint=str(data.get("fingerprint") or ""),
+        cluster_key=data.get("cluster_key"),
+        history_started_at=data.get("history_started_at"),
     )
 
 
