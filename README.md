@@ -2,13 +2,13 @@
 
 Мониторинг цен на игровые ноутбуки (RTX 5070 Ti / RTX 5080 Laptop) с multi-store adapter architecture, матчингом моделей, ranking v2, Telegram alerts / control, Price History charts и n8n OPS layer.
 
-**Version:** читается из файла `VERSION` (сейчас `0.5.0`) — единственный source of truth.  
+**Version:** читается из файла `VERSION` (сейчас `0.5.2`) — единственный source of truth.  
 **Production target:** Linux VPS через **clean release bundle** + Docker + systemd  
 **Windows:** только development / testing
 
 ---
 
-## Что умеет (v0.5.0)
+## Что умеет (v0.5.2)
 
 | Область | Описание |
 |---------|----------|
@@ -23,7 +23,7 @@
 | **Specs coverage** | Collected metadata → `product_specs.json` для всех stores; safe title parse; Regard/ANDPRO re-enrich on cache miss; non-destructive merge / `SPEC_CONFLICT` |
 | **Ranking v2** | Explainable score **0..100** + **confidence**; GPU / price-value / CPU / RAM / SSD / screen / historical opportunity / cross-store saving (**weights unchanged**) |
 | **Buy Opportunity** | Explainable BUY / STRONG_BUY + cooldown; при новом signal — enqueue Thailand job |
-| **Thailand markets** | On-demand async worker (не в 2h registry): JIB verified; Advice/BaNANA experimental/fail-safe; CBR THB→RUB |
+| **Thailand markets** | On-demand async worker: **JIB** verified; **Advice** / **BaNANA direct** fail-safe; **Lazada** marketplace (seller trust / variant price); CBR THB→RUB; Telegram TOP ≤300k ₽, sort price ASC |
 | **Price History** | Telegram: карточка истории (v1) + PNG-графики 30 / 90 / all-time (v2), read-only |
 | **Control bot** | Long polling; Run / TOP / История / **🌍 Рынки** / Status / Version; admin allowlist |
 | **Scheduler** | Primary: **systemd timer** → `run_pipeline.py`. Thailand: **systemd.path** → async worker |
@@ -39,7 +39,9 @@
   - `laptop-monitor-thailand.path` → worker container → Thailand scan / comparison Telegram
 - Scan только при новом BUY signal или вручную из Telegram **🌍 Рынки** (enqueue-only в control bot)
 - Сравнение предполагает локальную покупку в Таиланде (без авиа / таможни / пересылки)
-- В automatic TOP / country verdict попадают только **verified** Thai offers (GPU + availability confirmed)
+- User-facing Thailand recommendations: **verified + purchasable + ≤ 300 000 ₽**, sorted **price_rub ASC**
+- Sources: JIB (direct); Advice / BaNANA direct (experimental/fail-safe); Lazada marketplace (labels `Lazada · seller`, never as direct)
+- Over-cap Thai offers may remain in snapshots; Telegram shows only the excluded count
 
 ---
 

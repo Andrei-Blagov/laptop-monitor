@@ -73,6 +73,7 @@ ALLOWLIST_SCRIPTS = (
     "scripts/diagnose_spec_coverage.py",
     "scripts/diagnose_thailand_async.py",
     "scripts/diagnose_thailand_market_v2.py",
+    "scripts/diagnose_thailand_corrective.py",
 )
 
 FORBIDDEN_NAME_PARTS = (

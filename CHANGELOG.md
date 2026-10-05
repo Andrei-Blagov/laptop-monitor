@@ -1,5 +1,22 @@
 # Changelog
 
+## 0.5.2 — 2026-10-05
+
+Thailand user-facing recommendations hardened for production.
+
+- Thailand recommendations capped at **≤ 300 000 ₽** (inclusive); over-cap offers stay in snapshots only
+- Thailand Telegram TOP sorted by **price_rub ASC** (value score / confidence are secondary)
+- New Telegram heading: **ЛУЧШИЕ ЦЕНЫ В ТАИЛАНДЕ ДО 300 000 ₽**
+- Lazada Thailand marketplace adapter (browser; seller trust; variant price verification)
+- Marketplace labels (`Lazada · seller`) — never mislabeled as direct retailer
+- BaNANA: HTTP → bounded Playwright fallback; Cloudflare / challenge fail-safe (no bypass)
+- Direct / marketplace duplicate grouping (one best offer + optional alt channels)
+- Async Thailand worker architecture unchanged from v0.5.1
+
+### Unchanged
+
+- Russian ranking / BUY rules / SQLite schema / n8n workflows / Russian timers
+
 ## 0.5.1 — 2026-10-04
 
 Thailand scans decoupled from the Russian pipeline critical path.
