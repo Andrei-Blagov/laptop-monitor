@@ -19,20 +19,10 @@ RUN pip install --no-cache-dir -r requirements.txt \
     && playwright install --with-deps chromium \
     && chmod -R a+rX /ms-playwright
 
-COPY VERSION .
-COPY *.py ./
-COPY parsers/ ./parsers/
-COPY stores/ ./stores/
-COPY integrations/ ./integrations/
-COPY thailand/ ./thailand/
-COPY scripts/__init__.py ./scripts/__init__.py
-COPY scripts/backup_db.py ./scripts/backup_db.py
-COPY scripts/migrate_db.py ./scripts/migrate_db.py
-COPY scripts/diagnose_model_price_history.py ./scripts/diagnose_model_price_history.py
-COPY scripts/diagnose_price_history_chart.py ./scripts/diagnose_price_history_chart.py
-COPY scripts/diagnose_deal_ranking_v2.py ./scripts/diagnose_deal_ranking_v2.py
-COPY scripts/diagnose_spec_coverage.py ./scripts/diagnose_spec_coverage.py
-COPY scripts/diagnose_thailand_async.py ./scripts/diagnose_thailand_async.py
+# Build context = extracted release bundle (+ host-only .env/data/logs/backups).
+# Root .dockerignore is a whitelist matching scripts/release_manifest.py
+# IMAGE_ALLOW_PATTERNS; never list individual modules here.
+COPY . ./
 
 RUN mkdir -p /app/data /app/logs \
     && useradd --create-home --uid 10001 appuser \

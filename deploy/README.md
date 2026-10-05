@@ -16,7 +16,7 @@ Single source of truth: project root `VERSION`.
 Always use the wrapper:
 
 ```bash
-./deploy/compose.sh build
+./deploy/compose.sh build-image
 ./deploy/compose.sh run --rm pipeline python run_pipeline.py --version
 ./deploy/compose.sh up -d control-bot
 ./deploy/compose.sh run --rm backup
@@ -24,6 +24,10 @@ Always use the wrapper:
 
 `compose.sh` exports `LAPTOP_MONITOR_VERSION` from `VERSION` and passes
 `APP_VERSION` into the Dockerfile build arg / image tag.
+
+`build-image` (and `build`) always add `--profile manual`: the only service with a
+`build:` section (`pipeline`) lives in that profile, so a plain `docker compose build`
+builds nothing. `build-image` also checks that `laptop-monitor:<VERSION>` exists.
 
 Never hardcode `0.x.y` in Dockerfile / compose / systemd.
 
@@ -54,7 +58,8 @@ Region for all adapters: `MONITOR_REGION=moscow`.
   parsers/
   stores/
   integrations/    # n8n webhook client
-  scripts/          # backup_db, migrate_db only (+ __init__)
+  scripts/          # operational scripts listed in scripts/release_manifest.py
+  RELEASE_MANIFEST.json
   deploy/           # Dockerfile, compose.yml, compose.sh, systemd/, n8n/
   .env              # host secrets only
   data/             # SQLite + backups/
@@ -69,9 +74,34 @@ No `.git`, no `tests/`, no `scripts/windows/`.
 python -m scripts.build_deploy_bundle
 # dist/laptop-monitor-<VERSION>.tar.gz
 # dist/laptop-monitor-<VERSION>.tar.gz.sha256
+python -m scripts.release_verify --bundle dist/laptop-monitor-<VERSION>.tar.gz
 ```
 
-Allowlist-only. Excludes: `.git`, tests, Windows scripts, local DB, logs, `.env`, caches.
+Contents are defined once in `scripts/release_manifest.py` (tracked root `*.py`,
+runtime packages, listed scripts, `deploy/`). Excludes: `.git`, tests, Windows
+scripts, local DB, logs, backups, `.env`, caches. The bundle carries
+`RELEASE_MANIFEST.json` (sha256 per file); LF line endings, `0755` for `*.sh`,
+real build mtimes.
+
+The image is built from the extracted bundle: `deploy/Dockerfile` does `COPY . ./`
+and the root `.dockerignore` is a whitelist (runtime code only — never `.env`,
+`data/`, `logs/`, `backups/`). No per-module COPY lines.
+
+`release_verify` checks:
+
+| Mode | Checks |
+|------|--------|
+| `--bundle <tar.gz>` | opens; VERSION semver = dir = file name; sha256 file; required entrypoints / Dockerfile / compose / systemd units; no CR in text files; `*.sh` executable; plausible mtimes; no `.env` / DB / tests / `__pycache__` / data / secrets; manifest hashes; first-party import graph complete; entrypoints importable |
+| `--tree <dir>` | build context runtime files == manifest (no stale leftovers, no modified files) |
+| `--image <tag>` | VERSION in image; entrypoints import; image files == manifest (stale BuildKit content, leftovers) |
+
+Deploy without stale files (dry-run first; excluded paths are never deleted):
+
+```bash
+rsync -a --delete --dry-run --itemize-changes \
+  --exclude '.env' --exclude 'data/' --exclude 'logs/' --exclude 'backups/' \
+  "$STAGE/laptop-monitor-<VERSION>/" /opt/laptop-monitor/
+```
 
 ## Volumes / services
 
@@ -222,7 +252,7 @@ sudo /usr/bin/python3 /opt/laptop-monitor/ops/n8n_watchdog.py --test-alert
 1. `python -m scripts.backup_db` on production DB
 2. SHA256 of DB backup
 3. `python -m scripts.build_deploy_bundle`
-4. SHA256 of bundle
+4. `python -m scripts.release_verify --bundle dist/laptop-monitor-<VERSION>.tar.gz`
 
 ### VPS
 
@@ -235,7 +265,8 @@ sudo /usr/bin/python3 /opt/laptop-monitor/ops/n8n_watchdog.py --test-alert
 10. Upload DB into `data/`
 11. Verify DB SHA256
 12. Backup imported DB on VPS
-13. `./deploy/compose.sh build`
+13. `python3 -m scripts.release_verify --tree .` → `./deploy/compose.sh build-image`
+    → `python3 -m scripts.release_verify --image laptop-monitor:<VERSION>`
 14. `python -m scripts.migrate_db --db data/laptop_monitor.db`
 15. integrity_check OK
 16. Read-only: `./deploy/compose.sh run --rm pipeline python run_pipeline.py --status`

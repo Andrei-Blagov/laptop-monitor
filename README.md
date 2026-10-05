@@ -52,7 +52,7 @@ VERSION
 ```
 
 ```bash
-./deploy/compose.sh build
+./deploy/compose.sh build-image
 ./deploy/compose.sh run --rm pipeline python run_pipeline.py --version
 ```
 
@@ -237,8 +237,12 @@ GitHub = source repo. VPS получает **release artifact**, не `git clone
 ```bash
 python -m scripts.backup_db --db data/laptop_monitor.db
 python -m scripts.build_deploy_bundle
-# -> dist/laptop-monitor-<VERSION>.tar.gz
+# -> dist/laptop-monitor-<VERSION>.tar.gz (+ RELEASE_MANIFEST.json inside)
+python -m scripts.release_verify --bundle dist/laptop-monitor-<VERSION>.tar.gz
 ```
+
+Bundle contents: single source `scripts/release_manifest.py`. The Docker image is
+built from the extracted bundle (`COPY . ./` + whitelist `.dockerignore`).
 
 ### На VPS
 
@@ -249,7 +253,9 @@ python -m scripts.build_deploy_bundle
 ```
 
 ```bash
-./deploy/compose.sh build
+python3 -m scripts.release_verify --tree .   # no stale / modified runtime files
+./deploy/compose.sh build-image
+python3 -m scripts.release_verify --image laptop-monitor:$(cat VERSION)
 python -m scripts.migrate_db --db data/laptop_monitor.db
 ./deploy/compose.sh up -d control-bot
 ```

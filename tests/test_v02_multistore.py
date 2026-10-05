@@ -60,7 +60,11 @@ def _identity(**kwargs: object) -> ProductIdentity:
 
 class VersionTests(unittest.TestCase):
     def test_version_file(self) -> None:
-        self.assertEqual(get_version(), "0.5.2")
+        expected = (Path(__file__).resolve().parent.parent / "VERSION").read_text(
+            encoding="utf-8"
+        ).strip()
+        self.assertEqual(get_version(), expected)
+        self.assertRegex(expected, r"^\d+\.\d+\.\d+$")
 
     def test_cli_version(self) -> None:
         code = pipeline_main(["--version"])
