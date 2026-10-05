@@ -41,12 +41,16 @@ def process_one(
     snapshot_dir: Path | str | None = None,
     deliver: bool = True,
     scan_fn=None,
+    worker_state_path: Path | str | None = None,
 ) -> dict[str, Any] | None:
     ensure_queue_dirs(jobs_dir)
     recover_stale_processing(root=jobs_dir)
     job = claim_next_job(root=jobs_dir)
     if job is None:
         return None
+
+    def _write_state(data: dict[str, Any]) -> None:
+        write_worker_state(data, path=worker_state_path)
 
     job_id = str(job.get("job_id") or "")
     started = time.perf_counter()
@@ -57,7 +61,7 @@ def process_one(
         job.get("trigger_type"),
     )
     try:
-        write_worker_state(
+        _write_state(
             {
                 "last_job_id": job_id,
                 "last_started_at": started_at,
@@ -104,7 +108,7 @@ def process_one(
         fatal = status == "failed" and not result.get("stores")
         path = archive_job(archived, root=jobs_dir, failed=fatal)
         try:
-            write_worker_state(
+            _write_state(
                 {
                     "last_job_id": job_id,
                     "last_started_at": started_at,
@@ -144,7 +148,7 @@ def process_one(
         )
         archive_job(failed, root=jobs_dir, failed=True)
         try:
-            write_worker_state(
+            _write_state(
                 {
                     "last_job_id": job_id,
                     "last_started_at": started_at,
@@ -170,6 +174,7 @@ def drain(
     deliver: bool = True,
     scan_fn=None,
     max_jobs: int | None = None,
+    worker_state_path: Path | str | None = None,
 ) -> int:
     """Process pending jobs sequentially until empty. Returns processed count."""
     ensure_queue_dirs(jobs_dir)
@@ -184,6 +189,7 @@ def drain(
             snapshot_dir=snapshot_dir,
             deliver=deliver,
             scan_fn=scan_fn,
+            worker_state_path=worker_state_path,
         )
         if result is None:
             break

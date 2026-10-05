@@ -19,7 +19,6 @@ from models import Product
 from product_identity import ProductIdentity
 from storage import (
     DEFAULT_DB_PATH,
-    count_alert_events,
     get_alert_events,
     init_db,
     open_db,
@@ -488,20 +487,19 @@ class DedupeAndIdempotencyTests(MonitorTestBase):
 
     def test_production_db_path_not_used(self) -> None:
         self.assertNotEqual(self.db_path.resolve(), PRODUCTION_DB)
-        before = None
-        if PRODUCTION_DB.exists():
-            with open_db(PRODUCTION_DB) as conn:
-                init_db(conn)
-                before = count_alert_events(conn)
+        def _production_snapshot():
+            if not PRODUCTION_DB.exists():
+                return None
+            st = PRODUCTION_DB.stat()
+            return (st.st_size, st.st_mtime_ns)
+
+        before = _production_snapshot()
         save_products([_product(price=200_000)], self.db_path)
         self._write_specs(
             _spec(store="regard", external_id="1", sku="SKU-1", gpu="RTX 5070 TI LAPTOP")
         )
         self._run()
-        if PRODUCTION_DB.exists() and before is not None:
-            with open_db(PRODUCTION_DB) as conn:
-                after = count_alert_events(conn)
-            self.assertEqual(before, after)
+        self.assertEqual(before, _production_snapshot())
 
 
 class DealsTests(MonitorTestBase):

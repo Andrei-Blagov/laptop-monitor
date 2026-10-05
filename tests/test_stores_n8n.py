@@ -223,6 +223,9 @@ class N8nIntegrationTests(unittest.TestCase):
                     deliver=False,
                     use_lock=False,
                     enrich_identities=False,
+                    specs_path=Path(tmp) / "specs.json",
+                    buy_state_path=Path(tmp) / "buy_state.json",
+                    thailand_jobs_dir=Path(tmp) / "thailand_jobs",
                 )
             self.assertEqual(result.status, PIPELINE_STATUS_SUCCESS)
 
@@ -246,6 +249,9 @@ class N8nIntegrationTests(unittest.TestCase):
                     deliver=False,
                     use_lock=False,
                     enrich_identities=False,
+                    specs_path=Path(tmp) / "specs.json",
+                    buy_state_path=Path(tmp) / "buy_state.json",
+                    thailand_jobs_dir=Path(tmp) / "thailand_jobs",
                 )
             self.assertEqual(result.status, "failed")
             self.assertEqual(len(calls), 1)

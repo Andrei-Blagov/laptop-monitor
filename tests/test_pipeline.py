@@ -133,6 +133,8 @@ class PipelineTests(unittest.TestCase):
             write_comparison_artifacts=False,
             specs_path=self.specs_path,
             use_lock=True,
+            buy_state_path=self.root / "buy_state.json",
+            thailand_jobs_dir=self.root / "thailand_jobs",
         )
         defaults.update(kwargs)
         return run_pipeline(**defaults)

@@ -118,6 +118,8 @@ def run_pipeline(
     specs_path: Path | str | None = None,
     last_run_path: Path | str | None = None,
     use_lock: bool = True,
+    buy_state_path: Path | str | None = None,
+    thailand_jobs_dir: Path | str | None = None,
 ) -> PipelineResult:
     """
     Полный production pipeline.
@@ -401,14 +403,17 @@ def run_pipeline(
 
         # --- BUY OPPORTUNITY + enqueue Thailand job (async; never changes RU status) ---
         try:
+            from buy_opportunity import DEFAULT_STATE_PATH as BUY_STATE_PATH
             from buy_thailand_flow import evaluate_buy_opportunity_flow
             from russian_deals import load_russian_ranked_deals
 
-            deals = load_russian_ranked_deals(db_path)
+            deals = load_russian_ranked_deals(db_path, specs_path=specs_path)
             buy_flow = evaluate_buy_opportunity_flow(
                 russian_deals=deals,
                 sender=sender if deliver else None,
                 deliver=deliver,
+                state_path=buy_state_path if buy_state_path is not None else BUY_STATE_PATH,
+                jobs_dir=thailand_jobs_dir,
                 source_pipeline_run_id=run_id,
             )
             result.buy_opportunities_count = int(buy_flow.get("buy_actionable") or 0)

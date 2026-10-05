@@ -39,6 +39,7 @@ from thailand.job_queue import (
     ensure_queue_dirs,
     find_active_dedupe,
     pending_count,
+    read_worker_state,
     recover_stale_processing,
 )
 from thailand.models import StoreScanResult
@@ -442,8 +443,12 @@ class WorkerTests(unittest.TestCase):
                 state_path=state,
                 deliver=False,
                 scan_fn=fake_scan,
+                worker_state_path=root / "worker_state.json",
             )
             self.assertEqual(n, 2)
+            self.assertEqual(
+                read_worker_state(root / "worker_state.json")["last_status"], "partial"
+            )
             self.assertEqual(pending_count(jobs), 0)
             self.assertEqual(len(list((jobs / "archive").glob("*.json"))), 2)
             st = load_state(state)
@@ -453,7 +458,12 @@ class WorkerTests(unittest.TestCase):
 
     def test_worker_empty_exits_zero(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
-            n = drain(jobs_dir=tmp, deliver=False, scan_fn=lambda **k: {"status": "ok"})
+            n = drain(
+                jobs_dir=tmp,
+                deliver=False,
+                scan_fn=lambda **k: {"status": "ok"},
+                worker_state_path=Path(tmp) / "worker_state.json",
+            )
             self.assertEqual(n, 0)
 
     def test_worker_failure_archives_failed_no_db(self) -> None:
@@ -489,6 +499,7 @@ class WorkerTests(unittest.TestCase):
                 state_path=root / "s.json",
                 deliver=False,
                 scan_fn=boom,
+                worker_state_path=root / "worker_state.json",
             )
             # execute catches and returns failed with no stores → archive failed
             archives = list((jobs / "archive").glob("*.json")) + list(

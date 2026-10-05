@@ -29,6 +29,7 @@ def load_russian_ranked_deals(
     db_path: Path | str = DEFAULT_DB_PATH,
     *,
     limit: int | None = None,
+    specs_path: Path | str | None = None,
 ) -> list[RankedDeal]:
     latest = get_latest_store_runs_readonly(db_path)
     fresh = get_fresh_store_slugs(latest)
@@ -37,7 +38,7 @@ def load_russian_ranked_deals(
     products = get_all_products_readonly(db_path)
     identifiers = get_all_identifiers_readonly(db_path)
     comparison = match_products(products, identifiers)
-    cache = load_specs_cache()
+    cache = load_specs_cache(specs_path) if specs_path is not None else load_specs_cache()
     specs_by_key: dict[tuple[str, str], Any] = {}
     for p in products:
         identity = identity_from_cache(cache, str(p["store"]), str(p["external_id"]))
