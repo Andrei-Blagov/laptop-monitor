@@ -42,6 +42,10 @@ COLLECTIONS = (
 _DEFAULT_VARIANT = {"default title", "default"}
 _NOTEBOOK = re.compile(r"notebook|laptop|โน้ต|โน๊ต|แล็ปท็อป", re.I)
 _DESKTOP = re.compile(r"การ์ดจอ|การ์ดแสดงผล|\bVGA\b|graphics\s*card", re.I)
+_GPU_LINE = re.compile(
+    r"(?:กราฟิก|GPU|Graphics)\s*[:：]\s*.{0,120}?(RTX\s*50\d0(?:\s*Ti)?)",
+    re.I,
+)
 
 
 def _headers() -> dict[str, str]:
@@ -82,11 +86,17 @@ def _is_notebook(product: dict[str, Any]) -> bool:
 
 
 def _product_gpu(product: dict[str, Any]) -> tuple[str | None, str]:
+    """Explicit graphics line wins over tags. A 5050/5060 line is not a 5070 Ti."""
     body = _plain(product.get("body_html"))
+    line = _GPU_LINE.search(body)
+    if line:
+        gpu = canonical_gpu(line.group(1))
+        if gpu in {"RTX 5070 Ti", "RTX 5080"}:
+            return gpu, GPU_SOURCE_STRUCTURED_API
+        return None, GPU_SOURCE_STRUCTURED_API
     tags = " ".join(str(t) for t in (product.get("tags") or []) if t)
     title = str(product.get("title") or "")
     for text, source in (
-        (body, GPU_SOURCE_STRUCTURED_API),
         (tags, GPU_SOURCE_STRUCTURED_API),
         (title, GPU_SOURCE_EXPLICIT_TITLE),
     ):

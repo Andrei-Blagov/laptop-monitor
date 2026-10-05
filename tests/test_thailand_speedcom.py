@@ -192,6 +192,17 @@ class SpeedComParseTests(unittest.TestCase):
         self.assertIn("https://speedcom.co.th/products/rog-g614pr", offer.url)
         self.assertIn("variant=11", offer.url)
 
+    def test_explicit_gpu_line_beats_conflicting_tag(self) -> None:
+        offers = parse_speedcom_product(
+            _product(
+                title="โน๊ตบุ๊ค Acer Predator Helios Neo16S AI PHN16S-71-76AZ",
+                body="<p>GPU: NVIDIA GeForce RTX 5050 Laptop 8GB GDDR6 RAM: 16GB DDR5 SSD: 1TB</p>",
+                tags=["GeForce RTX 5070Ti", "โน๊ตบุ๊ค"],
+                variants=[_variant(11, "47990.00", sku="ACER-PHN16S-71-76AZ")],
+            )
+        )
+        self.assertEqual(offers, [])
+
     def test_desktop_card_excluded(self) -> None:
         offers = parse_speedcom_product(
             _product(
