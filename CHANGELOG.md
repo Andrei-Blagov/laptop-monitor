@@ -1,5 +1,22 @@
 # Changelog
 
+## 0.5.3 — 2026-10-05
+
+Reliability release: release packaging, BUY repeat semantics, Thailand enqueue retry.
+
+- Hardened release packaging: single release manifest (`scripts/release_manifest.py`), `scripts.release_verify` for bundle / deployed tree / image (sha256, import graph, LF, mtime, executable `.sh`, no secrets / tests / DB, stale files)
+- Canonical image build: `./deploy/compose.sh build-image` (plain `docker compose build` was a no-op for the `manual`-profile service)
+- Reduced repeated BUY notifications: 24h cooldown expiry alone no longer re-notifies; repeat only on a meaningful event (≥3% / ≥5000 ₽ better price, BUY→STRONG_BUY, new historical low, new #1), deduped per model cluster
+- Automatic BUY requires **≥14 days** of stored price history for the cluster (`BUY_MIN_HISTORY_DAYS`); manual Thailand comparison not gated
+- Thailand enqueue state independent from the Russian BUY notification: a failed enqueue is retried only as an enqueue (every 110 min, max 3 retries) without re-sending the BUY message; a new meaningful event supersedes a stale retry
+- Enqueue filesystem / permission failures no longer abort the BUY notification
+- Tests no longer write repository `data/` / `logs/` / `dist/` (injectable specs / BUY state / jobs / worker state paths)
+- Removed confirmed dead code (`main.py`, `analyze_unmatched.py`, obsolete diagnostics, unused `RANK_*` aliases / imports)
+
+### Unchanged
+
+- Deal Ranking / BUY rules A/B/C and thresholds / SQLite schema / Thailand parsers / n8n workflows / Russian timers
+
 ## 0.5.2 — 2026-10-05
 
 Thailand user-facing recommendations hardened for production.

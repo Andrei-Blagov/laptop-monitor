@@ -2,13 +2,13 @@
 
 Мониторинг цен на игровые ноутбуки (RTX 5070 Ti / RTX 5080 Laptop) с multi-store adapter architecture, матчингом моделей, ranking v2, Telegram alerts / control, Price History charts и n8n OPS layer.
 
-**Version:** читается из файла `VERSION` (сейчас `0.5.2`) — единственный source of truth.  
+**Version:** читается из файла `VERSION` (сейчас `0.5.3`) — единственный source of truth.  
 **Production target:** Linux VPS через **clean release bundle** + Docker + systemd  
 **Windows:** только development / testing
 
 ---
 
-## Что умеет (v0.5.2)
+## Что умеет (v0.5.3)
 
 | Область | Описание |
 |---------|----------|
