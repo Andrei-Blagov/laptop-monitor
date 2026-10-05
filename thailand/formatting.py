@@ -2,6 +2,7 @@ from __future__ import annotations
 
 """Telegram formatting for buy opportunity + Thailand comparison (≤3 messages)."""
 
+import re
 from typing import Any, Sequence
 
 from buy_opportunity import BuySignal
@@ -243,6 +244,21 @@ def format_thailand_comparison_message(
     return "\n".join(lines)[:TELEGRAM_SOFT]
 
 
+def _family_series_label(target: dict[str, Any], family_key: str) -> str:
+    raw = re.sub(
+        r"^(ноутбук|notebook|laptop)\s+",
+        "",
+        str(target.get("cluster_name") or ""),
+        flags=re.I,
+    ).strip()
+    if family_key:
+        idx = raw.upper().find(family_key.upper())
+        if idx >= 0:
+            return raw[: idx + len(family_key)].strip(" -")
+    brand = str(target.get("brand") or "").strip()
+    return " ".join(part for part in (brand, family_key) if part) or raw or "Модель"
+
+
 def format_target_model_message(
     target: dict[str, Any],
     search: dict[str, Any],
@@ -317,12 +333,55 @@ def format_target_model_message(
                     f"{alt_label} — {_thb(alt.get('price_thb'))} ฿ (≈ {_rub(alt.get('price_rub'))} ₽)"
                 )
     if not exact and family:
-        lines.append("Точная модификация в Таиланде не найдена.")
-        lines.append("")
-        lines.append("SAME_FAMILY")
         row = family[0]
-        lines.append(str(row.get("name") or ""))
-        lines.append("Региональный код отличается.")
+        family_key = str(row.get("family_key") or search.get("family_key") or "")
+        ru_code = str(row.get("matched_identifier") or "")
+        th_code = str(row.get("matched_offer_identifier") or row.get("manufacturer_part_number") or "")
+        lines.append("Та же серия / семейство:")
+        lines.append(_family_series_label(target, family_key))
+        lines.append("")
+        lines.append("Россия:")
+        if ru_code:
+            lines.append(ru_code)
+        lines.append("Таиланд:")
+        if th_code:
+            lines.append(th_code)
+        label = {
+            "jib": "JIB",
+            "advice": "Advice",
+            "speedcom": "SpeedCom",
+            "invadeit": "InvadeIT",
+            "itcity": "IT City",
+        }.get(str(row.get("store")), str(row.get("store") or ""))
+        if row.get("price_thb") is not None:
+            rub = row.get("price_rub")
+            rub_bit = f" (≈ {_rub(rub)} ₽)" if rub is not None else ""
+            lines.append(f"{label} — {_thb(row.get('price_thb'))} ฿{rub_bit}")
+        if row.get("out_of_stock"):
+            lines.append("Найдена, сейчас нет в наличии.")
+        lines.append("Модификация и региональный индекс отличаются.")
+        diffs = list(row.get("spec_differences") or [])
+        if diffs:
+            lines.append("")
+            lines.append("Отличия конфигурации:")
+            lines.extend(str(item) for item in diffs)
+        others = family[1:3]
+        if others:
+            lines.append("")
+            lines.append("Другие магазины:")
+            for alt in others:
+                alt_label = {
+                    "jib": "JIB",
+                    "speedcom": "SpeedCom",
+                    "invadeit": "InvadeIT",
+                    "itcity": "IT City",
+                    "advice": "Advice",
+                }.get(str(alt.get("store")), str(alt.get("store")))
+                stock = ", нет в наличии" if alt.get("out_of_stock") else ""
+                lines.append(
+                    f"{alt_label} — {_thb(alt.get('price_thb'))} ฿ "
+                    f"(≈ {_rub(alt.get('price_rub'))} ₽){stock}"
+                )
     if not exact and not family and equivalent:
         lines.append("Точной модели нет. Ближайшая эквивалентная конфигурация:")
         lines.append(str(equivalent[0].get("name") or ""))

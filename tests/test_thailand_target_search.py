@@ -32,6 +32,7 @@ from thailand.grouping import dedupe_user_facing_rows, normalize_model_code
 from thailand.models import StoreScanResult, ThailandOffer
 from thailand.registry import get_thailand_adapters
 from thailand.source_health import load_health, record_observation, should_skip, skip_reason
+from thailand.formatting import format_target_model_message
 from thailand.target_model import (
     ADVICE_EXACT_SEARCH,
     EQUIVALENT,
@@ -39,6 +40,8 @@ from thailand.target_model import (
     NOT_FOUND,
     SAME_FAMILY,
     build_target_model,
+    family_stem,
+    match_detail,
     match_level,
     search_collected_offers,
 )
@@ -156,6 +159,158 @@ class TargetMatchTests(unittest.TestCase):
         self.assertIsNone(family_stem("9S7-15M361-814"))
         self.assertIsNone(family_stem("AB-123456"))
         self.assertEqual(family_stem("G614PR-TS113W"), "G614PR")
+        self.assertEqual(family_stem("G614PR"), "G614PR")
+        self.assertIsNone(family_stem("TS113W"))
+        self.assertIsNone(family_stem("90NR"))
+        self.assertIsNone(family_stem("83LU"))
+
+    def test_production_g614pr_mpn_is_same_family(self) -> None:
+        target = build_target_model(
+            _deal(
+                cluster_name="Ноутбук ASUS ROG Strix G16 G614PR-RV027 90NR0NJ7-M001J0",
+                offer={"sku": "90NR0NJ7-M001J0", "mpn": "90NR0NJ7-M001J0"},
+                price=262990,
+                store="citilink",
+            )
+        )
+        self.assertEqual(target["canonical_model_code"], "90NR0NJ7-M001J0")
+        self.assertIn("G614PR-RV027", target["model_codes"])
+        self.assertEqual(target["family_keys"], ["G614PR"])
+        offer = _offer("jib", "G614PR-TS113W", 86990)
+        detail = match_detail(target, offer)
+        self.assertIsNotNone(detail)
+        assert detail is not None
+        self.assertEqual(detail["match_level"], SAME_FAMILY)
+        self.assertEqual(detail["family_key"], "G614PR")
+        self.assertEqual(detail["match_basis"], "alternative_model_code")
+        self.assertEqual(detail["matched_identifier"], "G614PR-RV027")
+        self.assertEqual(detail["matched_offer_identifier"], "G614PR-TS113W")
+        found = search_collected_offers(target, [offer], fx=_fx())
+        self.assertEqual(found["match_level"], SAME_FAMILY)
+        self.assertEqual(found["family_key"], "G614PR")
+        text = format_target_model_message(target, found)
+        self.assertIn("Та же серия / семейство:", text)
+        self.assertIn("ASUS ROG Strix G16 G614PR", text)
+        self.assertIn("G614PR-RV027", text)
+        self.assertIn("G614PR-TS113W", text)
+        self.assertIn("Модификация и региональный индекс отличаются.", text)
+        self.assertNotIn("EXACT", text)
+
+    def test_exact_when_alternative_full_code_matches(self) -> None:
+        target = build_target_model(
+            _deal(
+                cluster_name="ASUS ROG Strix G16 G614PR-TS113W",
+                offer={"sku": "90NR0NJ7-M00999", "mpn": "90NR0NJ7-M00999"},
+            )
+        )
+        self.assertEqual(target["canonical_model_code"], "90NR0NJ7-M00999")
+        offer = _offer("speedcom", "ASUS-G614PR-TS113W", 89990)
+        detail = match_detail(target, offer)
+        self.assertIsNotNone(detail)
+        assert detail is not None
+        self.assertEqual(detail["match_level"], EXACT)
+        self.assertEqual(detail["match_basis"], "exact_identifier")
+        self.assertEqual(detail["matched_identifier"], "G614PR-TS113W")
+        self.assertEqual(detail["matched_offer_identifier"], "G614PR-TS113W")
+
+    def test_msi_9s7_alternative_is_not_same_family(self) -> None:
+        target = build_target_model(
+            _deal(
+                cluster_name="MSI Raider 16 HX 9S7-15M361-814",
+                offer={"sku": "9S7-15M361-814", "mpn": "9S7-15M361-814"},
+            )
+        )
+        target["model_codes"] = ["9S7-15M361-814", "9S7"]
+        target["family_stem"] = None
+        offer = _offer("jib", "9S7-OTHER-999", 100000)
+        offer.ram_gb = 32
+        self.assertIsNone(family_stem("9S7"))
+        self.assertNotEqual(match_level(target, offer), SAME_FAMILY)
+        self.assertNotEqual(match_level(target, offer), EXACT)
+
+    def test_conflicting_families_are_not_matched(self) -> None:
+        target = build_target_model(_deal())
+        target["model_codes"] = ["G614PR-RV027", "G614FR-TS235W", "90NR0NJ7-M001J0"]
+        target["canonical_model_code"] = "90NR0NJ7-M001J0"
+        target["family_stem"] = None
+        offer = _offer("jib", "G614PR-TS113W", 86990)
+        offer.ram_gb = 64
+        self.assertNotEqual(match_level(target, offer), SAME_FAMILY)
+        self.assertNotEqual(match_level(target, offer), EXACT)
+
+    def test_asus_family_pairs(self) -> None:
+        rv = build_target_model(
+            _deal(
+                cluster_name="ASUS ROG Strix G16 G614PR-RV027",
+                offer={"sku": "G614PR-RV027", "mpn": "G614PR-RV027"},
+            )
+        )
+        self.assertEqual(match_level(rv, _offer("jib", "G614PR-TS113W", 86990)), SAME_FAMILY)
+        self.assertNotEqual(match_level(rv, _offer("jib", "G614FR-TS235W", 119990)), SAME_FAMILY)
+        gu = build_target_model(
+            _deal(
+                cluster_name="ASUS Zephyrus GU606AW-S123",
+                offer={"sku": "GU606AW-S123", "mpn": "GU606AW-S123"},
+                gpu="RTX 5080",
+            )
+        )
+        same = _offer("jib", "GU606AW-S999", 150000, gpu="RTX 5080")
+        exact = _offer("speedcom", "ASUS-GU606AW-S123", 149000, gpu="RTX 5080")
+        self.assertEqual(match_level(gu, same), SAME_FAMILY)
+        self.assertEqual(match_level(gu, exact), EXACT)
+
+    def test_same_family_reports_spec_differences(self) -> None:
+        target = build_target_model(
+            _deal(
+                cluster_name="ASUS ROG Strix G16 G614PR-RV027",
+                offer={"sku": "G614PR-RV027", "mpn": "G614PR-RV027"},
+            )
+        )
+        offer = _offer("jib", "G614PR-TS113W", 86990)
+        offer.ram_gb = 32
+        offer.gpu = "RTX 5080"
+        detail = match_detail(target, offer)
+        self.assertIsNotNone(detail)
+        assert detail is not None
+        self.assertEqual(detail["match_level"], SAME_FAMILY)
+        text = " ".join(detail["spec_differences"])
+        self.assertIn("RAM", text)
+        self.assertIn("GPU", text)
+
+    def test_other_brands_do_not_gain_false_families(self) -> None:
+        cases = [
+            ("Lenovo Legion 83LU005KTA", "83LU005KTA", "83LU009KTA"),
+            ("MSI Vector 9S7-15MM72-033", "9S7-15MM72-033", "9S7-17S372-240"),
+            ("GigaByte A18 DYJG3KZBC4SD", "DYJG3KZBC4SD", "DYHG5KZCC4SD"),
+            ("Acer Helios PHN16S-71-76AZ", "PHN16S-71-99AZ", "AN515-58-70AZ"),
+        ]
+        for name, left, right in cases:
+            target = build_target_model(
+                _deal(cluster_name=name, offer={"sku": left, "mpn": left})
+            )
+            offer = _offer("jib", right, 100000)
+            offer.ram_gb = 64
+            self.assertNotEqual(match_level(target, offer), SAME_FAMILY, name)
+            self.assertNotEqual(match_level(target, offer), EXACT, name)
+        acer = build_target_model(
+            _deal(
+                cluster_name="Acer Helios PHN16S-71-76AZ",
+                offer={"sku": "PHN16S-71-76AZ", "mpn": "PHN16S-71-76AZ"},
+            )
+        )
+        self.assertEqual(
+            match_level(acer, _offer("jib", "PHN16S-71-99AZ", 100000)),
+            SAME_FAMILY,
+        )
+        maibenben = build_target_model(
+            _deal(
+                cluster_name="Ноутбук Maibenben X16F-R98957T0GGRLG4E10",
+                offer={"sku": "X16F-R98957T0GGRLG4E10", "mpn": "X16F-R98957T0GGRLG4E10"},
+            )
+        )
+        asus = _offer("jib", "G614PR-TS113W", 86990)
+        self.assertEqual(match_level(maibenben, asus), EQUIVALENT)
+        self.assertNotEqual(match_level(maibenben, asus), SAME_FAMILY)
 
     def test_exact_beats_same_family(self) -> None:
         target = build_target_model(_deal())
