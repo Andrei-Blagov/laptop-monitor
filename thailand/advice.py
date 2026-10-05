@@ -315,13 +315,29 @@ def collect(
             by_id.setdefault(o.external_id, o)
         final = list(by_id.values())
         if not final:
-            err = ",".join(errors) if errors else "no_target_offers"
+            if not errors:
+                return StoreScanResult(
+                    store=STORE,
+                    ok=True,
+                    offers=[],
+                    error_code="NO_RESULTS",
+                    duration_seconds=time.perf_counter() - started,
+                    collection_mode="http",
+                    discovered_count=0,
+                    verified_count=0,
+                )
+            from thailand.errors import classify_store_failure
+
+            code, detail = classify_store_failure(",".join(errors))
             return StoreScanResult(
                 store=STORE,
                 ok=False,
                 offers=[],
-                error=err,
+                error=code,
+                error_code=code,
+                technical_detail=detail,
                 duration_seconds=time.perf_counter() - started,
+                collection_mode="failed",
             )
         return StoreScanResult(
             store=STORE,

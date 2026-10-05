@@ -120,26 +120,27 @@ def format_thailand_comparison_message(
 ) -> str:
     lines = ["🇹🇭 <b>ТАИЛАНД — РАЗОВАЯ ПРОВЕРКА</b>", "", "Проверены:"]
     banana_via_lazada = False
+    labels = {
+        "jib": "JIB",
+        "advice": "Advice",
+        "banana": "BaNANA",
+        "lazada": "Lazada",
+        "speedcom": "SpeedCom",
+        "invadeit": "InvadeIT",
+        "itcity": "IT City",
+    }
     for sr in store_results:
-        mark = "✅" if sr.ok else "❌"
-        if sr.store == "banana":
-            label = "BaNANA direct"
-            err = (sr.error or "").lower()
-            if not sr.ok and (
-                "403" in err or "challenge" in err or "blocked" in err or "cloudflare" in err
-            ):
-                extra = " Cloudflare"
-            else:
-                extra = f" ({sr.error})" if (not sr.ok and sr.error) else ""
-            lines.append(f"{label} {mark}{extra}")
+        label = labels.get(sr.store, sr.store)
+        if getattr(sr, "policy_disabled", False) or getattr(sr, "circuit_breaker_status", None) == "open":
+            lines.append(f"{label} — временно отключён")
             continue
-        label = {
-            "jib": "JIB",
-            "advice": "Advice",
-            "lazada": "Lazada",
-        }.get(sr.store, sr.store)
-        extra = f" ({sr.error})" if (not sr.ok and sr.error) else ""
-        lines.append(f"{label} {mark}{extra}")
+        if sr.error_code == "NO_RESULTS":
+            lines.append(f"{label} — предложений нет")
+            continue
+        if sr.ok:
+            lines.append(f"{label} ✅")
+        else:
+            lines.append(f"{label} — временно недоступен")
         if sr.store == "lazada" and sr.ok:
             # Detect BaNANA IT presence from offers if available on result
             for o in list(sr.offers or []) + list(sr.unverified_candidates or []):
@@ -291,7 +292,7 @@ def format_thailand_alternatives_message(
             lines.append(str(row["url"]))
         alts = row.get("alt_channels") or []
         if alts:
-            lines.append("Другие продавцы:")
+            lines.append("Другие магазины:")
             for alt in alts[:2]:
                 alt_label = alt.get("store_label") or store_display_label(alt)
                 lines.append(

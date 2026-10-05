@@ -74,7 +74,13 @@ class StoreScanResult:
     error: str | None = None
     duration_seconds: float | None = None
     unverified_candidates: list[ThailandOffer] = field(default_factory=list)
-    collection_mode: str | None = None  # http | html | browser | failed
+    collection_mode: str | None = None  # http | html | browser | failed | skipped | disabled
+    error_code: str | None = None
+    technical_detail: str | None = None
+    discovered_count: int | None = None
+    verified_count: int | None = None
+    circuit_breaker_status: str | None = None
+    policy_disabled: bool = False
 
     @property
     def count(self) -> int:

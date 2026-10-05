@@ -119,8 +119,23 @@ THAILAND_LAZADA_QUERY_WAIT_MS: int = 4500
 # Experimental flags (fail-safe when live collection blocked)
 THAILAND_BANANA_BROWSER_ENABLED: bool = True
 THAILAND_LAZADA_BROWSER_ENABLED: bool = True
+# Inner Lazada adapter gate. Automatic scan uses THAILAND_STORE_LAZADA_ENABLED.
 THAILAND_LAZADA_ENABLED: bool = True
 THAILAND_LAZADA_BLOCK_HEAVY_RESOURCES: bool = True
+# Automatic Thailand worker stores. BaNANA/Lazada stay in the tree but are off
+# until a public path exists; manual diagnostics can still call them directly.
+THAILAND_STORE_JIB_ENABLED: bool = True
+THAILAND_STORE_ADVICE_ENABLED: bool = True
+THAILAND_STORE_SPEEDCOM_ENABLED: bool = True
+THAILAND_STORE_INVADEIT_ENABLED: bool = True
+THAILAND_STORE_ITCITY_ENABLED: bool = True
+THAILAND_STORE_BANANA_ENABLED: bool = False
+THAILAND_STORE_LAZADA_ENABLED: bool = False
+THAILAND_SOURCE_FAILURE_THRESHOLD: int = 3
+THAILAND_SOURCE_COOLDOWN_HOURS: float = 24.0
+THAILAND_SOURCE_HEALTH_PATH: str = "data/thailand_source_health.json"
+# Playwright stays on the main thread; do not run several browsers at once.
+THAILAND_BROWSER_MAX_CONCURRENCY: int = 1
 # Async Thailand worker queue (v0.5.1 candidate)
 THAILAND_JOB_MAX_PENDING: int = 10
 THAILAND_JOB_ARCHIVE_RETENTION: int = 50

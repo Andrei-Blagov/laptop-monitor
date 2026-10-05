@@ -102,7 +102,10 @@ class PipelineIsolationTests(unittest.TestCase):
     def test_thailand_timeout_status_isolated(self) -> None:
         from thailand.scanner import collect_thailand_offers
 
-        with patch("thailand.scanner.get_thailand_adapters") as ga:
+        with tempfile.TemporaryDirectory() as tmp, patch("thailand.scanner.get_thailand_adapters") as ga, patch(
+            "thailand.source_health.health_file",
+            return_value=Path(tmp) / "health.json",
+        ):
             slow = MagicMock()
             slow.slug = "jib"
             slow.enabled = True

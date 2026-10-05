@@ -54,6 +54,7 @@ SCRIPTS = (
     "scripts/diagnose_thailand_async.py",
     "scripts/diagnose_thailand_market_v2.py",
     "scripts/diagnose_thailand_corrective.py",
+    "scripts/diagnose_thailand.py",
 )
 
 # Modules that production actually starts (compose, systemd, control bot).

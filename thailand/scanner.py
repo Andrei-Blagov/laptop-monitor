@@ -27,7 +27,8 @@ from thailand.fx import fetch_cbr_thb_rate, fx_usable_for_verdict, thb_to_rub
 from thailand.grouping import dedupe_user_facing_rows
 from thailand.matching import group_thai_offers, match_russian_to_thai
 from thailand.models import FxRate, StoreScanResult, ThailandOffer
-from thailand.registry import get_thailand_adapters
+from thailand.registry import ThailandStoreAdapter, get_thailand_adapters
+from thailand.source_health import load_health, record_observation, should_skip
 from thailand.scoring import international_value_score
 from thailand.seller_trust import (
     annotate_marketplace_identity,
@@ -42,13 +43,71 @@ from thailand.storage import write_scan_snapshot
 logger = logging.getLogger(__name__)
 
 
+def derive_scan_status(store_results: Sequence[StoreScanResult]) -> str:
+    """
+    PARTIAL only when an enabled, attempted source failed.
+
+    Policy-disabled stores and an open circuit breaker are not failures.
+    NO_RESULTS is a successful empty read (ok=True).
+    """
+    relevant = [
+        r
+        for r in store_results
+        if not r.policy_disabled and r.circuit_breaker_status != "open"
+    ]
+    if not relevant:
+        return "failed"
+    failures = [r for r in relevant if not r.ok]
+    if not failures:
+        return "ok"
+    if len(failures) == len(relevant):
+        return "failed"
+    return "partial"
+
+
+def _disabled_result(adapter: ThailandStoreAdapter) -> StoreScanResult:
+    return StoreScanResult(
+        store=adapter.slug,
+        ok=True,
+        offers=[],
+        collection_mode="disabled",
+        policy_disabled=True,
+        circuit_breaker_status="closed",
+        duration_seconds=0.0,
+        discovered_count=0,
+        verified_count=0,
+    )
+
+
+def _skipped_result(adapter: ThailandStoreAdapter) -> StoreScanResult:
+    return StoreScanResult(
+        store=adapter.slug,
+        ok=True,
+        offers=[],
+        collection_mode="skipped",
+        circuit_breaker_status="open",
+        duration_seconds=0.0,
+        discovered_count=0,
+        verified_count=0,
+    )
+
+
 def _collect_store(adapter, timeout: float) -> StoreScanResult:
     try:
         return adapter.collect(timeout=timeout)
     except Exception as exc:  # noqa: BLE001
         logger.warning("Thailand store %s failed: %s", adapter.slug, type(exc).__name__)
+        from thailand.errors import classify_store_failure
+
+        code, detail = classify_store_failure(type(exc).__name__)
         return StoreScanResult(
-            store=adapter.slug, ok=False, offers=[], error=type(exc).__name__
+            store=adapter.slug,
+            ok=False,
+            offers=[],
+            error=code,
+            error_code=code,
+            technical_detail=detail,
+            collection_mode="failed",
         )
 
 
@@ -68,10 +127,19 @@ def collect_thailand_offers(
         if per_store_timeout is not None
         else config.THAILAND_PER_STORE_TIMEOUT_SECONDS
     )
-    adapters = [a for a in get_thailand_adapters() if a.enabled]
+    all_adapters = get_thailand_adapters()
+    placeholders = [_disabled_result(a) for a in all_adapters if not a.enabled]
+    adapters = []
+    for adapter in all_adapters:
+        if not adapter.enabled:
+            continue
+        if should_skip(adapter.slug):
+            placeholders.append(_skipped_result(adapter))
+            continue
+        adapters.append(adapter)
     started = time.perf_counter()
     results: list[StoreScanResult] = []
-    if not adapters:
+    if not adapters and not placeholders:
         return [], [], [], 0.0
 
     # Playwright sync API is not safe in worker threads — keep browser stores
@@ -99,7 +167,9 @@ def collect_thailand_offers(
                                 store=a.slug,
                                 ok=False,
                                 offers=[],
-                                error="timeout",
+                                error="TIMEOUT",
+                                error_code="TIMEOUT",
+                                technical_detail="timeout",
                             )
                         )
     else:
@@ -107,7 +177,12 @@ def collect_thailand_offers(
             if time.perf_counter() - started > overall_timeout:
                 results.append(
                     StoreScanResult(
-                        store=a.slug, ok=False, offers=[], error="timeout"
+                        store=a.slug,
+                        ok=False,
+                        offers=[],
+                        error="TIMEOUT",
+                        error_code="TIMEOUT",
+                        technical_detail="timeout",
                     )
                 )
                 continue
@@ -116,13 +191,36 @@ def collect_thailand_offers(
     for a in browser_adapters:
         if time.perf_counter() - started > overall_timeout:
             results.append(
-                StoreScanResult(store=a.slug, ok=False, offers=[], error="timeout")
+                StoreScanResult(
+                    store=a.slug,
+                    ok=False,
+                    offers=[],
+                    error="TIMEOUT",
+                    error_code="TIMEOUT",
+                    technical_detail="timeout",
+                )
             )
             continue
         results.append(_collect_store(a, per_store_timeout))
 
-    # Stable order
-    order = {a.slug: i for i, a in enumerate(adapters)}
+    for result in results:
+        if result.policy_disabled or result.collection_mode == "skipped":
+            continue
+        try:
+            record_observation(
+                result.store,
+                ok=bool(result.ok),
+                error_code=result.error_code,
+                offer_count=result.count,
+                runtime_seconds=result.duration_seconds,
+            )
+        except Exception:  # noqa: BLE001
+            logger.warning("thailand health write failed for %s", result.store)
+    results.extend(placeholders)
+    # Stable order. Browser stores stay on this thread (Playwright is not thread-safe);
+    # THAILAND_BROWSER_MAX_CONCURRENCY documents that limit.
+    _ = config.THAILAND_BROWSER_MAX_CONCURRENCY
+    order = {a.slug: i for i, a in enumerate(all_adapters)}
     results.sort(key=lambda r: order.get(r.store, 99))
     offers: list[ThailandOffer] = []
     unverified: list[ThailandOffer] = []
@@ -406,15 +504,7 @@ def run_thailand_scan(
         groups = group_thai_offers(offers)
         match_runtime = time.perf_counter() - match_t0
 
-        ok_stores = [r for r in store_results if r.ok]
-        if not store_results:
-            status = "failed"
-        elif not ok_stores:
-            status = "failed"
-        elif len(ok_stores) < len(store_results):
-            status = "partial"
-        else:
-            status = "ok"
+        status = derive_scan_status(store_results)
 
         finished_at = datetime.now(timezone.utc)
         result.update(
@@ -428,12 +518,19 @@ def run_thailand_scan(
                         "store": r.store,
                         "ok": r.ok,
                         "count": r.count,
-                        "error": r.error,
+                        "error": r.error_code or r.error,
+                        "error_code": r.error_code,
+                        "technical_detail": r.technical_detail,
                         "duration_seconds": r.duration_seconds,
                         "collection_mode": r.collection_mode,
+                        "offers_discovered": r.discovered_count,
+                        "offers_verified": r.verified_count,
+                        "circuit_breaker_status": r.circuit_breaker_status,
+                        "policy_disabled": r.policy_disabled,
                     }
                     for r in store_results
                 ],
+                "source_health": load_health().get("stores") or {},
                 "all_verified_offers": [o.to_dict() for o in offers],
                 "eligible_offers": [o.to_dict() for o in eligible_offers],
                 "over_cap_offers_count": len(over_cap_offers),

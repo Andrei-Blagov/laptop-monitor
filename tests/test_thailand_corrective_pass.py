@@ -309,7 +309,9 @@ class BananaViaLazadaTests(unittest.TestCase):
             match=None,
             comparison=None,
         )
-        self.assertIn("BaNANA direct ❌ Cloudflare", text)
+        self.assertIn("BaNANA — временно недоступен", text)
+        self.assertNotIn("Cloudflare", text)
+        self.assertNotIn("HTTP_403", text)
         self.assertIn("Lazada ✅", text)
         self.assertIn("BaNANA IT через Lazada ✅", text)
 

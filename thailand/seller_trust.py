@@ -187,4 +187,7 @@ def store_display_label(offer: ThailandOffer | dict[str, Any]) -> str:
         "advice": "Advice",
         "banana": "BaNANA",
         "lazada": "Lazada",
+        "speedcom": "SpeedCom",
+        "invadeit": "InvadeIT",
+        "itcity": "IT City",
     }.get(store, store.upper())

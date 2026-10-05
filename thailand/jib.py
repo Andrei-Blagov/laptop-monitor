@@ -513,11 +513,14 @@ def collect(
         if not candidates:
             return StoreScanResult(
                 store=STORE,
-                ok=False,
+                ok=True,
                 offers=[],
                 unverified_candidates=[],
-                error="no_target_offers",
+                error_code="NO_RESULTS",
                 duration_seconds=time.perf_counter() - started,
+                collection_mode="http",
+                discovered_count=0,
+                verified_count=0,
             )
         # Store OK if discovery worked even when zero verified (partial market view).
         return StoreScanResult(
