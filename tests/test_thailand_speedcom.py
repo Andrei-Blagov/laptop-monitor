@@ -135,6 +135,7 @@ class SpeedComParseTests(unittest.TestCase):
             _product(title=_TITLE, body=_BODY_5070, variants=[_variant(11, "89990.00")])
         )[0]
         self.assertEqual(offer.sku, "ASUS-G614PR-TS113W")
+        self.assertEqual(offer.manufacturer_part_number, "G614PR-TS113W")
         self.assertEqual(offer.product_id, "100")
         self.assertEqual(offer.variant_id, "11")
 

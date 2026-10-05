@@ -12,7 +12,7 @@ Thailand coverage: three direct stores, source health, and stricter GPU provenan
 - BaNANA and Lazada remain in the tree and are disabled in the automatic scan by default
 - `NO_RESULTS` and intentionally disabled sources do not mark the scan PARTIAL
 - Explicit product GPU line wins over collection tags (an RTX 5050 spec is not a 5070 Ti)
-- Cross-store grouping unchanged: one best verified offer, price_rub ASC, cap ≤ 300 000 ₽
+- Cross-store grouping: one best verified offer, price_rub ASC, cap ≤ 300 000 ₽. A retailer-prefixed SKU (`ASUS-G614PR-TS113W`) matches the bare model code (`G614PR-TS113W`) so the same laptop is not listed twice
 
 ### Unchanged
 

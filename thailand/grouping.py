@@ -9,11 +9,24 @@ from deal_ranking import canonical_gpu
 from thailand.seller_trust import TIER_A, TIER_B, TIER_C
 
 
+_RETAILER_PREFIXES = ("ASUS-", "ACER-", "MSI-", "LENOVO-", "GIGABYTE-", "HP-")
+
+
+def normalize_model_code(value: str | None) -> str:
+    """Drop a retailer prefix so ASUS-G614PR-TS113W matches JIB G614PR-TS113W."""
+    norm = "".join(ch for ch in str(value or "").upper() if ch.isalnum() or ch in "-_")
+    for prefix in _RETAILER_PREFIXES:
+        rest = norm[len(prefix):]
+        if norm.startswith(prefix) and "-" in rest and len(rest) >= 6:
+            return rest
+    return norm
+
+
 def config_group_key(row: dict[str, Any]) -> str:
     """Group by strong MPN/SKU when present, else verified config tuple."""
     mpn = row.get("manufacturer_part_number") or row.get("sku")
     if mpn:
-        norm = "".join(ch for ch in str(mpn).upper() if ch.isalnum() or ch in "-_")
+        norm = normalize_model_code(str(mpn))
         if len(norm) >= 6:
             return f"mpn:{norm}"
     gpu = canonical_gpu(row.get("gpu"))

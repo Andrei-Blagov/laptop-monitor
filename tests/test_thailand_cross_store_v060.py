@@ -72,6 +72,21 @@ def _row(offer: ThailandOffer, rub: int) -> dict:
 
 
 class CrossStoreTests(unittest.TestCase):
+    def test_retailer_prefixed_sku_groups_with_bare_mpn(self) -> None:
+        rows = [
+            _row(_offer("jib", 86990), 215862),
+            _row(_offer("speedcom", 89990), 223307),
+        ]
+        rows[0]["manufacturer_part_number"] = "G614PR-TS113W"
+        rows[0]["sku"] = "G614PR-TS113W"
+        rows[1]["manufacturer_part_number"] = "ASUS-G614PR-TS113W"
+        rows[1]["sku"] = "ASUS-G614PR-TS113W"
+        deduped, removed = dedupe_user_facing_rows(rows)
+        self.assertEqual(removed, 1)
+        self.assertEqual(deduped[0]["store"], "jib")
+        self.assertEqual(len(deduped[0]["alt_channels"]), 1)
+        self.assertEqual(deduped[0]["alt_channels"][0]["store"], "speedcom")
+
     def test_same_mpn_grouped_and_cheapest_direct_wins(self) -> None:
         rows = [
             _row(_offer("jib", 100000), 250000),

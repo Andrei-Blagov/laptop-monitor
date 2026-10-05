@@ -198,6 +198,14 @@ def parse_speedcom_product(
         sku = str(variant.get("sku") or "").strip() or None
         variant_id = str(variant.get("id") or "")
         mpns = extract_mpn_candidates(" ".join(p for p in (title, sku or "") if p))
+        mpn = None
+        sku_upper = (sku or "").upper()
+        for cand in mpns:
+            if "-" in cand and sku_upper.endswith(cand) and cand != sku_upper:
+                mpn = cand
+                break
+        if mpn is None and mpns:
+            mpn = mpns[0]
         url = f"{BASE}/products/{handle}" if handle else BASE
         if variant_id and handle:
             url = f"{url}?variant={variant_id}"
@@ -210,7 +218,7 @@ def parse_speedcom_product(
             available=available,
             collected_at=collected_at,
             sku=sku,
-            manufacturer_part_number=mpns[0] if mpns else sku,
+            manufacturer_part_number=mpn or sku,
             brand=specs.get("brand"),
             cpu=specs.get("cpu"),
             gpu=gpu,
