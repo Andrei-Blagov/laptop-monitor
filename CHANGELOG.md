@@ -1,5 +1,19 @@
 # Changelog
 
+## 0.8.0 — 2026-10-05
+
+Deterministic recommendation: what to buy now, from the current Russian TOP and one Thailand comparison.
+
+- Main menu: «Что покупать сейчас» picks the best fresh Russian model or one of the current TOP 5, then enqueues the existing Thailand job
+- The verdict uses the existing BUY evaluator, price history, and EXACT / SAME_FAMILY / EQUIVALENT trust. A shared platform token is not treated as the same product
+- Thailand at least 10% cheaper on a verified available exact or same-config model is THAILAND_BETTER. BUY_NOW_RUSSIA also needs a mature history, STRONG_BUY, and complete Thailand coverage
+- An incomplete Thailand check does not become «buy in Russia now» or «wait» just because a store failed. Out of stock is not a purchasable Thailand price
+- An automatic BUY still sends one Russian signal, then one consolidated recommendation instead of a separate comparison and full Thailand TOP
+
+### Unchanged
+
+- Deal Ranking weights / BUY rules and the 14-day maturity threshold / Thailand matching / HTTP 429 handling / SQLite schema / n8n workflows / Russian timers
+
 ## 0.7.1 — 2026-10-05
 
 Targeted Thailand family matching now uses every strong identifier, not only the canonical part number.
