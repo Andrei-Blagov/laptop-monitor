@@ -7,7 +7,6 @@ import re
 import time
 from datetime import datetime, timezone
 from typing import Any, Iterable
-from urllib.parse import quote
 
 import httpx
 
@@ -35,7 +34,6 @@ from thailand.verification import (
     PRICE_SOURCE_PRODUCT_DETAIL,
     PRICE_SOURCE_SEARCH_SUGGESTION,
     UNVERIFIED,
-    VERIFIED,
     compute_verification,
     is_verified_for_ranking,
 )

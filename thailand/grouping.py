@@ -6,7 +6,6 @@ from typing import Any
 
 import config
 from deal_ranking import canonical_gpu
-from thailand.matching import strong_identifiers
 from thailand.seller_trust import TIER_A, TIER_B, TIER_C
 
 

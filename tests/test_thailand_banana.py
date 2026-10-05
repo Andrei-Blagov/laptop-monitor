@@ -109,8 +109,7 @@ class BananaParseTests(unittest.TestCase):
                 ram_gb=None,  # force title parse
             )
         )
-        # Explicit ram_gb None — parser may still get from structured after specs
-        # Re-parse via name only path:
+        self.assertEqual(o.ram_gb, 32)
         from thailand.specs_parse import specs_from_text
 
         s = specs_from_text(

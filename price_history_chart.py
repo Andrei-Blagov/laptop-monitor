@@ -27,7 +27,6 @@ from model_price_history import (
     find_cluster_by_product_id,
     format_rub,
     make_model_callback,
-    make_periods_callback,
     parse_iso,
     store_label,
 )

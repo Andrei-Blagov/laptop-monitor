@@ -72,11 +72,9 @@ class MatchingTests(unittest.TestCase):
 
     def test_regional_suffix_not_exact(self) -> None:
         base, suf = strip_regional_sku_suffix("83F500NWTA")
+        self.assertEqual(base, "83F500NW")
         self.assertEqual(suf, "TA")
-        ru = _ru(offer={"sku": "83F500NW", "store": "kns"})
-        # Force different regional forms with same base
-        thai = _thai(sku="83F500NWTH", manufacturer_part_number="83F500NWTH")
-        # If bases equal after strip and suffixes differ → SAME_FAMILY not EXACT
+        # Same base, different regional suffixes → not EXACT
         matches = match_russian_to_thai(
             _ru(offer={"sku": "83F500NWTA", "store": "kns"}),
             [_thai(sku="83F500NWTH", manufacturer_part_number="83F500NWTH")],

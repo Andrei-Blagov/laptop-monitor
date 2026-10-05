@@ -3,7 +3,6 @@ from __future__ import annotations
 """SQLite online backup + integrity check + retention."""
 
 import argparse
-import shutil
 import sqlite3
 import sys
 from datetime import datetime, timezone

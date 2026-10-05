@@ -654,23 +654,21 @@ class ManualAsyncTests(unittest.TestCase):
     def test_manual_handler_fast_no_scan(self) -> None:
         from control_bot import handle_thailand_manual
 
-        with tempfile.TemporaryDirectory() as tmp:
-            jobs = Path(tmp) / "jobs"
-            client = MagicMock()
-            with patch(
-                "buy_thailand_flow.enqueue_manual_thailand_job"
-            ) as enq, patch("control_bot.send_message") as send:
-                enq.return_value = {
-                    "ok": True,
-                    "thailand_job_id": "j",
-                    "thailand_scan_status": "queued",
-                }
-                t0 = time.perf_counter()
-                handle_thailand_manual(client, "token", 1, compare=True)
-                elapsed = time.perf_counter() - t0
-            self.assertLess(elapsed, 1.0)
-            enq.assert_called()
-            self.assertIn("запущена", send.call_args.args[3])
+        client = MagicMock()
+        with patch(
+            "buy_thailand_flow.enqueue_manual_thailand_job"
+        ) as enq, patch("control_bot.send_message") as send:
+            enq.return_value = {
+                "ok": True,
+                "thailand_job_id": "j",
+                "thailand_scan_status": "queued",
+            }
+            t0 = time.perf_counter()
+            handle_thailand_manual(client, "token", 1, compare=True)
+            elapsed = time.perf_counter() - t0
+        self.assertLess(elapsed, 1.0)
+        enq.assert_called()
+        self.assertIn("запущена", send.call_args.args[3])
 
 
 if __name__ == "__main__":

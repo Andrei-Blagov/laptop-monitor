@@ -136,19 +136,6 @@ INTL_SCORE_SSD_MAX: float = 5.0
 INTL_SCORE_SCREEN_MAX: float = 8.0
 INTL_SCORE_RAW_MAX: float = 88.0
 
-# Deprecated aliases (kept for import compatibility; unused by scoring v2).
-RANK_GPU_5080_BONUS: float = SCORE_GPU_5080
-RANK_GPU_5070TI_BONUS: float = SCORE_GPU_5070TI
-RANK_RAM_32_BONUS: float = SCORE_RAM_32
-RANK_RAM_16_BONUS: float = SCORE_RAM_16
-RANK_SSD_1TB_BONUS: float = SCORE_SSD_1TB
-RANK_SCREEN_17_BONUS: float = SCORE_SCREEN_17
-RANK_SCREEN_16_BONUS: float = SCORE_SCREEN_16
-RANK_BUDGET_ANCHOR_RUB: int = 200_000
-RANK_BUDGET_UNDER_BONUS: float = 0.0
-RANK_BUDGET_NEAR_BONUS: float = 0.0
-RANK_HISTORICAL_LOW_BONUS: float = SCORE_HISTORY_MAX
-
 # Store is fresh for TOP / current deals if latest attempt is ok and within TTL.
 # Schedule is every 2 hours → default ~3 hours.
 STORE_FRESHNESS_MAX_MINUTES: int = 180

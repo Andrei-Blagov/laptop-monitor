@@ -4,7 +4,6 @@ from __future__ import annotations
 
 import argparse
 import logging
-import sys
 import time
 from pathlib import Path
 from typing import Any
@@ -18,7 +17,6 @@ from thailand.job_queue import (
     claim_next_job,
     ensure_queue_dirs,
     pending_count,
-    read_worker_state,
     recover_stale_processing,
     write_worker_state,
 )

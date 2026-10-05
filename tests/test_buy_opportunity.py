@@ -150,7 +150,6 @@ class CooldownTests(unittest.TestCase):
         self.assertEqual(reason, "deduped")
 
     def test_price_improve_bypass(self) -> None:
-        deal = _deal(price=200000)
         sig = evaluate_buy_rules(
             _deal(price=200000, historical_min=198000, score=80, confidence=100)
         )
