@@ -136,11 +136,9 @@ def format_purchase_recommendation(
     lines.append(f"{_rub(deal.price)} ₽ — {_store_label(deal.store)}")
     if rec.history_min is not None:
         lines.append(f"Исторический минимум: {_rub(rec.history_min)} ₽")
-    if rec.history_delta_pct is not None:
-        if rec.history_delta_pct <= 0.05:
-            lines.append("Сейчас около исторического минимума.")
-        else:
-            lines.append(f"Сейчас +{_pct(rec.history_delta_pct)}% от минимума.")
+    history_line = _history_quality_line(rec)
+    if history_line:
+        lines.append(history_line)
     if not rec.history_mature:
         lines.append("Истории цены меньше 14 дней: это не вывод, что сейчас исторически лучшее время.")
     lines.append("")
@@ -199,6 +197,28 @@ def format_purchase_recommendation(
                 f"{i}. {row.get('name')} — {_rub(row.get('price_rub'))} ₽, {_store_label(row.get('store'))}"
             )
     return "\n".join(lines)[:3500]
+
+
+def _history_quality_line(rec: Recommendation) -> str | None:
+    """Wording follows ru_price_quality. history_delta_pct is already in percent."""
+    pct = rec.history_delta_pct
+    plus = f"+{_pct(pct)}%" if pct is not None else None
+    quality = rec.ru_price_quality
+    if quality == AT_HISTORICAL_LOW:
+        return "Сейчас у исторического минимума."
+    if quality == NEAR_HISTORICAL_LOW:
+        if plus:
+            return f"Сейчас рядом с историческим минимумом: {plus}."
+        return "Сейчас рядом с историческим минимумом."
+    if quality == GOOD:
+        if plus:
+            return f"Цена хорошая относительно истории: {plus} от минимума."
+        return "Цена хорошая относительно истории."
+    if quality == NORMAL and plus:
+        return f"Сейчас {plus} от исторического минимума."
+    if quality == INSUFFICIENT_HISTORY and plus:
+        return f"Сейчас {plus} от минимума."
+    return None
 
 
 def _why_lines(rec: Recommendation) -> list[str]:
@@ -416,13 +436,16 @@ def build_recommendation(
         verdict = THAILAND_BETTER
     elif not mature:
         verdict = INSUFFICIENT_DATA
-    elif (
-        buy_level == "STRONG_BUY"
-        and trusted
-        and not thailand_better
-        and (coverage_ok or trusted_row is not None)
-    ):
+    elif buy_level == "STRONG_BUY" and trusted and coverage_ok:
         verdict = BUY_NOW_RUSSIA
+    elif buy_level == "STRONG_BUY" and trusted and not coverage_ok:
+        # A checked offer is not clearly cheaper, but another store was not checked.
+        if quality in {AT_HISTORICAL_LOW, NEAR_HISTORICAL_LOW, GOOD}:
+            verdict = GOOD_PRICE_NOT_URGENT
+        else:
+            verdict = INSUFFICIENT_DATA
+    elif not coverage_ok:
+        verdict = INSUFFICIENT_DATA
     elif quality == NORMAL and buy_level is None:
         verdict = WAIT
     elif quality in {AT_HISTORICAL_LOW, NEAR_HISTORICAL_LOW, GOOD}:
@@ -431,10 +454,6 @@ def build_recommendation(
         verdict = WAIT
     else:
         verdict = INSUFFICIENT_DATA
-
-    # A missed Thailand store must not become "Russia is the better country".
-    if verdict == BUY_NOW_RUSSIA and not coverage_ok and not trusted:
-        verdict = GOOD_PRICE_NOT_URGENT if quality in {AT_HISTORICAL_LOW, NEAR_HISTORICAL_LOW, GOOD} else INSUFFICIENT_DATA
 
     shown = trusted_row or oos_row
     return Recommendation(

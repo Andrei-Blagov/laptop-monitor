@@ -160,6 +160,128 @@ class DecisionTests(unittest.TestCase):
         self.assertEqual(rec.verdict, WAIT)
 
 
+def _rate_limited_stores() -> list[dict]:
+    return [
+        {"store": "jib", "ok": True, "error_code": None, "collection_mode": "http"},
+        {"store": "speedcom", "ok": True, "error_code": "RATE_LIMITED", "collection_mode": "rate_limited"},
+    ]
+
+
+class CoverageTests(unittest.TestCase):
+    def test_complete_coverage_comparable_is_buy_now(self) -> None:
+        stores = [
+            {"store": "jib", "ok": True, "collection_mode": "http"},
+            {"store": "speedcom", "ok": True, "collection_mode": "http"},
+        ]
+        rec = build_recommendation(_deal(), _search("EXACT", [_row(215_000)]), stores=stores, now=NOW)
+        self.assertTrue(rec.thailand_coverage_complete)
+        self.assertEqual(rec.verdict, BUY_NOW_RUSSIA)
+
+    def test_rate_limited_small_gap_is_not_buy_now(self) -> None:
+        rec = build_recommendation(
+            _deal(),
+            _search("EXACT", [_row(211_200)]),
+            stores=_rate_limited_stores(),
+            now=NOW,
+        )
+        self.assertEqual(rec.buy_level, "STRONG_BUY")
+        self.assertFalse(rec.thailand_coverage_complete)
+        self.assertNotEqual(rec.verdict, BUY_NOW_RUSSIA)
+        self.assertAlmostEqual(rec.thailand_difference_pct or 0, 4.0, places=1)
+
+    def test_rate_limited_near_minimum_is_good_price(self) -> None:
+        rec = build_recommendation(
+            _deal(),
+            _search("EXACT", [_row(211_200)]),
+            stores=_rate_limited_stores(),
+            now=NOW,
+        )
+        self.assertEqual(rec.ru_price_quality, "AT_HISTORICAL_LOW")
+        self.assertEqual(rec.verdict, GOOD_PRICE_NOT_URGENT)
+
+    def test_incomplete_coverage_and_poor_price_is_not_wait(self) -> None:
+        deal = _deal(price=280_000, historical_min=220_000, score=40, confidence=100)
+        rec = build_recommendation(
+            deal,
+            {"match_level": "NOT_FOUND"},
+            stores=_rate_limited_stores(),
+            now=NOW,
+        )
+        self.assertNotEqual(rec.verdict, WAIT)
+        self.assertNotEqual(rec.verdict, BUY_NOW_RUSSIA)
+        self.assertEqual(rec.verdict, INSUFFICIENT_DATA)
+
+    def test_incomplete_coverage_exact_15_percent_stays_thailand(self) -> None:
+        rec = build_recommendation(
+            _deal(),
+            _search("EXACT", [_row(187_000)]),
+            stores=_rate_limited_stores(),
+            now=NOW,
+        )
+        self.assertEqual(rec.verdict, THAILAND_BETTER)
+        self.assertIn("thai_coverage_incomplete", rec.reasons)
+        text = format_purchase_recommendation(_deal(), rec)
+        self.assertIn("не проверена", text)
+
+    def test_no_results_keeps_coverage_complete(self) -> None:
+        stores = [{"store": "advice", "ok": True, "error_code": "NO_RESULTS", "collection_mode": "http"}]
+        rec = build_recommendation(_deal(), _search("EXACT", [_row(215_000)]), stores=stores, now=NOW)
+        self.assertTrue(rec.thailand_coverage_complete)
+        self.assertEqual(rec.verdict, BUY_NOW_RUSSIA)
+
+    def test_policy_disabled_stores_do_not_break_coverage(self) -> None:
+        stores = [
+            {"store": "jib", "ok": True, "collection_mode": "http"},
+            {"store": "banana", "ok": True, "policy_disabled": True, "collection_mode": "disabled"},
+            {"store": "lazada", "ok": True, "policy_disabled": True, "collection_mode": "disabled"},
+        ]
+        rec = build_recommendation(_deal(), _search("EXACT", [_row(215_000)]), stores=stores, now=NOW)
+        self.assertTrue(rec.thailand_coverage_complete)
+        self.assertEqual(rec.verdict, BUY_NOW_RUSSIA)
+
+
+class FormatterTests(unittest.TestCase):
+    def _text(self, price: int, hist: int, *, mature: bool = True) -> str:
+        deal = _deal(
+            price=price,
+            historical_min=hist,
+            history_started_at=MATURE if mature else IMMATURE,
+            score=40,
+            confidence=50,
+        )
+        rec = build_recommendation(deal, {"match_level": "NOT_FOUND"}, now=NOW)
+        return format_purchase_recommendation(deal, rec)
+
+    def test_zero_percent_is_at_minimum(self) -> None:
+        text = self._text(220_000, 220_000)
+        self.assertIn("у исторического минимума", text)
+
+    def test_0_8_percent_is_at_historical_low(self) -> None:
+        text = self._text(220_000, 218_254)
+        self.assertIn("у исторического минимума", text)
+        self.assertNotIn("около исторического минимума", text)
+
+    def test_1_6_percent_is_near_minimum(self) -> None:
+        text = self._text(220_000, 216_535)
+        self.assertIn("рядом с историческим минимумом", text)
+        self.assertIn("+1,6%", text)
+
+    def test_4_percent_is_good(self) -> None:
+        text = self._text(220_000, 211_538)
+        self.assertIn("Цена хорошая относительно истории", text)
+        self.assertIn("+4,0%", text)
+
+    def test_7_percent_is_normal(self) -> None:
+        text = self._text(220_000, 205_607)
+        self.assertIn("Сейчас +7,0% от исторического минимума", text)
+
+    def test_immature_keeps_the_maturity_caveat(self) -> None:
+        text = self._text(262_990, 258_900, mature=False)
+        self.assertIn("меньше 14 дней", text)
+        self.assertIn("исторически лучшее время", text)
+        self.assertIn("не вывод", text)
+
+
 class PriceMathTests(unittest.TestCase):
     def test_thailand_cheaper_rub_and_percent(self) -> None:
         gap = country_price_gap(262_990, 215_862)
