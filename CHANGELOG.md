@@ -1,5 +1,23 @@
 # Changelog
 
+## 0.6.0 — 2026-10-05
+
+Thailand coverage: three direct stores, source health, and stricter GPU provenance.
+
+- SpeedCom Thailand adapter (Shopify public `products.json`; variant price belongs to the variant whose GPU is confirmed)
+- InvadeIT Thailand adapter (public category JSON API)
+- IT City Thailand adapter (public search index; desktop GPUs and PC sets are not laptops)
+- Source health file and circuit breaker (3 consecutive transport failures, 24h cooldown, one probe after cooldown; manual diagnostics can bypass)
+- Normalized store error codes (`BLOCKED`, `CHALLENGE`, `NO_RESULTS`, `TIMEOUT`, `NETWORK_ERROR`, `PARSE_ERROR`, `HTTP_ERROR`, `UNSUPPORTED`); technical detail stays in the snapshot
+- BaNANA and Lazada remain in the tree and are disabled in the automatic scan by default
+- `NO_RESULTS` and intentionally disabled sources do not mark the scan PARTIAL
+- Explicit product GPU line wins over collection tags (an RTX 5050 spec is not a 5070 Ti)
+- Cross-store grouping unchanged: one best verified offer, price_rub ASC, cap ≤ 300 000 ₽
+
+### Unchanged
+
+- Deal Ranking / BUY rules and thresholds / Russian pipeline / SQLite schema / n8n workflows / Russian timers
+
 ## 0.5.3 — 2026-10-05
 
 Reliability release: release packaging, BUY repeat semantics, Thailand enqueue retry.
