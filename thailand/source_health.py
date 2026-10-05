@@ -73,22 +73,31 @@ def store_entry(state: dict[str, Any], store: str) -> dict[str, Any]:
     return entry
 
 
+def _legacy_429_evidence(entry: dict[str, Any]) -> bool:
+    """True only when a stored field itself says 429. HTTP_ERROR alone is not proof."""
+    blob = " ".join(
+        str(entry.get(key) or "")
+        for key in ("last_error_code", "technical_detail", "last_error_detail", "error")
+    ).upper()
+    return "429" in blob or "RATE_LIMITED" in blob
+
+
 def _interpret_legacy_rate_limits(state: dict[str, Any], *, now: datetime | None = None) -> None:
     """
-    v0.6.0 counted Shopify HTTP 429 as generic HTTP_ERROR (SpeedCom sat at 2/3).
+    Reclassify a legacy failure as RATE_LIMITED only for SpeedCom and only when
+    the saved entry explicitly records HTTP 429.
 
-    On read, those counts are not generic breaker debt. A rate-limit window is
-    kept from last_failure_at. The file is rewritten only on the next observation.
-    Production is not modified by this read.
+    A bare HTTP_ERROR is left as a generic failure. This read does not write
+    the production file.
     """
     now = now or datetime.now(timezone.utc)
     minutes = float(getattr(config, "THAILAND_RATE_LIMIT_DEFAULT_MINUTES", 60.0))
-    for entry in (state.get("stores") or {}).values():
-        if not isinstance(entry, dict) or entry.get("rate_limit_migrated"):
+    for store, entry in (state.get("stores") or {}).items():
+        if store != "speedcom" or not isinstance(entry, dict) or entry.get("rate_limit_migrated"):
             continue
-        if entry.get("last_error_code") not in {"HTTP_ERROR", "HTTP_429"}:
+        if not _legacy_429_evidence(entry):
             continue
-        if not int(entry.get("consecutive_failures") or 0):
+        if not int(entry.get("consecutive_failures") or 0) and entry.get("last_error_code") == RATE_LIMITED:
             continue
         entry["consecutive_failures"] = 0
         entry["disabled_until"] = None

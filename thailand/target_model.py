@@ -5,6 +5,7 @@ from __future__ import annotations
 Search text is never GPU evidence. Identifiers come from the offer itself.
 """
 
+import re
 from typing import Any, Sequence
 
 from deal_ranking import RankedDeal, canonical_gpu
@@ -23,14 +24,22 @@ NOT_FOUND = "NOT_FOUND"
 ADVICE_EXACT_SEARCH = False
 
 
+# Strong platform codes only. A short manufacturer prefix such as MSI "9S7" is not a family.
+_STRONG_FAMILY = re.compile(
+    r"^(?:G\d{3}[A-Z]{1,4}|[A-Z]{2,4}\d{2,3}[A-Z]{0,3}|[A-Z]\d{2}[A-Z])$"
+)
+_DENY_FAMILY_STEMS = frozenset({"9S7"})
+
+
 def family_stem(code: str | None) -> str | None:
+    """Return a model-platform key, or None when the code is not strong evidence."""
     norm = normalize_model_code(code)
     if not norm or "-" not in norm:
         return None
     stem = norm.split("-", 1)[0]
-    if len(stem) < 5:
+    if stem in _DENY_FAMILY_STEMS or stem[:1].isdigit():
         return None
-    if not any(ch.isalpha() for ch in stem) or not any(ch.isdigit() for ch in stem):
+    if not _STRONG_FAMILY.match(stem):
         return None
     return stem
 

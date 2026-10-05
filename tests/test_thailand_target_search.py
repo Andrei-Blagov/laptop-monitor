@@ -16,10 +16,13 @@ from buy_thailand_flow import (
 from control_bot import (
     CALLBACK_MODEL_PICK,
     _markets_keyboard,
+    friendly_model_label,
     handle_thailand_model_pick,
     model_callback_token,
     model_picker_keyboard,
+    picker_button_label,
     process_update,
+    unique_russian_top,
 )
 from deal_ranking import RankedDeal
 from thailand.eligibility import offer_user_facing_eligible
@@ -123,6 +126,41 @@ class TargetMatchTests(unittest.TestCase):
         target = build_target_model(_deal())
         offer = _offer("jib", "G614PR-TS999W", 90000)
         self.assertEqual(match_level(target, offer), SAME_FAMILY)
+
+    def test_prefixed_sku_same_family(self) -> None:
+        target = build_target_model(_deal(offer={"sku": "ASUS-G614PR-TS113W", "mpn": "ASUS-G614PR-TS113W"}))
+        offer = _offer("jib", "G614PR-TS999W", 90000)
+        self.assertEqual(match_level(target, offer), SAME_FAMILY)
+
+    def test_different_asus_platforms_are_not_same_family(self) -> None:
+        target = build_target_model(_deal())
+        offer = _offer("jib", "G614FR-TS235W", 119990)
+        self.assertNotEqual(match_level(target, offer), SAME_FAMILY)
+        self.assertNotEqual(match_level(target, offer), EXACT)
+
+    def test_msi_9s7_prefix_is_not_a_family(self) -> None:
+        target = build_target_model(
+            _deal(
+                cluster_name="MSI Katana 9S7-15M361-814",
+                offer={"sku": "9S7-15M361-814", "mpn": "9S7-15M361-814"},
+            )
+        )
+        offer = _offer("jib", "9S7-99ZZZZ-111", 100000)
+        offer.ram_gb = 32
+        self.assertNotEqual(match_level(target, offer), SAME_FAMILY)
+        self.assertNotEqual(match_level(target, offer), EXACT)
+
+    def test_short_generic_prefix_is_not_a_family(self) -> None:
+        from thailand.target_model import family_stem
+
+        self.assertIsNone(family_stem("9S7-15M361-814"))
+        self.assertIsNone(family_stem("AB-123456"))
+        self.assertEqual(family_stem("G614PR-TS113W"), "G614PR")
+
+    def test_exact_beats_same_family(self) -> None:
+        target = build_target_model(_deal())
+        offer = _offer("jib", "G614PR-TS113W", 86990)
+        self.assertEqual(match_level(target, offer), EXACT)
 
     def test_same_gpu_only_is_not_same_family(self) -> None:
         target = build_target_model(_deal())
@@ -238,6 +276,33 @@ class BuyTargetJobTests(unittest.TestCase):
 
 
 class PickerTests(unittest.TestCase):
+    def test_button_shows_model_gpu_and_price(self) -> None:
+        deal = _deal(cluster_name="Ноутбук ASUS ROG Strix G16 G614PR-TS113W", price=257540)
+        label = picker_button_label(deal, 1)
+        self.assertIn("ASUS ROG Strix", label)
+        self.assertIn("5070 Ti", label)
+        self.assertIn("257 540", label)
+        self.assertNotIn("TS113W", label)
+        self.assertLessEqual(len(CALLBACK_MODEL_PICK + model_callback_token(deal.cluster_name)), 64)
+
+    def test_long_name_is_shortened_and_sku_only_falls_back(self) -> None:
+        long_name = "Ноутбук " + ("Gigabyte Aorus " * 8) + "DYJG3KZBC4SD"
+        label = picker_button_label(_deal(cluster_name=long_name, gpu="RTX 5080", price=253713), 1)
+        self.assertLessEqual(len(label), 64)
+        self.assertIn("5080", label)
+        self.assertIn("253 713", label)
+        bare = _deal(cluster_name="DYJG3KZBC4SD", gpu="RTX 5080", price=253713, offer={"sku": "DYJG3KZBC4SD", "mpn": "DYJG3KZBC4SD"})
+        self.assertIsNone(friendly_model_label(bare))
+        self.assertIn("DYJG3KZBC4SD", picker_button_label(bare, 2))
+
+    def test_duplicate_clusters_collapse(self) -> None:
+        first = _deal(cluster_name="ASUS ROG Strix G16")
+        second = _deal(cluster_name="ASUS ROG Strix G16", price=240000)
+        other = _deal(cluster_name="MSI Vector 16", offer={"sku": "9S7-17S372-240", "mpn": "9S7-17S372-240"})
+        with patch("russian_deals.load_russian_ranked_deals", return_value=[first, second, other]):
+            deals = unique_russian_top("unused.db", limit=10)
+        self.assertEqual([d.cluster_name for d in deals], ["ASUS ROG Strix G16", "MSI Vector 16"])
+
     def test_markets_button_and_callback_limit(self) -> None:
         text = json.dumps(_markets_keyboard(), ensure_ascii=False)
         self.assertIn("Найти модель из ТОП РФ в Таиланде", text)
@@ -284,7 +349,12 @@ class PickerTests(unittest.TestCase):
             handle_thailand_model_pick(MagicMock(), "t", 1, model_callback_token(deal.cluster_name))
         enq.assert_called_once()
         scan.assert_not_called()
-        self.assertIn("Ищу эту модель", send.call_args.args[3])
+        text = send.call_args.args[3]
+        self.assertIn("Ищу в Таиланде:", text)
+        self.assertIn("ASUS ROG Strix", text)
+        self.assertIn("5070 Ti", text)
+        self.assertIn("220 000", text)
+        self.assertNotIn(model_callback_token(deal.cluster_name), text)
 
 
 class RateLimitTests(unittest.TestCase):
@@ -359,7 +429,7 @@ class RateLimitTests(unittest.TestCase):
                 record_observation("jib", ok=False, error_code="TIMEOUT", now=T0, path=path)
             self.assertEqual(skip_reason("jib", now=T0, path=path), "circuit")
 
-    def test_legacy_http_error_is_not_generic_debt(self) -> None:
+    def test_bare_http_error_is_not_reclassified(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
             path = Path(tmp) / "h.json"
             path.write_text(
@@ -381,10 +451,41 @@ class RateLimitTests(unittest.TestCase):
                 encoding="utf-8",
             )
             entry = load_health(path)["stores"]["speedcom"]
-            self.assertEqual(entry["consecutive_failures"], 0)
-            self.assertEqual(entry["last_error_code"], RATE_LIMITED)
-            self.assertIsNone(entry["disabled_until"])
-            self.assertTrue(should_skip("speedcom", now=T0, path=path))
+            self.assertEqual(entry["consecutive_failures"], 2)
+            self.assertEqual(entry["last_error_code"], "HTTP_ERROR")
+            self.assertFalse(should_skip("speedcom", now=T0, path=path))
+
+    def test_explicit_429_on_speedcom_is_reclassified(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            path = Path(tmp) / "h.json"
+            path.write_text(
+                json.dumps(
+                    {
+                        "version": 1,
+                        "stores": {
+                            "speedcom": {
+                                "last_failure_at": T0.isoformat(),
+                                "last_error_code": "HTTP_ERROR",
+                                "technical_detail": "HTTP_429",
+                                "consecutive_failures": 2,
+                                "disabled_until": None,
+                            },
+                            "jib": {
+                                "last_failure_at": T0.isoformat(),
+                                "last_error_code": "HTTP_429",
+                                "consecutive_failures": 2,
+                                "disabled_until": None,
+                            },
+                        },
+                    }
+                ),
+                encoding="utf-8",
+            )
+            state = load_health(path)["stores"]
+            self.assertEqual(state["speedcom"]["last_error_code"], RATE_LIMITED)
+            self.assertEqual(state["speedcom"]["consecutive_failures"], 0)
+            self.assertEqual(state["jib"]["last_error_code"], "HTTP_429")
+            self.assertEqual(state["jib"]["consecutive_failures"], 2)
 
 
 class SpeedComBudgetTests(unittest.TestCase):

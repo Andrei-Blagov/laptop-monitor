@@ -10,6 +10,7 @@ Does NOT run schema migrations — require migrate_db first.
 import hashlib
 import json
 import logging
+import re
 import sys
 import time
 from pathlib import Path
@@ -20,6 +21,7 @@ import httpx
 import config
 from comparison import match_products
 from deal_ranking import (
+    canonical_gpu,
     collect_match_product_ids,
     format_top_deals_message,
     historical_mins_from_rows,
@@ -690,16 +692,64 @@ def unique_russian_top(db_path: Path | str = DEFAULT_DB_PATH, *, limit: int = 10
     return out
 
 
-def model_picker_keyboard(deals) -> dict[str, Any]:
+_SKUISH = re.compile(r"^[A-Z0-9][A-Z0-9-]{9,}$", re.I)
+
+
+def _short_gpu_label(gpu: str | None) -> str | None:
+    key = canonical_gpu(gpu)
+    if not key:
+        return None
+    return key.replace("RTX ", "")
+
+
+def friendly_model_label(deal) -> str | None:
+    """Readable model for a button. Long SKU tails are dropped; a bare SKU returns None."""
+    raw = re.sub(r"^(ноутбук|notebook|laptop)\s+", "", (deal.cluster_name or "").strip(), flags=re.I)
+    parts: list[str] = []
+    for token in raw.split():
+        piece = token.strip(" ,.;")
+        if not piece:
+            continue
+        if "-" in piece and len(piece) >= 12:
+            head = piece.split("-", 1)[0]
+            if head[:1].isalpha() and 2 <= len(head) <= 8 and any(ch.isalpha() for ch in head):
+                parts.append(head)
+            continue
+        if _SKUISH.match(piece) and any(ch.isdigit() for ch in piece):
+            continue
+        parts.append(piece)
+    text = " ".join(parts).strip(" -")
+    if len(text) < 3 or (_SKUISH.match(text) and any(ch.isdigit() for ch in text)):
+        return None
+    return text
+
+
+def picker_button_label(deal, index: int) -> str:
     from thailand.target_model import build_target_model
 
+    gpu = _short_gpu_label(deal.gpu)
+    price = f"{int(deal.price):,}".replace(",", " ") if deal.price is not None else "н/д"
+    name = friendly_model_label(deal)
+    if not name:
+        name = str(build_target_model(deal).get("canonical_model_code") or deal.cluster_name or "Модель")
+    bits = [f"{index}. {name}"]
+    if gpu:
+        bits.append(gpu)
+    bits.append(f"{price} ₽")
+    text = " · ".join(bits)
+    if len(text) <= 64:
+        return text
+    tail = " · ".join(bit for bit in bits[1:])
+    room = 64 - len(tail) - 3
+    short = name[: max(8, room - len(f"{index}. "))].rstrip()
+    return f"{index}. {short} · {tail}"[:64]
+
+
+def model_picker_keyboard(deals) -> dict[str, Any]:
     rows = []
     for index, deal in enumerate(deals[:10], start=1):
-        code = build_target_model(deal).get("canonical_model_code") or deal.cluster_name
-        price = f"{int(deal.price):,}".replace(",", " ") if deal.price is not None else "н/д"
-        label = f"{index}. {code} · {price} ₽"
         token = CALLBACK_MODEL_PICK + model_callback_token(deal.cluster_name)
-        rows.append([{"text": label[:60], "callback_data": token}])
+        rows.append([{"text": picker_button_label(deal, index), "callback_data": token}])
     rows.append([{"text": "🏠 Меню", "callback_data": CALLBACK_MENU}])
     return {"inline_keyboard": rows}
 
@@ -744,7 +794,14 @@ def handle_thailand_model_pick(
 
     result = enqueue_model_thailand_job(deal, chat_id=chat_id)
     if result.get("ok"):
-        send_message(client, token, chat_id, "Ищу эту модель в Таиланде…", with_keyboard=False)
+        name = friendly_model_label(deal) or deal.cluster_name
+        gpu = canonical_gpu(deal.gpu) or ""
+        price = f"{int(deal.price):,}".replace(",", " ") if deal.price is not None else "н/д"
+        lines = ["Ищу в Таиланде:", str(name)]
+        if gpu:
+            lines.append(gpu)
+        lines.append(f"Россия: {price} ₽")
+        send_message(client, token, chat_id, "\n".join(lines), with_keyboard=False)
     else:
         send_message(client, token, chat_id, "Не удалось поставить поиск в очередь.", with_keyboard=False)
 
