@@ -61,6 +61,7 @@ def _deal(**kwargs) -> RankedDeal:
         cpu="Intel Core Ultra 9 275HX",
         confidence=100,
         historical_min=224990,
+        history_started_at="2020-01-01T00:00:00+00:00",
     )
     defaults.update(kwargs)
     return RankedDeal(**defaults)

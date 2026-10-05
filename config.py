@@ -87,9 +87,15 @@ BUY_RULE_C_MIN_SCORE: float = 65.0
 BUY_RULE_C_MAX_OVER_HIST_PCT: float = 0.01
 BUY_STRONG_MAX_OVER_HIST_PCT: float = 0.03
 BUY_STRONG_MIN_SCORE: float = 75.0
+# Automatic BUY repeats only on a meaningful new event (price improvement / drop,
+# BUY→STRONG_BUY, new historical low, new #1). Cooldown expiry alone never
+# re-notifies; the cooldown only throttles repeated "new #1" flapping.
 BUY_COOLDOWN_HOURS: float = 24.0
 BUY_BYPASS_PRICE_IMPROVE_PCT: float = 0.03
 BUY_BYPASS_PRICE_DROP_RUB: int = 5_000
+# Automatic BUY needs this much stored observation history for the model
+# cluster (earliest price_history row). Manual / Thailand checks are not gated.
+BUY_MIN_HISTORY_DAYS: float = 14.0
 
 # --- Thailand on-demand scan ---
 THAILAND_PER_STORE_TIMEOUT_SECONDS: float = 120.0

@@ -45,6 +45,8 @@ class BuySignal:
     rule_ids: list[str] = field(default_factory=list)
     over_hist_pct: float | None = None
     fingerprint: str = ""
+    cluster_key: str | None = None
+    history_started_at: str | None = None
 
     def to_dict(self) -> dict[str, Any]:
         return asdict(self)
@@ -174,6 +176,8 @@ def evaluate_buy_rules(deal: RankedDeal) -> BuySignal | None:
         rule_ids=rule_ids,
         over_hist_pct=over,
         fingerprint=fingerprint_for_deal(deal, level),
+        cluster_key=deal.cluster_key,
+        history_started_at=deal.history_started_at,
     )
     return sig
 
@@ -311,6 +315,81 @@ def _parse_ts(value: Any) -> datetime | None:
         return None
 
 
+def history_days(signal: BuySignal, now: datetime | None = None) -> float | None:
+    started = _parse_ts(signal.history_started_at)
+    if started is None:
+        return None
+    return ((now or _now()) - started).total_seconds() / 86400.0
+
+
+def history_is_mature(signal: BuySignal, now: datetime | None = None) -> bool:
+    days = history_days(signal, now)
+    return days is not None and days >= float(config.BUY_MIN_HISTORY_DAYS)
+
+
+def _cluster_name_of_key(key: str | None) -> str | None:
+    # model_key format: "<store>:<external_id>:<cluster name>"
+    parts = str(key or "").split(":", 2)
+    return parts[2] if len(parts) == 3 else None
+
+
+def _notified_at(entry: dict[str, Any]) -> datetime | None:
+    return _parse_ts(
+        entry.get("last_signal_at")
+        or entry.get("last_thailand_job_enqueued_at")
+        or entry.get("last_thailand_scan_at")
+    )
+
+
+def _was_notified(entry: Any) -> bool:
+    return isinstance(entry, dict) and (
+        _notified_at(entry) is not None or entry.get("last_ru_price") is not None
+    )
+
+
+def find_previous_notification(
+    state: dict[str, Any], signal: BuySignal
+) -> dict[str, Any] | None:
+    """
+    Latest notified entry for this model cluster.
+
+    model_key embeds the cheapest store, so the same laptop gets a new key when
+    another store becomes cheapest; fall back to cluster_key / cluster_name.
+    """
+    models = state.get("models") or {}
+    exact = models.get(signal.model_key)
+    if _was_notified(exact):
+        return exact
+    candidates = [
+        entry
+        for entry in models.values()
+        if _was_notified(entry)
+        and (
+            (signal.cluster_key and entry.get("cluster_key") == signal.cluster_key)
+            or (signal.cluster_name and entry.get("cluster_name") == signal.cluster_name)
+        )
+    ]
+    if not candidates:
+        return None
+    epoch = datetime.min.replace(tzinfo=timezone.utc)
+    return max(candidates, key=lambda e: _notified_at(e) or epoch)
+
+
+def _is_new_historical_low(prev_low: Any, signal: BuySignal) -> bool:
+    try:
+        prev = int(prev_low)
+    except (TypeError, ValueError):
+        return False
+    low = signal.historical_min
+    if prev <= 0 or low is None or signal.price > int(low):
+        return False
+    drop = prev - int(low)
+    return drop > 0 and (
+        drop >= int(config.HISTORICAL_LOW_MIN_ABSOLUTE)
+        or drop / prev * 100.0 >= float(config.HISTORICAL_LOW_MIN_PERCENT)
+    )
+
+
 def cooldown_allows(
     *,
     state: dict[str, Any],
@@ -320,57 +399,92 @@ def cooldown_allows(
     now: datetime | None = None,
 ) -> tuple[bool, str]:
     """
-    Return (should_trigger_thailand_scan, reason).
+    Return (should_notify_and_trigger_thailand_scan, reason).
 
-    Manual always bypasses cooldown.
+    Automatic repeat only on a meaningful new event vs the last notification
+    for this model cluster. Elapsed time alone is never a reason. Manual
+    always passes. History maturity is checked separately (select_buy_signals).
     """
     if manual:
         return True, "manual"
     now = now or _now()
-    models = state.setdefault("models", {})
-    prev = models.get(signal.model_key) or {}
-    # Cooldown clock: prefer completed scan, else last signal / enqueue.
-    last_scan = _parse_ts(
-        prev.get("last_thailand_scan_at")
-        or prev.get("last_thailand_job_enqueued_at")
-        or prev.get("last_signal_at")
-    )
-    if last_scan is None:
+    prev = find_previous_notification(state, signal)
+    if not prev:
         return True, "first_signal"
 
-    age_h = (now - last_scan).total_seconds() / 3600.0
-    if age_h >= float(config.BUY_COOLDOWN_HOURS):
-        return True, "cooldown_expired"
+    last_price = prev.get("last_notified_price", prev.get("last_ru_price"))
+    try:
+        last_price_i = int(last_price) if last_price is not None else 0
+    except (TypeError, ValueError):
+        last_price_i = 0
+    if last_price_i > 0:
+        drop = last_price_i - int(signal.price)
+        if drop / last_price_i >= float(config.BUY_BYPASS_PRICE_IMPROVE_PCT):
+            return True, "price_improved_pct"
+        if drop >= int(config.BUY_BYPASS_PRICE_DROP_RUB):
+            return True, "price_drop_abs"
 
-    last_price = prev.get("last_ru_price")
-    last_level = prev.get("last_signal_level")
-    last_top1 = state.get("last_top1_key")
-    job_status = str(prev.get("last_thailand_job_status") or "")
-
-    if last_price is not None:
-        try:
-            last_price_i = int(last_price)
-            if last_price_i > 0:
-                drop = last_price_i - int(signal.price)
-                improve = drop / last_price_i
-                if improve >= float(config.BUY_BYPASS_PRICE_IMPROVE_PCT):
-                    return True, "price_improved_pct"
-                if drop >= int(config.BUY_BYPASS_PRICE_DROP_RUB):
-                    return True, "price_drop_abs"
-        except (TypeError, ValueError):
-            pass
-
+    last_level = prev.get("last_notified_level", prev.get("last_signal_level"))
     if last_level == "BUY" and signal.level == "STRONG_BUY":
         return True, "upgraded_to_strong"
 
-    if top1_key and last_top1 and top1_key != last_top1:
-        return True, "new_top1_model"
+    if _is_new_historical_low(prev.get("last_notified_historical_min"), signal):
+        return True, "new_historical_low"
 
-    # Pending/processing job blocks duplicate automatic enqueue.
+    if top1_key and signal.model_key == top1_key:
+        last_top1_name = state.get("last_top1_cluster") or _cluster_name_of_key(
+            state.get("last_top1_key")
+        )
+        last_top1_at = _parse_ts(prev.get("last_top1_notified_at"))
+        recently_top1 = last_top1_at is not None and (
+            (now - last_top1_at).total_seconds() / 3600.0 < float(config.BUY_COOLDOWN_HOURS)
+        )
+        if last_top1_name and last_top1_name != signal.cluster_name and not recently_top1:
+            return True, "new_top1_model"
+
+    job_status = str(prev.get("last_thailand_job_status") or "")
     if job_status in {"queued", "processing"}:
         return False, "job_pending"
 
     return False, "deduped"
+
+
+def _record_notification(
+    state: dict[str, Any],
+    signal: BuySignal,
+    *,
+    top1_key: str | None,
+    now: datetime,
+    extra: dict[str, Any] | None = None,
+) -> dict[str, Any]:
+    models = state.setdefault("models", {})
+    entry = dict(models.get(signal.model_key) or {})
+    entry.update(
+        {
+            "model_key": signal.model_key,
+            "cluster_name": signal.cluster_name,
+            "cluster_key": signal.cluster_key,
+            "last_signal_at": now.isoformat(),
+            "last_ru_price": signal.price,
+            "last_signal_level": signal.level,
+            "last_score": signal.score,
+            "fingerprint": signal.fingerprint,
+            "last_notified_price": signal.price,
+            "last_notified_level": signal.level,
+            "last_notified_historical_min": signal.historical_min,
+        }
+    )
+    if top1_key and signal.model_key == top1_key:
+        entry["last_top1_notified_at"] = now.isoformat()
+    entry.update(extra or {})
+    models[signal.model_key] = entry
+    if top1_key:
+        state["last_top1_key"] = top1_key
+        if signal.model_key == top1_key:
+            state["last_top1_cluster"] = signal.cluster_name
+        else:
+            state["last_top1_cluster"] = _cluster_name_of_key(top1_key)
+    return state
 
 
 def record_signal(
@@ -381,27 +495,10 @@ def record_signal(
     top1_key: str | None,
     now: datetime | None = None,
 ) -> dict[str, Any]:
-    """Legacy helper: signal record; thailand_scanned sets last_thailand_scan_at."""
+    """Record a notified signal; thailand_scanned sets last_thailand_scan_at."""
     now = now or _now()
-    models = state.setdefault("models", {})
-    entry = dict(models.get(signal.model_key) or {})
-    entry.update(
-        {
-            "model_key": signal.model_key,
-            "cluster_name": signal.cluster_name,
-            "last_signal_at": now.isoformat(),
-            "last_ru_price": signal.price,
-            "last_signal_level": signal.level,
-            "last_score": signal.score,
-            "fingerprint": signal.fingerprint,
-        }
-    )
-    if thailand_scanned:
-        entry["last_thailand_scan_at"] = now.isoformat()
-    models[signal.model_key] = entry
-    if top1_key:
-        state["last_top1_key"] = top1_key
-    return state
+    extra = {"last_thailand_scan_at": now.isoformat()} if thailand_scanned else None
+    return _record_notification(state, signal, top1_key=top1_key, now=now, extra=extra)
 
 
 def record_signal_enqueued(
@@ -414,27 +511,17 @@ def record_signal_enqueued(
 ) -> dict[str, Any]:
     """Record BUY signal + job enqueue. Does NOT set last_thailand_scan_at."""
     now = now or _now()
-    models = state.setdefault("models", {})
-    entry = dict(models.get(signal.model_key) or {})
-    entry.update(
-        {
-            "model_key": signal.model_key,
-            "cluster_name": signal.cluster_name,
-            "last_signal_at": now.isoformat(),
-            "last_ru_price": signal.price,
-            "last_signal_level": signal.level,
-            "last_score": signal.score,
-            "fingerprint": signal.fingerprint,
+    return _record_notification(
+        state,
+        signal,
+        top1_key=top1_key,
+        now=now,
+        extra={
             "last_thailand_job_enqueued_at": now.isoformat(),
             "last_thailand_job_id": job_id,
             "last_thailand_job_status": "queued",
-        }
+        },
     )
-    # Explicitly do not touch last_thailand_scan_at here.
-    models[signal.model_key] = entry
-    if top1_key:
-        state["last_top1_key"] = top1_key
-    return state
 
 
 def record_thailand_job_completed(
@@ -470,32 +557,48 @@ def record_thailand_job_completed(
     return state
 
 
+def explain_buy_decisions(
+    deals: Sequence[RankedDeal],
+    *,
+    state: dict[str, Any] | None = None,
+    manual: bool = False,
+    now: datetime | None = None,
+) -> tuple[list[tuple[BuySignal, bool, str]], str | None]:
+    """Per valid signal: (signal, would_notify, reason). Pure, no state mutation."""
+    state = state if state is not None else {}
+    now = now or _now()
+    top1_key = model_key_for_deal(deals[0]) if deals else None
+    out: list[tuple[BuySignal, bool, str]] = []
+    for deal in deals:
+        sig = evaluate_buy_rules(deal)
+        if sig is None:
+            continue
+        if not manual and not history_is_mature(sig, now):
+            out.append((sig, False, "history_immature"))
+            continue
+        ok, reason = cooldown_allows(
+            state=state, signal=sig, top1_key=top1_key, manual=manual, now=now
+        )
+        out.append((sig, ok, reason))
+    return out, top1_key
+
+
 def select_buy_signals(
     deals: Sequence[RankedDeal],
     *,
     state: dict[str, Any] | None = None,
     manual: bool = False,
     limit: int = 3,
+    now: datetime | None = None,
 ) -> tuple[list[BuySignal], list[BuySignal], str | None]:
     """
     Evaluate deals → signals; split into (to_announce_with_thai_scan, all_valid).
 
     Returns (actionable, all_signals, top1_key).
     """
-    state = state if state is not None else {}
-    all_signals: list[BuySignal] = []
-    for deal in deals:
-        sig = evaluate_buy_rules(deal)
-        if sig:
-            all_signals.append(sig)
-    top1_key = model_key_for_deal(deals[0]) if deals else None
-    actionable: list[BuySignal] = []
-    for sig in all_signals:
-        ok, _reason = cooldown_allows(
-            state=state, signal=sig, top1_key=top1_key, manual=manual
-        )
-        if ok:
-            actionable.append(sig)
-        if len(actionable) >= limit:
-            break
+    decisions, top1_key = explain_buy_decisions(deals, state=state, manual=manual, now=now)
+    all_signals = [sig for sig, _ok, _reason in decisions]
+    actionable = [sig for sig, ok, _reason in decisions if ok][: int(limit)]
     return actionable, all_signals, top1_key
+
+

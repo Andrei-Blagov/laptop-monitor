@@ -10,6 +10,7 @@ import config
 from buy_opportunity import (
     DEFAULT_STATE_PATH,
     BuySignal,
+    record_signal,
     record_signal_enqueued,
     record_thailand_job_completed,
     select_buy_signals,
@@ -134,6 +135,19 @@ def evaluate_buy_opportunity_flow(
             logger.warning(
                 "thailand enqueue failed: %s", enq.get("error") or "unknown"
             )
+
+        if not enq.get("ok"):
+            # The BUY message still goes out; remember it so the next run does
+            # not repeat it without a new event.
+            def _mut_notified(st: dict[str, Any]) -> dict[str, Any]:
+                return record_signal(
+                    st, primary, thailand_scanned=False, top1_key=top1_key
+                )
+
+            try:
+                with_state(_mut_notified, state_path)
+            except Exception as exc:  # noqa: BLE001
+                logger.warning("buy state notify save failed: %s", type(exc).__name__)
 
         text = format_buy_opportunity_message(
             primary,

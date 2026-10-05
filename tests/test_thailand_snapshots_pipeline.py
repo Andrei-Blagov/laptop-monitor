@@ -142,6 +142,7 @@ class PipelineIsolationTests(unittest.TestCase):
             ssd_gb=1024,
             screen_inch=17.0,
             url="https://example/1",
+            history_started_at="2020-01-01T00:00:00+00:00",
         )
         sig = evaluate_buy_rules(deal)
         self.assertIsNotNone(sig)

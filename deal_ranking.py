@@ -3,6 +3,7 @@ from __future__ import annotations
 """Explainable deal ranking v2 for TOP / Telegram / n8n / history picker."""
 
 from dataclasses import dataclass, field
+from datetime import datetime, timezone
 from typing import Any, Iterable, Mapping, Sequence
 
 import config
@@ -30,6 +31,10 @@ class RankedDeal:
     score_breakdown: dict[str, float] = field(default_factory=dict)
     historical_min: int | None = None
     screen_resolution: str | None = None
+    # Cluster identity (normalized SKU) and earliest stored observation of any
+    # offer in the cluster (ISO, UTC). Used by BUY maturity / repeat rules.
+    cluster_key: str | None = None
+    history_started_at: str | None = None
 
 
 @dataclass
@@ -292,6 +297,50 @@ def historical_mins_from_rows(
         if best is not None:
             out[int(pid)] = best
     return out
+
+
+def _parse_iso(value: Any) -> datetime | None:
+    if not value:
+        return None
+    try:
+        dt = datetime.fromisoformat(str(value).replace("Z", "+00:00"))
+    except ValueError:
+        return None
+    return dt if dt.tzinfo else dt.replace(tzinfo=timezone.utc)
+
+
+def history_starts_from_rows(
+    histories: Mapping[int, Sequence[Mapping[str, Any]]],
+) -> dict[int, str]:
+    """Pure helper: product_id → earliest stored observation (ISO UTC).
+
+    The first price_history row is written when a product is first seen, so
+    this is the observation start even if the price never changed.
+    """
+    out: dict[int, str] = {}
+    for pid, rows in histories.items():
+        starts = [dt for dt in (_parse_iso(r.get("checked_at")) for r in rows) if dt]
+        if starts:
+            out[int(pid)] = min(starts).astimezone(timezone.utc).isoformat()
+    return out
+
+
+def cluster_history_started_at(
+    match: Any,
+    history_starts: Mapping[int, str] | None,
+) -> str | None:
+    if not history_starts:
+        return None
+    starts = [
+        dt
+        for dt in (
+            _parse_iso(history_starts.get(int(o.product_id)))
+            for o in getattr(match, "offers", []) or []
+            if getattr(o, "product_id", None) is not None
+        )
+        if dt
+    ]
+    return min(starts).isoformat() if starts else None
 
 
 def collect_match_product_ids(matches: Sequence[Any]) -> list[int]:
@@ -558,6 +607,7 @@ def rank_clusters(
     fresh_stores: set[str] | None = None,
     allowed_stores: set[str] | None = None,
     historical_mins: Mapping[int, int] | None = None,
+    history_starts: Mapping[int, str] | None = None,
 ) -> list[RankedDeal]:
     """
     Rank cheapest available offer per matched model cluster.
@@ -566,6 +616,7 @@ def rank_clusters(
     in cheapest / second-cheapest / saving calculation.
 
     historical_mins: optional product_id → all-time min (preloaded, no DB I/O here).
+    history_starts: optional product_id → first observation (does not affect score).
     """
     allowed = fresh_stores if fresh_stores is not None else allowed_stores
     ranked: list[RankedDeal] = []
@@ -627,6 +678,8 @@ def rank_clusters(
                 score_breakdown=dict(result.breakdown),
                 historical_min=hist_min,
                 screen_resolution=specs["screen_resolution"],
+                cluster_key=getattr(match, "normalized_sku", None),
+                history_started_at=cluster_history_started_at(match, history_starts),
             )
         )
 
