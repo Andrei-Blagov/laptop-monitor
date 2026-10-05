@@ -10,10 +10,12 @@ import config
 from buy_opportunity import (
     DEFAULT_STATE_PATH,
     BuySignal,
-    record_signal,
+    record_signal_enqueue_failed,
     record_signal_enqueued,
     record_thailand_job_completed,
+    record_thailand_retry_result,
     select_buy_signals,
+    select_thailand_retry,
     with_state,
 )
 from deal_ranking import RankedDeal
@@ -40,6 +42,78 @@ logger = logging.getLogger(__name__)
 
 def _dedupe_key_for_signal(signal: BuySignal, trigger_type: str) -> str:
     return f"{trigger_type}|{signal.fingerprint}"
+
+
+def _safe_enqueue(
+    signal: BuySignal,
+    *,
+    deals: Sequence[RankedDeal],
+    jobs_dir: Path | str | None,
+    source_pipeline_run_id: int | None,
+    instance_id: str | None,
+) -> dict[str, Any]:
+    """enqueue_job, with filesystem/permission errors reported as a failed result."""
+    try:
+        job = build_job(
+            trigger_type=TRIGGER_BUY,
+            signals=[signal],
+            russian_deals=deals,
+            dedupe_key=_dedupe_key_for_signal(signal, TRIGGER_BUY),
+            source_pipeline_run_id=source_pipeline_run_id,
+            app_version=get_version(),
+            instance_id=instance_id or config.get_instance_id(),
+            requested_chat_id=None,
+        )
+        enq = enqueue_job(job, root=jobs_dir)
+        if enq.get("ok") and not enq.get("job_id"):
+            enq["job_id"] = job["job_id"]
+        return enq
+    except Exception as exc:  # noqa: BLE001
+        return {"ok": False, "error": type(exc).__name__}
+
+
+def _retry_thailand_enqueue(
+    retry: tuple[BuySignal, str],
+    *,
+    deals: Sequence[RankedDeal],
+    out: dict[str, Any],
+    state_path: Path | str,
+    jobs_dir: Path | str | None,
+    source_pipeline_run_id: int | None,
+    instance_id: str | None,
+) -> None:
+    """Retry only the Thailand enqueue for an already announced BUY. No Telegram."""
+    signal, entry_key = retry
+    enq = _safe_enqueue(
+        signal,
+        deals=deals,
+        jobs_dir=jobs_dir,
+        source_pipeline_run_id=source_pipeline_run_id,
+        instance_id=instance_id,
+    )
+    queued = bool(enq.get("ok") or enq.get("duplicate"))
+    job_id = str(enq.get("job_id") or "") if queued else None
+    error = None if queued else str(enq.get("error") or "unknown")
+
+    def _mut(st: dict[str, Any]) -> dict[str, Any]:
+        return record_thailand_retry_result(
+            st, entry_key=entry_key, queued=queued, job_id=job_id, error=error
+        )
+
+    try:
+        state = with_state(_mut, state_path)
+        status = (state.get("models") or {}).get(entry_key, {}).get(
+            "last_thailand_enqueue_status"
+        )
+    except Exception as exc:  # noqa: BLE001
+        logger.warning("buy state retry save failed: %s", type(exc).__name__)
+        status = "queued" if queued else "pending_retry"
+    out["thailand_retry"] = {"model_key": entry_key, "status": status, "error": error}
+    out["thailand_scan_triggered"] = queued
+    out["thailand_scan_status"] = "queued" if queued else "enqueue_failed"
+    out["thailand_job_id"] = job_id
+    if not queued:
+        logger.warning("thailand enqueue retry failed: %s status=%s", error, status)
 
 
 def evaluate_buy_opportunity_flow(
@@ -86,28 +160,35 @@ def evaluate_buy_opportunity_flow(
         out["buy_actionable"] = len(actionable)
 
         if not actionable:
+            retry = select_thailand_retry(all_signals, state)
+            if retry is not None:
+                _retry_thailand_enqueue(
+                    retry,
+                    deals=deals,
+                    out=out,
+                    state_path=state_path,
+                    jobs_dir=jobs_dir,
+                    source_pipeline_run_id=source_pipeline_run_id,
+                    instance_id=instance_id,
+                )
             return out
 
         primary = actionable[0]
-        queued = False
-        enqueue_failed = False
         job_id: str | None = None
 
         # Build + enqueue job BEFORE Telegram so message note is accurate.
-        job = build_job(
-            trigger_type=TRIGGER_BUY,
-            signals=actionable[:1],
-            russian_deals=deals,
-            dedupe_key=_dedupe_key_for_signal(primary, TRIGGER_BUY),
+        enq = _safe_enqueue(
+            primary,
+            deals=deals,
+            jobs_dir=jobs_dir,
             source_pipeline_run_id=source_pipeline_run_id,
-            app_version=get_version(),
-            instance_id=instance_id or config.get_instance_id(),
-            requested_chat_id=None,
+            instance_id=instance_id,
         )
-        enq = enqueue_job(job, root=jobs_dir)
-        if enq.get("ok"):
-            queued = True
-            job_id = str(enq.get("job_id") or job["job_id"])
+        # A duplicate pending/processing job is success-equivalent.
+        queued = bool(enq.get("ok") or enq.get("duplicate"))
+        enqueue_failed = not queued
+        if queued:
+            job_id = str(enq.get("job_id") or "")
             out["thailand_scan_triggered"] = True
             out["thailand_scan_status"] = "queued"
             out["thailand_job_id"] = job_id
@@ -117,37 +198,22 @@ def evaluate_buy_opportunity_flow(
                     st, primary, job_id=job_id, top1_key=top1_key
                 )
 
-            try:
-                with_state(_mut, state_path)
-            except Exception as exc:  # noqa: BLE001
-                logger.warning("buy state enqueue save failed: %s", type(exc).__name__)
-        elif enq.get("duplicate"):
-            # Already queued — still announce BUY if actionable, no second job.
-            out["thailand_scan_triggered"] = True
-            out["thailand_scan_status"] = "queued"
-            out["thailand_job_id"] = enq.get("job_id")
-            queued = True
-            job_id = enq.get("job_id")
         else:
-            enqueue_failed = True
+            error = str(enq.get("error") or "unknown")
             out["thailand_scan_triggered"] = False
             out["thailand_scan_status"] = "enqueue_failed"
-            logger.warning(
-                "thailand enqueue failed: %s", enq.get("error") or "unknown"
-            )
+            logger.warning("thailand enqueue failed: %s", error)
 
-        if not enq.get("ok"):
-            # The BUY message still goes out; remember it so the next run does
-            # not repeat it without a new event.
-            def _mut_notified(st: dict[str, Any]) -> dict[str, Any]:
-                return record_signal(
-                    st, primary, thailand_scanned=False, top1_key=top1_key
+            # The BUY message still goes out once; only the enqueue is retried later.
+            def _mut(st: dict[str, Any]) -> dict[str, Any]:
+                return record_signal_enqueue_failed(
+                    st, primary, error=error, top1_key=top1_key
                 )
 
-            try:
-                with_state(_mut_notified, state_path)
-            except Exception as exc:  # noqa: BLE001
-                logger.warning("buy state notify save failed: %s", type(exc).__name__)
+        try:
+            with_state(_mut, state_path)
+        except Exception as exc:  # noqa: BLE001
+            logger.warning("buy state save failed: %s", type(exc).__name__)
 
         text = format_buy_opportunity_message(
             primary,

@@ -96,6 +96,11 @@ BUY_BYPASS_PRICE_DROP_RUB: int = 5_000
 # Automatic BUY needs this much stored observation history for the model
 # cluster (earliest price_history row). Manual / Thailand checks are not gated.
 BUY_MIN_HISTORY_DAYS: float = 14.0
+# If the automatic Thailand enqueue fails after a BUY was announced, later
+# pipeline runs retry only the enqueue (never the Russian BUY message).
+# Interval sits just under the 2h pipeline cadence so the next run retries.
+THAILAND_ENQUEUE_RETRY_INTERVAL_MINUTES: float = 110.0
+THAILAND_ENQUEUE_MAX_RETRIES: int = 3
 
 # --- Thailand on-demand scan ---
 THAILAND_PER_STORE_TIMEOUT_SECONDS: float = 120.0

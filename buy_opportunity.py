@@ -347,32 +347,41 @@ def _was_notified(entry: Any) -> bool:
     )
 
 
-def find_previous_notification(
+def _same_cluster(entry: dict[str, Any], signal: BuySignal) -> bool:
+    return bool(
+        (signal.cluster_key and entry.get("cluster_key") == signal.cluster_key)
+        or (signal.cluster_name and entry.get("cluster_name") == signal.cluster_name)
+    )
+
+
+def find_previous_notification_key(
     state: dict[str, Any], signal: BuySignal
-) -> dict[str, Any] | None:
+) -> str | None:
     """
-    Latest notified entry for this model cluster.
+    State key of the latest notified entry for this model cluster.
 
     model_key embeds the cheapest store, so the same laptop gets a new key when
     another store becomes cheapest; fall back to cluster_key / cluster_name.
     """
     models = state.get("models") or {}
-    exact = models.get(signal.model_key)
-    if _was_notified(exact):
-        return exact
+    if _was_notified(models.get(signal.model_key)):
+        return signal.model_key
     candidates = [
-        entry
-        for entry in models.values()
-        if _was_notified(entry)
-        and (
-            (signal.cluster_key and entry.get("cluster_key") == signal.cluster_key)
-            or (signal.cluster_name and entry.get("cluster_name") == signal.cluster_name)
-        )
+        key
+        for key, entry in models.items()
+        if _was_notified(entry) and _same_cluster(entry, signal)
     ]
     if not candidates:
         return None
     epoch = datetime.min.replace(tzinfo=timezone.utc)
-    return max(candidates, key=lambda e: _notified_at(e) or epoch)
+    return max(candidates, key=lambda k: _notified_at(models[k]) or epoch)
+
+
+def find_previous_notification(
+    state: dict[str, Any], signal: BuySignal
+) -> dict[str, Any] | None:
+    key = find_previous_notification_key(state, signal)
+    return (state.get("models") or {}).get(key) if key else None
 
 
 def _is_new_historical_low(prev_low: Any, signal: BuySignal) -> bool:
@@ -449,6 +458,13 @@ def cooldown_allows(
     return False, "deduped"
 
 
+_NO_PENDING_RETRY: dict[str, Any] = {
+    "pending_thailand_retry": False,
+    "pending_thailand_signal_fingerprint": None,
+    "thailand_enqueue_retries": 0,
+}
+
+
 def _record_notification(
     state: dict[str, Any],
     signal: BuySignal,
@@ -458,7 +474,18 @@ def _record_notification(
     extra: dict[str, Any] | None = None,
 ) -> dict[str, Any]:
     models = state.setdefault("models", {})
+    # A new notification supersedes any pending Thailand retry for this cluster.
+    for key, other in models.items():
+        if (
+            key != signal.model_key
+            and isinstance(other, dict)
+            and other.get("pending_thailand_retry")
+            and _same_cluster(other, signal)
+        ):
+            other["pending_thailand_retry"] = False
+            other["last_thailand_enqueue_status"] = "superseded"
     entry = dict(models.get(signal.model_key) or {})
+    entry.update(_NO_PENDING_RETRY)
     entry.update(
         {
             "model_key": signal.model_key,
@@ -520,8 +547,96 @@ def record_signal_enqueued(
             "last_thailand_job_enqueued_at": now.isoformat(),
             "last_thailand_job_id": job_id,
             "last_thailand_job_status": "queued",
+            "last_thailand_enqueue_status": "queued",
+            "last_thailand_enqueue_attempt_at": now.isoformat(),
+            "last_thailand_enqueue_error": None,
         },
     )
+
+
+def record_signal_enqueue_failed(
+    state: dict[str, Any],
+    signal: BuySignal,
+    *,
+    error: str,
+    top1_key: str | None,
+    now: datetime | None = None,
+) -> dict[str, Any]:
+    """Russian BUY was announced but the Thailand job could not be enqueued."""
+    now = now or _now()
+    return _record_notification(
+        state,
+        signal,
+        top1_key=top1_key,
+        now=now,
+        extra={
+            "last_thailand_enqueue_status": "pending_retry",
+            "last_thailand_enqueue_attempt_at": now.isoformat(),
+            "last_thailand_enqueue_error": error,
+            "pending_thailand_retry": True,
+            "pending_thailand_signal_fingerprint": signal.fingerprint,
+            "thailand_enqueue_retries": 0,
+        },
+    )
+
+
+def select_thailand_retry(
+    signals: Sequence[BuySignal],
+    state: dict[str, Any],
+    *,
+    now: datetime | None = None,
+) -> tuple[BuySignal, str] | None:
+    """First current signal whose cluster has a due Thailand enqueue retry."""
+    now = now or _now()
+    models = state.get("models") or {}
+    interval_s = float(config.THAILAND_ENQUEUE_RETRY_INTERVAL_MINUTES) * 60.0
+    max_retries = int(config.THAILAND_ENQUEUE_MAX_RETRIES)
+    for sig in signals:
+        key = find_previous_notification_key(state, sig)
+        entry = models.get(key) if key else None
+        if not entry or not entry.get("pending_thailand_retry"):
+            continue
+        if int(entry.get("thailand_enqueue_retries") or 0) >= max_retries:
+            continue
+        last = _parse_ts(entry.get("last_thailand_enqueue_attempt_at"))
+        if last is not None and (now - last).total_seconds() < interval_s:
+            continue
+        return sig, str(key)
+    return None
+
+
+def record_thailand_retry_result(
+    state: dict[str, Any],
+    *,
+    entry_key: str,
+    queued: bool,
+    job_id: str | None,
+    error: str | None,
+    now: datetime | None = None,
+) -> dict[str, Any]:
+    """Update only Thailand enqueue fields; Russian notification fields untouched."""
+    now = now or _now()
+    entry = (state.setdefault("models", {})).get(entry_key)
+    if not isinstance(entry, dict):
+        return state
+    entry["last_thailand_enqueue_attempt_at"] = now.isoformat()
+    if queued:
+        entry.update(_NO_PENDING_RETRY)
+        entry["last_thailand_enqueue_status"] = "queued"
+        entry["last_thailand_enqueue_error"] = None
+        entry["last_thailand_job_id"] = job_id
+        entry["last_thailand_job_status"] = "queued"
+        entry["last_thailand_job_enqueued_at"] = now.isoformat()
+        return state
+    retries = int(entry.get("thailand_enqueue_retries") or 0) + 1
+    entry["thailand_enqueue_retries"] = retries
+    entry["last_thailand_enqueue_error"] = error
+    if retries >= int(config.THAILAND_ENQUEUE_MAX_RETRIES):
+        entry["pending_thailand_retry"] = False
+        entry["last_thailand_enqueue_status"] = "enqueue_failed_final"
+    else:
+        entry["last_thailand_enqueue_status"] = "pending_retry"
+    return state
 
 
 def record_thailand_job_completed(
