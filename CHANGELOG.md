@@ -1,5 +1,17 @@
 # Changelog
 
+## 0.7.1 — 2026-10-05
+
+Targeted Thailand family matching now uses every strong identifier, not only the canonical part number.
+
+- A regional variant such as `G614PR-RV027` against `G614PR-TS113W` is SAME_FAMILY (`G614PR`), even when the manufacturer part number is `90NR0NJ7-M001J0`
+- EXACT still requires a full identifier match (`ASUS-G614PR-TS113W` and `G614PR-TS113W`). A shared platform token alone is not EXACT
+- An MSI `9S7` prefix is still not a family, and unrelated platforms such as `G614PR` and `G614FR` stay apart
+
+### Unchanged
+
+- Deal Ranking / BUY rules and the 14-day maturity threshold / HTTP 429 handling / Thailand sources / Russian pipeline / SQLite schema / n8n workflows / Russian timers
+
 ## 0.7.0 — 2026-10-05
 
 Targeted Thailand comparison for a chosen Russian model, and safer HTTP 429 handling.
