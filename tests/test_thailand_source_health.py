@@ -124,8 +124,9 @@ class SourceHealthTests(unittest.TestCase):
     def test_open_breaker_skips_collect(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
             path = Path(tmp) / "health.json"
+            frozen = datetime.now(timezone.utc)
             for _ in range(int(config.THAILAND_SOURCE_FAILURE_THRESHOLD)):
-                record_observation("jib", ok=False, error_code="BLOCKED", now=_now(), path=path)
+                record_observation("jib", ok=False, error_code="BLOCKED", now=frozen, path=path)
             called = {"n": 0}
 
             class Adapter:

@@ -96,6 +96,20 @@ BTN_RECOMMEND = "ctrl:recommend"
 CALLBACK_MODEL_PICK = "tm:"
 CALLBACK_RECOMMEND = "rq:"
 
+# Canonical BotFather list. Names are lowercase, without a slash.
+BOT_COMMANDS: tuple[tuple[str, str], ...] = (
+    ("start", "Открыть главное меню"),
+    ("menu", "Главное меню"),
+    ("recommend", "Что покупать сейчас"),
+    ("top", "Топ предложений"),
+    ("history", "История цен"),
+    ("markets", "Россия и Таиланд"),
+    ("run", "Запустить проверку"),
+    ("status", "Статус системы"),
+    ("version", "Версия бота"),
+    ("help", "Помощь"),
+)
+
 
 def _api(token: str, method: str) -> str:
     return f"https://api.telegram.org/bot{token}/{method}"
@@ -103,6 +117,66 @@ def _api(token: str, method: str) -> str:
 
 def _is_admin(chat_id: str | int) -> bool:
     return str(chat_id) in config.get_telegram_admin_chat_ids()
+
+
+def parse_bot_command(text: str) -> tuple[str, str] | None:
+    """Return (command, args) for /name or /name@Bot, else None."""
+    raw = (text or "").strip()
+    if not raw.startswith("/"):
+        return None
+    head, _, rest = raw.partition(" ")
+    name = head[1:].split("@", 1)[0].strip().lower()
+    if not name or not name.replace("_", "").isalnum():
+        return None
+    return name, rest.strip()
+
+
+def format_help_text() -> str:
+    lines = ["<b>Laptop Monitor — команды</b>", ""]
+    for name, description in BOT_COMMANDS:
+        shown = description[:1].lower() + description[1:] if description else description
+        lines.append(f"/{name} — {shown}")
+    return "\n".join(lines)
+
+
+def handle_text_message(
+    client: httpx.Client,
+    token: str,
+    chat_id: str | int,
+    text: str,
+) -> None:
+    """Slash commands are aliases of the existing inline handlers."""
+    parsed = parse_bot_command(text)
+    if parsed is None:
+        return
+    name, _args = parsed
+    if name == "start":
+        send_message(client, token, chat_id, f"<b>{APP_NAME}</b>\nВыберите действие:")
+    elif name == "menu":
+        send_message(client, token, chat_id, "Главное меню:")
+    elif name == "help":
+        send_message(client, token, chat_id, format_help_text())
+    elif name == "run":
+        handle_run(client, token, chat_id)
+    elif name == "top":
+        send_message(client, token, chat_id, build_top_text())
+    elif name == "history":
+        handle_history_list(client, token, chat_id)
+    elif name == "recommend":
+        handle_recommendation_menu(client, token, chat_id)
+    elif name == "markets":
+        handle_markets_menu(client, token, chat_id)
+    elif name == "status":
+        send_message(client, token, chat_id, build_status_text())
+    elif name == "version":
+        send_message(client, token, chat_id, f"{APP_NAME} {get_version()}")
+    else:
+        send_message(
+            client,
+            token,
+            chat_id,
+            "Неизвестная команда. Используйте /help.",
+        )
 
 
 def _keyboard() -> dict[str, Any]:
@@ -1059,22 +1133,7 @@ def process_update(client: httpx.Client, token: str, update: dict[str, Any]) -> 
             return
         if not _is_admin(chat_id):
             return
-        if text in {"/start", "/menu", "/help"}:
-            send_message(
-                client,
-                token,
-                chat_id,
-                f"<b>{APP_NAME}</b> {get_version()}\nВыберите действие:",
-            )
-        elif text == "/status":
-            send_message(client, token, chat_id, build_status_text())
-        elif text == "/version":
-            send_message(
-                client,
-                token,
-                chat_id,
-                f"{APP_NAME} {get_version()}",
-            )
+        handle_text_message(client, token, chat_id, text)
 
 
 def run_polling(*, timeout: int = 25) -> None:
