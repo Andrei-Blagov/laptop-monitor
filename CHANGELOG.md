@@ -1,5 +1,18 @@
 # Changelog
 
+## 0.8.1 — 2026-10-06
+
+Telegram slash commands for the actions that already exist as inline buttons.
+
+- Commands `/start`, `/menu`, `/recommend`, `/top`, `/history`, `/markets`, `/run`, `/status`, `/version`, and `/help` call the same handlers as the menu
+- `/command@BotUsername`, extra spaces, and letter case are accepted. Plain text is not a command. An unknown slash command points to `/help`
+- `/help` lists the commands and shows the main menu. Admin checks still run before any command
+- Inline callback ids are unchanged
+
+### Unchanged
+
+- Deal Ranking / BUY rules / purchase recommendation verdicts / Thailand matching / SQLite schema / n8n workflows / Russian timers
+
 ## 0.8.0 — 2026-10-05
 
 Deterministic recommendation: what to buy now, from the current Russian TOP and one Thailand comparison.
