@@ -485,15 +485,15 @@ class PriorityWatchlistTests(unittest.TestCase):
         status = self._status(self._pair(309_900, available=False))
         self.assertEqual(status.status, NOT_AVAILABLE)
 
-    def test_single_store_model_still_tracked(self) -> None:
-        from laptop_eligibility import LOW_RANK
-        from priority_watchlist import format_priority_block
+    def test_single_store_model_is_ranked(self) -> None:
+        from priority_watchlist import IN_TOP, format_priority_block
 
         status = self._status([self._msi(309_900)])
-        self.assertEqual(status.status, LOW_RANK)
-        self.assertIn("single_store_not_ranked", status.details)
+        self.assertEqual(status.status, IN_TOP)
+        self.assertEqual(status.rank, 1)
+        self.assertIn("single_store", status.details)
         self.assertEqual(status.best_price, 309_900)
-        self.assertIn("одном магазине", format_priority_block([status]))
+        self.assertIn("Статус: в ТОП, №1", format_priority_block([status]))
 
     def test_price_change_and_history_min(self) -> None:
         save_products(self._pair(319_720), self.db)
@@ -526,6 +526,113 @@ class PriorityWatchlistTests(unittest.TestCase):
         self.assertEqual(status.best_price, 305_000)
         self.assertEqual(status.duplicate_clusters, 0)
         self.assertEqual(len(status.offers), 2)
+
+
+class SingleStoreRankingTests(unittest.TestCase):
+    def setUp(self) -> None:
+        self._tmp = tempfile.TemporaryDirectory(ignore_cleanup_errors=True)
+        self.db = Path(self._tmp.name) / "s.db"
+        self.specs = Path(self._tmp.name) / "specs.json"
+
+    def tearDown(self) -> None:
+        self._tmp.cleanup()
+
+    def _deals(self, products: list[Product]):
+        from russian_deals import load_russian_ranked_deals
+
+        save_products(products, self.db)
+        _seed_fresh(self.db, ["regard", "kns", "citilink"])
+        exclusions: list[dict] = []
+        deals = load_russian_ranked_deals(
+            self.db, specs_path=self.specs, limit=0, exclusions=exclusions
+        )
+        return deals, exclusions
+
+    def test_eligible_single_store_is_ranked_without_saving(self) -> None:
+        deals, _ = self._deals(
+            [_product("citilink", "c1", name="CHUWI GameBook" + SPECS, sku="CHUWI-1", price=192_990)]
+        )
+        self.assertEqual(len(deals), 1)
+        deal = deals[0]
+        self.assertEqual(deal.store, "citilink")
+        self.assertIsNone(deal.saving_vs_next)
+        self.assertIsNone(deal.next_store)
+        self.assertEqual(deal.score_breakdown["saving"], 0.0)
+        self.assertIsNotNone(deal.history_started_at)
+
+    def test_single_store_must_pass_filters(self) -> None:
+        deals, exclusions = self._deals(
+            [
+                _product("regard", "r16", name='ASUS RV027 RTX 5070 Ti, 16GB DDR5, 16" 1920x1200', sku="RV027", price=258_820),
+                _product("regard", "rover", name="ASUS TS412" + SPECS, sku="TS412", price=335_340),
+                _product("regard", "rok", name="ASUS S5348" + SPECS, sku="S5348", price=286_660),
+            ]
+        )
+        self.assertEqual([d.cluster_name for d in deals], ["ASUS S5348" + SPECS])
+        reasons = {e["cluster_name"].split()[1]: e["reason"] for e in exclusions}
+        self.assertEqual(reasons["RV027"], HARD_FILTER_REJECTED)
+        self.assertEqual(reasons["TS412"], PRICE_OVER_CAP)
+
+    def test_single_store_twin_of_cluster_is_not_duplicated(self) -> None:
+        from laptop_eligibility import DUPLICATE_MODEL
+
+        base = "MSI Raider 16 HX AI A2XWHG-814XRU"
+        deals, exclusions = self._deals(
+            [
+                _product("regard", "r1", name=base + SPECS, sku="9S7-15M361-814", price=261_090),
+                _product("kns", "k1", name=base + SPECS, sku="9S7-15M361-814", price=258_800),
+                _product("kns", "k2", name=base + "-wpro" + SPECS, sku="A2XWHG-814XRU-WPRO", price=274_580),
+            ]
+        )
+        self.assertEqual(len(deals), 1)
+        self.assertEqual(deals[0].price, 258_800)
+        self.assertTrue(any(e["reason"] == DUPLICATE_MODEL for e in exclusions))
+
+    def test_cheaper_single_store_twin_replaces_cluster(self) -> None:
+        name = "ASUS ROG Strix G18 G815LR-TT344 90NR0LT1-M00H30" + SPECS
+        deals, _ = self._deals(
+            [
+                _product("kns", "k1", name=name, sku="90NR0LT1-M00H30", price=322_178),
+                _product("citilink", "c1", name=name, sku="90NR0LT1-M00H30", price=324_055),
+                _product("regard", "r1", name="ASUS G815LR (TT344)" + SPECS, sku="90NR0LT1-M00H30-R", price=320_400),
+            ]
+        )
+        self.assertEqual([(d.store, d.price) for d in deals], [("regard", 320_400)])
+
+    def test_different_config_with_same_code_is_kept(self) -> None:
+        base = "ASUS G614PR 90NR0NJ7-M001J0"
+        deals, _ = self._deals(
+            [
+                _product("regard", "r1", name=base + ' RTX 5070 Ti, 32GB DDR5, 16" 2560x1600', sku="90NR0NJ7-M001J0", price=262_990),
+                _product("citilink", "c1", name=base + ' RTX 5070 Ti, 32GB DDR5, 16" 2560x1600', sku="90NR0NJ7-M001J0", price=265_000),
+                _product("kns", "k1", name=base + '_64 RTX 5070 Ti, 64GB DDR5, 16" 2560x1600', sku="90NR0NJ7-M001J0_64", price=290_000),
+            ]
+        )
+        self.assertEqual(sorted(d.ram_gb for d in deals), [32, 64])
+
+    def test_same_store_same_sku_counted_once(self) -> None:
+        deals, _ = self._deals(
+            [
+                _product("regard", "a", name="Twin X" + SPECS, sku="TWIN-1", price=250_000),
+                _product("regard", "b", name="Twin X" + SPECS, sku="TWIN-1", price=251_000),
+            ]
+        )
+        self.assertEqual(len(deals), 1)
+        self.assertEqual(deals[0].price, 250_000)
+        self.assertIsNone(deals[0].saving_vs_next)
+
+
+class DailyDigestCapTests(unittest.TestCase):
+    def test_workflow_uses_config_cap(self) -> None:
+        import scripts.generate_daily_digest_workflows as gen
+
+        code = gen.digest_js()
+        self.assertIn(f"const MAX_PRICE = {config.MAX_TRACKED_PRICE_RUB};", code)
+        self.assertIn("ТОП ДО 330 000 ₽:", code)
+        self.assertNotIn("300 000", code)
+        repo = json.loads((gen.DIGEST).read_text(encoding="utf-8"))
+        node = next(n for n in repo["nodes"] if n["name"] == "Build and send digest")
+        self.assertEqual(node["parameters"]["jsCode"], code)
 
 
 class ThailandCapTests(unittest.TestCase):

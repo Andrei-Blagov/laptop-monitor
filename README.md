@@ -16,7 +16,7 @@
 | **Region** | `MONITOR_REGION=moscow` — cross-store только по одной географии |
 | **Price semantics** | `Product.price` = публичная цена без membership/кредита/trade-in |
 | **Price cap** | User-facing TOP / alerts / cross-store / Thailand: **≤ 330 000 ₽** (`MAX_TRACKED_PRICE_RUB`) |
-| **Hard eligibility** | TOP, рекомендация, BUY и меню моделей: RTX 5070 Ti / 5080, установлено **≥ 32 GB RAM**, экран **> 1920 по горизонтали, ≥ 1440 по вертикали, ≥ 2560×1440 пикселей**. Неизвестные RAM / разрешение не проходят. Сбор и история не фильтруются |
+| **Hard eligibility** | TOP, рекомендация, BUY и меню моделей: RTX 5070 Ti / 5080, установлено **≥ 32 GB RAM**, экран **> 1920 по горизонтали, ≥ 1440 по вертикали, ≥ 2560×1440 пикселей**. Неизвестные RAM / разрешение не проходят. Сбор и история не фильтруются. Модели одного магазина тоже в рейтинге, без cross-store saving; дубли одной модели схлопываются в более дешёвое предложение |
 | **Priority watchlist** | `PRIORITY_MODELS`: модель отслеживается отдельно от рейтинга (цена, история, наличие, причина исключения). Если поиск Regard её не вернул, запрашивается одна карточка товара |
 | **Independent snapshots** | Успешный store сохраняется отдельно; failed ≠ «все unavailable» |
 | **Fresh TOP** | Только stores с последней попыткой `ok` и age ≤ `STORE_FRESHNESS_MAX_MINUTES` (180) |

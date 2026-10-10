@@ -641,7 +641,8 @@ def rank_clusters(
             continue
         ordered = sorted(available, key=lambda o: (int(o.price), o.store))
         best = ordered[0]
-        nxt = ordered[1] if len(ordered) > 1 else None
+        # Saving is a cross-store figure: the next offer must be another store.
+        nxt = next((o for o in ordered[1:] if o.store != best.store), None)
         saving = int(nxt.price) - int(best.price) if nxt is not None else None
 
         specs = _extract_specs(match, best, specs_by_key)

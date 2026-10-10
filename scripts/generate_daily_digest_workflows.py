@@ -2,10 +2,16 @@
 """Generate n8n workflow JSON for Daily Digest v1."""
 from __future__ import annotations
 
+import argparse
 import json
+import sys
 from pathlib import Path
 
 ROOT = Path(__file__).resolve().parents[1]
+if str(ROOT) not in sys.path:
+    sys.path.insert(0, str(ROOT))
+
+import config  # noqa: E402
 PIPE = ROOT / "deploy" / "n8n" / "pipeline-event-receiver.json"
 DIGEST = ROOT / "deploy" / "n8n" / "daily-digest.json"
 
@@ -88,7 +94,7 @@ const staticData = $getWorkflowStaticData('global');
 const testMode = staticData._digestTestMode === true || input.test_mode === true;
 delete staticData._digestTestMode;
 const history = Array.isArray(input.history) ? input.history : [];
-const MAX_PRICE = 300000;
+const MAX_PRICE = __MAX_PRICE__;
 
 function parseIso(v) {
   if (!v) return null;
@@ -194,7 +200,7 @@ if (!window.length) {
     'Магазины:',
     ...(storeLines.length ? storeLines : ['• (нет данных)']),
     '',
-    'ТОП ДО 300 000 ₽:',
+    'ТОП ДО __MAX_PRICE_LABEL__ ₽:',
     ...(topLines.length ? topLines : ['• (нет предложений в окне)']),
     '',
     'Последний запуск:',
@@ -221,7 +227,7 @@ if (!window.length) {
       'Магазины:',
       ...(storeLines.length ? storeLines : ['• (нет данных)']),
       '',
-      'ТОП ДО 300 000 ₽:',
+      'ТОП ДО __MAX_PRICE_LABEL__ ₽:',
       ...(shortTops.length ? shortTops : ['• (нет предложений в окне)']),
       '',
       'Последний запуск:',
@@ -259,7 +265,28 @@ return [{ json: { digest_result: 'sent', date_key: dateKey, test_mode: testMode,
 """
 
 
-def main() -> None:
+def digest_js() -> str:
+    """Digest code with the price cap from config (same source as the app)."""
+    cap = int(config.MAX_TRACKED_PRICE_RUB)
+    return DIGEST_JS.replace("__MAX_PRICE__", str(cap)).replace(
+        "__MAX_PRICE_LABEL__", config.format_price_cap_label(cap)
+    )
+
+
+def main(argv: list[str] | None = None) -> None:
+    parser = argparse.ArgumentParser(description=__doc__)
+    parser.add_argument(
+        "--digest-only",
+        action="store_true",
+        help="write daily-digest.json only; leave pipeline-event-receiver.json as is",
+    )
+    args = parser.parse_args(argv)
+    if args.digest_only:
+        DIGEST.write_text(
+            json.dumps(build_digest(), ensure_ascii=False, indent=2) + "\n", encoding="utf-8"
+        )
+        print("wrote", DIGEST)
+        return
     pipe = json.loads(PIPE.read_text(encoding="utf-8"))
 
     # Insert Archive node after HMAC OK
@@ -317,8 +344,13 @@ def main() -> None:
     pipe["versionId"] = "lm-pipe-v3-daily-digest-archive"
     pipe["active"] = False
     PIPE.write_text(json.dumps(pipe, ensure_ascii=False, indent=2) + "\n", encoding="utf-8")
+    DIGEST.write_text(json.dumps(build_digest(), ensure_ascii=False, indent=2) + "\n", encoding="utf-8")
+    print("wrote", PIPE)
+    print("wrote", DIGEST)
 
-    digest = {
+
+def build_digest() -> dict:
+    return {
         "name": "Laptop Monitor — Daily Digest",
         "id": "LmDailyDigest01",
         "active": False,
@@ -439,7 +471,7 @@ def main() -> None:
             {
                 "parameters": {
                     "mode": "runOnceForAllItems",
-                    "jsCode": DIGEST_JS,
+                    "jsCode": digest_js(),
                 },
                 "id": "lm-dd-send",
                 "name": "Build and send digest",
@@ -469,9 +501,6 @@ def main() -> None:
             },
         },
     }
-    DIGEST.write_text(json.dumps(digest, ensure_ascii=False, indent=2) + "\n", encoding="utf-8")
-    print("wrote", PIPE)
-    print("wrote", DIGEST)
 
 
 if __name__ == "__main__":

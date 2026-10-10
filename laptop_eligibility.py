@@ -16,6 +16,7 @@ SPECS_MISSING = "SPECS_MISSING"
 PRICE_OVER_CAP = "PRICE_OVER_CAP"
 HARD_FILTER_REJECTED = "HARD_FILTER_REJECTED"
 LOW_RANK = "LOW_RANK"
+DUPLICATE_MODEL = "DUPLICATE_MODEL"
 
 TARGET_GPUS = frozenset({"RTX 5070 Ti", "RTX 5080"})
 
@@ -122,4 +123,5 @@ REASON_TEXT_RU = {
     PRICE_OVER_CAP: "цена выше лимита",
     HARD_FILTER_REJECTED: "не подходит по RAM или экрану",
     LOW_RANK: "подходит, но ниже ТОП",
+    DUPLICATE_MODEL: "та же модель уже есть в рейтинге",
 }

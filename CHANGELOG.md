@@ -9,6 +9,8 @@ Selection criteria for the current purchase, and a watched MSI model.
 - TOP, history picker, recommendation picker, BUY, and the n8n top payload read one filtered list
 - Title parsing ignores upgrade limits such as «до 64 ГБ». Resolutions written as `2560*1440` are recognized
 - Priority watchlist (`PRIORITY_MODELS`) with MSI Vector 17 HX AI A2XWIG-063XRU: price, last change, minimum, availability, and the exclusion reason, shown under the TOP. The Regard collector requests one product card if the GPU searches miss it
+- Models sold by one store are ranked with the same filters. They get no cross-store saving. When a single-store offer is the same laptop as another ranked offer (shared model code, same GPU, RAM, and screen), only the cheaper one stays
+- Daily Digest workflow JSON in the repo is generated with the cap from `config` (`generate_daily_digest_workflows.py --digest-only`). The running n8n workflow is not updated by this
 
 ### Unchanged
 

@@ -162,8 +162,6 @@ def build_priority_statuses(
         status.duplicate_clusters = max(0, len(clusters) - 1)
         single_store = not clusters
         if single_store:
-            # Ranking only covers models matched in two or more stores, so a
-            # watched model sold by one store is still tracked here.
             alone = [o for o in comparison.unmatched if (o.store, str(o.external_id)) in hit_keys]
             if not alone:
                 status.details = ["no_cluster"]
@@ -225,11 +223,13 @@ def build_priority_statuses(
             exclusions=exclusions,
         )
         if kept:
-            rank = None if single_store else rank_by_name.get(match.name)
+            rank = rank_by_name.get(match.name)
             status.rank = rank
             status.status = IN_TOP if rank is not None and rank <= limit else LOW_RANK
+            if rank is None:
+                status.details = ["duplicate_or_not_ranked"]
             if single_store:
-                status.details = ["single_store_not_ranked"]
+                status.details.append("single_store")
         elif exclusions:
             status.status = str(exclusions[0].get("reason") or NOT_DISCOVERED)
             status.details = list(exclusions[0].get("details") or [])
@@ -299,8 +299,8 @@ def status_text(status: PriorityStatus) -> str:
     if status.status == IN_TOP:
         return f"в ТОП, №{status.rank}"
     if status.status == LOW_RANK:
-        if "single_store_not_ranked" in status.details:
-            return "подходит, но продаётся в одном магазине, а рейтинг сравнивает модели минимум из двух"
+        if status.rank is None:
+            return "подходит, но в рейтинге её заменяет то же предложение под другим названием"
         where = f"№{status.rank} в рейтинге" if status.rank else "в рейтинге"
         return f"подходит, {where}, за пределами ТОП {int(config.TOP_DEALS_LIMIT)}"
     if status.status == PRICE_OVER_CAP:
