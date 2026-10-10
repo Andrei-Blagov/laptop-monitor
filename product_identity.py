@@ -128,7 +128,7 @@ def normalize_resolution(value: str | None) -> str | None:
     text = _clean(value)
     if not text:
         return None
-    match = re.search(r"(\d+)\s*[xх×]\s*(\d+)", text, flags=re.IGNORECASE)
+    match = re.search(r"(\d+)\s*[xх×*]\s*(\d+)", text, flags=re.IGNORECASE)
     if not match:
         return None
     return f"{int(match.group(1))}x{int(match.group(2))}"

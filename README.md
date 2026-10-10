@@ -15,7 +15,9 @@
 | **Multi-store** | `StoreAdapter` registry. Enabled: Regard, ANDPRO, KNS, Citilink (experimental browser) |
 | **Region** | `MONITOR_REGION=moscow` — cross-store только по одной географии |
 | **Price semantics** | `Product.price` = публичная цена без membership/кредита/trade-in |
-| **Price cap** | User-facing TOP / alerts / cross-store: **≤ 300 000 ₽** (с v0.2.0) |
+| **Price cap** | User-facing TOP / alerts / cross-store / Thailand: **≤ 330 000 ₽** (`MAX_TRACKED_PRICE_RUB`) |
+| **Hard eligibility** | TOP, рекомендация, BUY и меню моделей: RTX 5070 Ti / 5080, установлено **≥ 32 GB RAM**, экран **> 1920 по горизонтали, ≥ 1440 по вертикали, ≥ 2560×1440 пикселей**. Неизвестные RAM / разрешение не проходят. Сбор и история не фильтруются |
+| **Priority watchlist** | `PRIORITY_MODELS`: модель отслеживается отдельно от рейтинга (цена, история, наличие, причина исключения). Если поиск Regard её не вернул, запрашивается одна карточка товара |
 | **Independent snapshots** | Успешный store сохраняется отдельно; failed ≠ «все unavailable» |
 | **Fresh TOP** | Только stores с последней попыткой `ok` и age ≤ `STORE_FRESHNESS_MAX_MINUTES` (180) |
 | **Matching** | Exact SKU / MPN / strong ID + config conflict; без fuzzy auto-match |
@@ -23,7 +25,7 @@
 | **Specs coverage** | Collected metadata → `product_specs.json` для всех stores; safe title parse; Regard/ANDPRO re-enrich on cache miss; non-destructive merge / `SPEC_CONFLICT` |
 | **Ranking v2** | Explainable score **0..100** + **confidence**; GPU / price-value / CPU / RAM / SSD / screen / historical opportunity / cross-store saving (**weights unchanged**) |
 | **Buy Opportunity** | Explainable BUY / STRONG_BUY + cooldown; при новом signal — enqueue Thailand job |
-| **Thailand markets** | Async worker: **JIB**, **SpeedCom**, **InvadeIT**, **IT City**; targeted compare for a BUY or a model picked from the Russian TOP; **BaNANA** / **Lazada** off by default; rate-limit pause; TOP ≤300k ₽, price ASC |
+| **Thailand markets** | Async worker: **JIB**, **SpeedCom**, **InvadeIT**, **IT City**; targeted compare for a BUY or a model picked from the Russian TOP; **BaNANA** / **Lazada** off by default; rate-limit pause; TOP ≤330k ₽, price ASC |
 | **Price History** | Telegram: карточка истории (v1) + PNG-графики 30 / 90 / all-time (v2), read-only |
 | **Control bot** | Long polling; Run / TOP / История / **🌍 Рынки** / Status / Version; admin allowlist |
 | **Scheduler** | Primary: **systemd timer** → `run_pipeline.py`. Thailand: **systemd.path** → async worker |
@@ -39,7 +41,7 @@
   - `laptop-monitor-thailand.path` → worker container → Thailand scan / comparison Telegram
 - Scan только при новом BUY signal или вручную из Telegram **🌍 Рынки** (enqueue-only в control bot)
 - Сравнение предполагает локальную покупку в Таиланде (без авиа / таможни / пересылки)
-- User-facing Thailand recommendations: **verified + purchasable + ≤ 300 000 ₽**, sorted **price_rub ASC**
+- User-facing Thailand recommendations: **verified + purchasable + ≤ 330 000 ₽**, sorted **price_rub ASC**
 - Sources: JIB (direct); Advice / BaNANA direct (experimental/fail-safe); Lazada marketplace (labels `Lazada · seller`, never as direct)
 - Over-cap Thai offers may remain in snapshots; Telegram shows only the excluded count
 
@@ -87,7 +89,7 @@ MONITOR_REGION=moscow
 - `Product.price` — обычная публичная цена
 - `metadata.member_price` / `promo_price` / `credit_price` — при наличии
 - Cross-store и ranking используют только public price
-- Global tracking / TOP / alerts cap: `MAX_TRACKED_PRICE_RUB = 300000`
+- Global tracking / TOP / alerts cap: `MAX_TRACKED_PRICE_RUB = 330000` (inclusive)
 
 ### Availability
 

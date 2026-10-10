@@ -334,6 +334,9 @@ def fetch_target_laptops() -> list[Product]:
         if product is not None:
             products.append(product)
 
+    products.extend(
+        fetch_missing_priority_products({p.external_id for p in products})
+    )
     products.sort(key=lambda p: (p.price is None, p.price or 0, p.name))
     _save_debug(
         "regard_target_gpus.json",
@@ -344,6 +347,82 @@ def fetch_target_laptops() -> list[Product]:
         },
     )
     return products
+
+
+def structured_gpu_text(item: dict) -> str | None:
+    """GPU model from the product card characteristics (not the title)."""
+    for row in item.get("short_characteristics") or []:
+        if isinstance(row, dict) and str(row.get("name") or "") == "Графический чипсет":
+            return str(row.get("value") or "") or None
+    for block in item.get("characteristics") or []:
+        if not isinstance(block, dict) or str(block.get("title") or "") != "Графика":
+            continue
+        for row in block.get("data") or []:
+            if isinstance(row, dict) and str(row.get("name") or "") == "Модель":
+                return str(row.get("value") or "") or None
+    return None
+
+
+def priority_regard_ids() -> list[str]:
+    import config
+
+    ids: list[str] = []
+    for model in getattr(config, "PRIORITY_MODELS", ()) or ():
+        value = (model.get("store_ids") or {}).get("regard")
+        if value and str(value) not in ids:
+            ids.append(str(value))
+    return ids
+
+
+def fetch_missing_priority_products(
+    collected_ids: set[str],
+    *,
+    client: httpx.Client | None = None,
+) -> list[Product]:
+    """
+    One product card request per watched Regard id that the GPU searches missed.
+
+    A hidden card (show_flag=0) is still returned as unavailable so its price
+    history continues. A card without a target GPU is ignored.
+    """
+    missing = [pid for pid in priority_regard_ids() if pid not in collected_ids]
+    if not missing:
+        return []
+    owns_client = client is None
+    if owns_client:
+        client = _client()
+    out: list[Product] = []
+    try:
+        for pid in missing:
+            try:
+                response = client.get(API_GOODS_ITEM.format(product_id=pid))
+            except httpx.HTTPError as exc:
+                print(f"[priority goods/{pid}] error: {type(exc).__name__}")
+                continue
+            print(f"[priority goods/{pid}] status={response.status_code}")
+            if response.status_code != 200:
+                continue
+            try:
+                data = response.json()
+            except (json.JSONDecodeError, ValueError):
+                continue
+            item = data.get("data") if isinstance(data, dict) and isinstance(data.get("data"), dict) else data
+            if not isinstance(item, dict):
+                continue
+            if not matches_target_gpu(
+                item.get("full_title"),
+                item.get("title"),
+                item.get("brief"),
+                structured_gpu_text(item),
+            ):
+                continue
+            product = item_to_product(item)
+            if product is not None:
+                out.append(product)
+    finally:
+        if owns_client and client is not None:
+            client.close()
+    return out
 
 
 def fetch_product(url: str) -> Product | None:

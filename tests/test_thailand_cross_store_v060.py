@@ -113,7 +113,7 @@ class CrossStoreTests(unittest.TestCase):
         self.assertLessEqual(len(deduped[0]["alt_channels"]), 2)
 
     def test_over_cap_and_unknown_availability_excluded(self) -> None:
-        priced = _offer("jib", 300001)
+        priced = _offer("jib", 330001)
         unknown = _offer("jib", 200000, mpn="OTHER-1", available=False)
         unknown.availability_status = "unknown"
         unknown.availability_confirmed = False

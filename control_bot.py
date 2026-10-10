@@ -19,15 +19,10 @@ from typing import Any
 import httpx
 
 import config
-from comparison import match_products
 from deal_ranking import (
     canonical_gpu,
-    collect_match_product_ids,
     format_top_deals_message,
-    historical_mins_from_rows,
-    rank_clusters,
 )
-from identity_sync import identity_from_cache, load_specs_cache
 from pipeline_lock import DEFAULT_LOCK_PATH, read_lock_info
 from run_pipeline import (
     EXIT_LOCKED,
@@ -62,11 +57,8 @@ from storage import (
     DEFAULT_DB_PATH,
     count_alert_events,
     count_unsent_alert_events,
-    get_all_identifiers_readonly,
-    get_all_products_readonly,
     get_delivery_stats,
     get_latest_store_runs_readonly,
-    get_price_history_for_products_readonly,
     get_store_runs_for_pipeline,
     open_db_readonly,
     require_schema_ready,
@@ -701,35 +693,25 @@ def build_top_text(db_path: Path | str = DEFAULT_DB_PATH) -> str:
     fresh = get_fresh_store_slugs(latest)
     if not fresh:
         return "Нет свежих данных. Запустите проверку."
-    products = get_all_products_readonly(db_path)
-    identifiers = get_all_identifiers_readonly(db_path)
-    comparison = match_products(products, identifiers)
-    cache = load_specs_cache()
-    specs_by_key = {}
-    for p in products:
-        identity = identity_from_cache(cache, str(p["store"]), str(p["external_id"]))
-        if identity is not None:
-            specs_by_key[(str(p["store"]), str(p["external_id"]))] = identity
-    pids = collect_match_product_ids(comparison.matches)
-    hist_mins = historical_mins_from_rows(
-        get_price_history_for_products_readonly(db_path, pids)
-    )
-    deals = rank_clusters(
-        comparison.matches,
-        specs_by_key=specs_by_key,
-        limit=int(config.TOP_DEALS_LIMIT),
-        fresh_stores=fresh,
-        historical_mins=hist_mins,
-    )
+    from priority_watchlist import build_priority_statuses, format_priority_block
+    from russian_deals import load_russian_ranked_deals
+
+    deals = load_russian_ranked_deals(db_path, limit=int(config.TOP_DEALS_LIMIT))
     age = freshness_age_minutes(latest, fresh)
+    try:
+        footer = format_priority_block(build_priority_statuses(db_path))
+    except Exception as exc:  # noqa: BLE001
+        logger.warning("priority watchlist status failed: %s", type(exc).__name__)
+        footer = ""
     return format_top_deals_message(
         deals,
         limit=int(config.TOP_DEALS_LIMIT),
         max_age_minutes=age,
         empty_message=(
-            f"Нет свежих предложений до {config.format_price_cap_label()} ₽. "
+            f"Нет свежих подходящих предложений до {config.format_price_cap_label()} ₽. "
             "Запустите проверку."
         ),
+        footer=footer,
     )
 
 

@@ -123,14 +123,14 @@ class InvadeItParseTests(unittest.TestCase):
         self.assertTrue(offer.metadata.get("detail_enriched"))
 
     def test_cap_filtering(self) -> None:
-        inside = parse_invadeit_item(_item(price=300000))
-        outside = parse_invadeit_item(_item(price=300001))
+        inside = parse_invadeit_item(_item(price=330000))
+        outside = parse_invadeit_item(_item(price=330001))
         assert inside and outside
         ok_in, _, _ = offer_user_facing_eligible(inside, fx=_fx())
         ok_out, reason, _ = offer_user_facing_eligible(outside, fx=_fx())
         self.assertTrue(ok_in)
         self.assertFalse(ok_out)
-        self.assertEqual(reason, "price_above_300000_rub")
+        self.assertEqual(reason, "price_above_cap_rub")
 
 
 if __name__ == "__main__":

@@ -30,7 +30,16 @@ def load_russian_ranked_deals(
     *,
     limit: int | None = None,
     specs_path: Path | str | None = None,
+    hard_filters: bool = True,
+    exclusions: list[dict[str, Any]] | None = None,
 ) -> list[RankedDeal]:
+    """
+    Fresh ranked deals for every user-facing selection.
+
+    TOP, recommendation, BUY, and model menus all read this one list, so a
+    laptop that fails laptop_eligibility is absent from all of them.
+    limit=0 returns every eligible deal.
+    """
     latest = get_latest_store_runs_readonly(db_path)
     fresh = get_fresh_store_slugs(latest)
     if not fresh:
@@ -46,11 +55,14 @@ def load_russian_ranked_deals(
             specs_by_key[(str(p["store"]), str(p["external_id"]))] = identity
     pids = collect_match_product_ids(comparison.matches)
     histories = get_price_history_for_products_readonly(db_path, pids)
+    resolved = int(limit if limit is not None else config.TOP_DEALS_LIMIT)
     return rank_clusters(
         comparison.matches,
         specs_by_key=specs_by_key,
-        limit=int(limit if limit is not None else config.TOP_DEALS_LIMIT),
+        limit=resolved if resolved > 0 else None,
         fresh_stores=fresh,
         historical_mins=historical_mins_from_rows(histories),
         history_starts=history_starts_from_rows(histories),
+        hard_filters=hard_filters,
+        exclusions=exclusions,
     )

@@ -320,9 +320,13 @@ def search_collected_offers(
     offers: Sequence[ThailandOffer],
     *,
     fx: FxRate | None = None,
-    cap_rub: int = 300_000,
+    cap_rub: int | None = None,
     stores_skipped: Sequence[dict[str, Any]] | None = None,
 ) -> dict[str, Any]:
+    if cap_rub is None:
+        from thailand.eligibility import max_tracked_price_rub
+
+        cap_rub = max_tracked_price_rub()
     grouped: dict[str, list[dict[str, Any]]] = {EXACT: [], SAME_FAMILY: [], EQUIVALENT: []}
     seen: set[tuple[str, str]] = set()
     for offer in offers:

@@ -20,10 +20,12 @@ from storage import init_db, open_db, upsert_product
 
 class PriceCapHelperTests(unittest.TestCase):
     def test_boundaries(self) -> None:
-        self.assertEqual(config.MAX_TRACKED_PRICE_RUB, 300_000)
+        self.assertEqual(config.MAX_TRACKED_PRICE_RUB, 330_000)
         self.assertTrue(config.is_price_in_tracking_scope(299_999))
         self.assertTrue(config.is_price_in_tracking_scope(300_000))
-        self.assertFalse(config.is_price_in_tracking_scope(300_001))
+        self.assertTrue(config.is_price_in_tracking_scope(329_999))
+        self.assertTrue(config.is_price_in_tracking_scope(330_000))
+        self.assertFalse(config.is_price_in_tracking_scope(330_001))
         self.assertFalse(config.is_price_in_tracking_scope(None))
         self.assertFalse(config.is_price_in_tracking_scope(0))
         self.assertFalse(config.is_price_in_tracking_scope(-1))
@@ -285,14 +287,14 @@ class PriceCapRankingTests(unittest.TestCase):
     def test_top_excludes_above_cap(self) -> None:
         matches = [
             self._match("Cheap", [("kns", 250_000)]),
-            self._match("AtCap", [("regard", 300_000)]),
-            self._match("JustOver", [("andpro", 300_001)]),
+            self._match("AtCap", [("regard", 330_000)]),
+            self._match("JustOver", [("andpro", 330_001)]),
             self._match("Expensive", [("citilink", 400_000)]),
-            self._match("Mixed", [("kns", 289_000), ("regard", 315_000)]),
+            self._match("Mixed", [("kns", 289_000), ("regard", 345_000)]),
         ]
         ranked = rank_clusters(matches, limit=10)
         prices = [d.price for d in ranked]
-        self.assertTrue(all(p is not None and p <= 300_000 for p in prices))
+        self.assertTrue(all(p is not None and p <= 330_000 for p in prices))
         names = {d.cluster_name for d in ranked}
         self.assertIn("Cheap", names)
         self.assertIn("AtCap", names)
@@ -306,13 +308,14 @@ class PriceCapRankingTests(unittest.TestCase):
 
     def test_telegram_top_title_and_empty(self) -> None:
         text = format_top_deals_message([])
-        self.assertIn("300 000", text)
+        self.assertIn("330 000", text)
+        self.assertNotIn("300 000", text)
         self.assertIn("Нет свежих предложений до", text)
         ranked = rank_clusters(
             [self._match("Ok", [("kns", 220_000)])], limit=5
         )
         msg = format_top_deals_message(ranked)
-        self.assertIn("ТОП ПРЕДЛОЖЕНИЙ ДО 300 000 ₽", msg)
+        self.assertIn("ТОП ПРЕДЛОЖЕНИЙ ДО 330 000 ₽", msg)
 
 
 class PriceCapN8nPayloadTests(unittest.TestCase):

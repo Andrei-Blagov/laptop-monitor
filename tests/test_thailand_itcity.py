@@ -100,12 +100,12 @@ class ItCityParseTests(unittest.TestCase):
         self.assertEqual(offer.url, "https://www.itcity.in.th/product/PRD1")
 
     def test_cap_filtering(self) -> None:
-        inside = parse_itcity_hit(_hit(price=300000))[0]
-        outside = parse_itcity_hit(_hit(price=300001))[0]
+        inside = parse_itcity_hit(_hit(price=330000))[0]
+        outside = parse_itcity_hit(_hit(price=330001))[0]
         self.assertTrue(offer_user_facing_eligible(inside, fx=_fx())[0])
         ok, reason, _ = offer_user_facing_eligible(outside, fx=_fx())
         self.assertFalse(ok)
-        self.assertEqual(reason, "price_above_300000_rub")
+        self.assertEqual(reason, "price_above_cap_rub")
 
     def test_blocked_or_challenge_safe(self) -> None:
         self.assertEqual(html_block_code("<html>Just a moment...</html>"), "CHALLENGE")

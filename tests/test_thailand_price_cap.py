@@ -61,13 +61,17 @@ class PriceCapTests(unittest.TestCase):
     def test_300000_eligible(self) -> None:
         self.assertTrue(price_within_cap(300_000))
 
-    def test_300001_excluded(self) -> None:
-        self.assertFalse(price_within_cap(300_001))
+    def test_329999_and_330000_eligible(self) -> None:
+        self.assertTrue(price_within_cap(329_999))
+        self.assertTrue(price_within_cap(330_000))
+
+    def test_330001_excluded(self) -> None:
+        self.assertFalse(price_within_cap(330_001))
 
     def test_top_excludes_over_cap(self) -> None:
-        # 2.5 RUB/THB → 120000 THB = 300000 RUB (in); 120001 → out
-        ok = _offer(external_id="ok", price_thb=120_000)
-        bad = _offer(external_id="bad", price_thb=120_001, name="X RTX 5080", gpu="RTX 5080")
+        # 2.5 RUB/THB → 132000 THB = 330000 RUB (in); 132001 → out
+        ok = _offer(external_id="ok", price_thb=132_000)
+        bad = _offer(external_id="bad", price_thb=132_001, name="X RTX 5080", gpu="RTX 5080")
         top = build_thai_top([ok, bad], fx=_fx(2.5))
         ids = {r["external_id"] for r in top}
         self.assertIn("ok", ids)
@@ -90,16 +94,17 @@ class PriceCapTests(unittest.TestCase):
         text = format_thailand_alternatives_message(
             [row],
             price_cap={
-                "max_tracked_price_rub": 300000,
+                "max_tracked_price_rub": 330000,
                 "verified_count": 2,
                 "eligible_count": 1,
                 "over_cap_count": 1,
                 "fx_usable": True,
             },
         )
-        self.assertIn("ДО 300 000", text)
-        self.assertIn("Исключено дороже 300 000 ₽: 1", text)
-        self.assertIn("Показаны только предложения до 300 000", text)
+        self.assertIn("ДО 330 000", text)
+        self.assertIn("Исключено дороже 330 000 ₽: 1", text)
+        self.assertIn("Показаны только предложения до 330 000", text)
+        self.assertNotIn("300 000", text)
 
     def test_best_excludes_over_cap(self) -> None:
         bad = _offer(price_thb=200_000)  # 500k RUB at 2.5
@@ -129,7 +134,7 @@ class PriceCapTests(unittest.TestCase):
         summary = summarize_price_cap(offers, fx=_fx(2.5))
         self.assertEqual(summary["over_cap_count"], 1)
         self.assertGreaterEqual(summary["eligible_count"], 1)
-        self.assertAlmostEqual(effective_thb_cap(_fx(2.5)) or 0, 120_000.0)
+        self.assertAlmostEqual(effective_thb_cap(_fx(2.5)) or 0, 132_000.0)
 
     def test_sort_cheapest_rub_first(self) -> None:
         cheap_5070 = _offer(external_id="c", price_thb=70_000, gpu="RTX 5070 Ti")

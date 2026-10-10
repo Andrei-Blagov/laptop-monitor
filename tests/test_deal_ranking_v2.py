@@ -107,9 +107,9 @@ class DealRankingV2Tests(unittest.TestCase):
         self.assertLessEqual(below, config.SCORE_PRICE_MAX)
         self.assertGreaterEqual(far, 0)
 
-    def test_04_eligibility_300k_unchanged(self) -> None:
-        self.assertTrue(config.is_price_in_tracking_scope(300_000))
-        self.assertFalse(config.is_price_in_tracking_scope(300_001))
+    def test_04_eligibility_cap_boundary(self) -> None:
+        self.assertTrue(config.is_price_in_tracking_scope(330_000))
+        self.assertFalse(config.is_price_in_tracking_scope(330_001))
         match = _match(
             "Over",
             [_offer(price=350_000, available=True)],
@@ -346,8 +346,8 @@ class DealRankingV2Tests(unittest.TestCase):
         # Same as test_22 intent: hardware (5080) alone doesn't auto-win vs value.
         self.test_22_expensive_5080_vs_value_5070ti()
 
-    def test_25_over_300k_never_ranked(self) -> None:
-        match = _match("X", [_offer(price=301_000)])
+    def test_25_over_cap_never_ranked(self) -> None:
+        match = _match("X", [_offer(price=330_001)])
         self.assertEqual(rank_clusters([match]), [])
 
     def test_26_stale_store_excluded(self) -> None:
@@ -555,17 +555,17 @@ class DealRankingV2Tests(unittest.TestCase):
         self.assertIsNotNone(canonical_gpu(ranked[0].gpu))
         self.assertGreaterEqual(ranked[0].score, 50)
 
-    def test_32_top_deals_prices_le_300k(self) -> None:
+    def test_32_top_deals_prices_le_cap(self) -> None:
         matches = [
-            _match("A", [_offer(price=299_999, product_id=1)], sku="A"),
+            _match("A", [_offer(price=329_999, product_id=1)], sku="A"),
             _match(
                 "B",
-                [_offer(store="regard", external_id="b", price=300_001, product_id=2)],
+                [_offer(store="regard", external_id="b", price=330_001, product_id=2)],
                 sku="B",
             ),
         ]
         ranked = rank_clusters(matches)
-        self.assertTrue(all((d.price or 0) <= 300_000 for d in ranked))
+        self.assertTrue(all((d.price or 0) <= 330_000 for d in ranked))
         self.assertTrue(all(d.cluster_name != "B" for d in ranked))
 
 

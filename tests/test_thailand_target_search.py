@@ -362,7 +362,7 @@ class TargetMatchTests(unittest.TestCase):
 
     def test_over_cap_exact_stays_in_comparison_not_top(self) -> None:
         target = build_target_model(_deal())
-        offer = _offer("jib", "G614PR-TS113W", 330000)
+        offer = _offer("jib", "G614PR-TS113W", 330001)
         found = search_collected_offers(target, [offer], fx=_fx())
         self.assertEqual(found["match_level"], EXACT)
         self.assertTrue(found["exact_matches"][0]["over_cap"])

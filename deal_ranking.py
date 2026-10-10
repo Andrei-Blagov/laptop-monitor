@@ -608,6 +608,8 @@ def rank_clusters(
     allowed_stores: set[str] | None = None,
     historical_mins: Mapping[int, int] | None = None,
     history_starts: Mapping[int, str] | None = None,
+    hard_filters: bool = False,
+    exclusions: list[dict[str, Any]] | None = None,
 ) -> list[RankedDeal]:
     """
     Rank cheapest available offer per matched model cluster.
@@ -617,6 +619,10 @@ def rank_clusters(
 
     historical_mins: optional product_id → all-time min (preloaded, no DB I/O here).
     history_starts: optional product_id → first observation (does not affect score).
+
+    hard_filters: drop clusters that fail laptop_eligibility (GPU, installed
+    RAM, screen). Scores of the remaining clusters are unchanged.
+    exclusions: when given, receives one record per dropped cluster.
     """
     allowed = fresh_stores if fresh_stores is not None else allowed_stores
     ranked: list[RankedDeal] = []
@@ -630,6 +636,8 @@ def rank_clusters(
             and (allowed is None or o.store in allowed)
         ]
         if not available:
+            if exclusions is not None:
+                exclusions.append(_exclusion_record(match, allowed, specs_by_key))
             continue
         ordered = sorted(available, key=lambda o: (int(o.price), o.store))
         best = ordered[0]
@@ -637,6 +645,27 @@ def rank_clusters(
         saving = int(nxt.price) - int(best.price) if nxt is not None else None
 
         specs = _extract_specs(match, best, specs_by_key)
+        if hard_filters:
+            from laptop_eligibility import evaluate_hardware
+
+            verdict = evaluate_hardware(
+                gpu=specs["gpu"],
+                ram_gb=specs["ram_gb"],
+                screen_resolution=specs["screen_resolution"],
+            )
+            if not verdict.eligible:
+                if exclusions is not None:
+                    exclusions.append(
+                        _exclusion_dict(
+                            match,
+                            reason=verdict.reason,
+                            details=verdict.details,
+                            specs=specs,
+                            price=int(best.price),
+                            store=best.store,
+                        )
+                    )
+                continue
         hist_min = cluster_historical_min(match, historical_mins)
 
         result = score_offer(
@@ -689,6 +718,94 @@ def rank_clusters(
     return ranked
 
 
+def cluster_specs(
+    match: Any,
+    specs_by_key: Mapping[tuple[str, str], Any] | None = None,
+) -> dict[str, Any]:
+    """Cluster specs exactly as rank_clusters resolves them (cheapest offer first)."""
+    offers = list(getattr(match, "offers", []) or [])
+    if not offers:
+        return {
+            "gpu": None,
+            "ram_gb": None,
+            "ssd_gb": None,
+            "screen_inch": None,
+            "cpu": None,
+            "screen_resolution": None,
+            "spec_conflicts": [],
+        }
+    priced = [o for o in offers if o.price is not None]
+    best = min(priced, key=lambda o: (int(o.price), o.store)) if priced else offers[0]
+    return _extract_specs(match, best, specs_by_key)
+
+
+def _exclusion_dict(
+    match: Any,
+    *,
+    reason: str | None,
+    details: Sequence[str],
+    specs: Mapping[str, Any],
+    price: int | None,
+    store: str | None,
+) -> dict[str, Any]:
+    return {
+        "cluster_name": getattr(match, "name", None),
+        "reason": reason,
+        "details": list(details),
+        "price": price,
+        "store": store,
+        "gpu": specs.get("gpu"),
+        "ram_gb": specs.get("ram_gb"),
+        "screen_resolution": specs.get("screen_resolution"),
+        "screen_inch": specs.get("screen_inch"),
+        "offers": [
+            (o.store, o.external_id, o.price, bool(o.available))
+            for o in getattr(match, "offers", []) or []
+        ],
+    }
+
+
+def _exclusion_record(
+    match: Any,
+    allowed: set[str] | None,
+    specs_by_key: Mapping[tuple[str, str], Any] | None,
+) -> dict[str, Any]:
+    """NOT_AVAILABLE or PRICE_OVER_CAP for a cluster with no in-scope offer."""
+    from laptop_eligibility import NOT_AVAILABLE, PRICE_OVER_CAP, evaluate_hardware
+
+    in_stores = [
+        o
+        for o in getattr(match, "offers", []) or []
+        if allowed is None or o.store in allowed
+    ]
+    selling = [o for o in in_stores if o.available and o.price is not None and int(o.price) > 0]
+    specs = cluster_specs(match, specs_by_key)
+    hardware = evaluate_hardware(
+        gpu=specs.get("gpu"),
+        ram_gb=specs.get("ram_gb"),
+        screen_resolution=specs.get("screen_resolution"),
+    )
+    also = [f"also:{d}" for d in hardware.details]
+    if selling:
+        cheapest = min(selling, key=lambda o: (int(o.price), o.store))
+        return _exclusion_dict(
+            match,
+            reason=PRICE_OVER_CAP,
+            details=[f"price_{int(cheapest.price)}", *also],
+            specs=specs,
+            price=int(cheapest.price),
+            store=cheapest.store,
+        )
+    return _exclusion_dict(
+        match,
+        reason=NOT_AVAILABLE,
+        details=["no_available_offer_in_fresh_stores", *also],
+        specs=specs,
+        price=None,
+        store=None,
+    )
+
+
 def _store_label(store: str) -> str:
     if store == "andpro":
         return "ANDPRO"
@@ -703,12 +820,14 @@ def format_top_deals_message(
     limit: int = 10,
     max_age_minutes: int | None = None,
     empty_message: str | None = None,
+    footer: str = "",
 ) -> str:
     cap_label = config.format_price_cap_label()
     if empty_message is None:
         empty_message = f"Нет свежих предложений до {cap_label} ₽."
+    footer = (footer or "").strip()
     if not deals:
-        return empty_message
+        return f"{empty_message}\n\n{footer}" if footer else empty_message
     lines = [f"<b>ТОП ПРЕДЛОЖЕНИЙ ДО {cap_label} ₽</b>"]
     if max_age_minutes is not None:
         lines.append(f"Данные не старше: {max_age_minutes} мин.")
@@ -754,6 +873,8 @@ def format_top_deals_message(
         lines.pop()
     text = "\n".join(lines)
     soft = int(getattr(config, "TELEGRAM_TOP_SOFT_LIMIT", 3500))
+    if footer:
+        soft = max(1000, soft - len(footer) - 2)
     if len(text) > soft:
         # Drop URLs from the bottom entries first.
         trimmed = text
@@ -765,4 +886,6 @@ def format_top_deals_message(
             else:
                 trimmed = trimmed[:idx] + trimmed[end:]
         text = trimmed[:soft]
+    if footer:
+        text = f"{text}\n\n{footer}"
     return text

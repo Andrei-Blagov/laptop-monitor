@@ -20,7 +20,30 @@ TARGET_PRICES: dict[str, int] = {
 
 # Global tracking / alerts / TOP / cross-store recommendation cap (inclusive).
 # Collection may still persist products above this; user-facing scope is capped.
-MAX_TRACKED_PRICE_RUB: int = 300_000
+MAX_TRACKED_PRICE_RUB: int = 330_000
+
+# Hard eligibility for user-facing selection (TOP, recommendation, BUY, menus).
+# Collection and price history keep every product; only selection is filtered.
+MIN_INSTALLED_RAM_GB: int = 32
+# Screen: horizontal side above Full HD width, vertical side at least 1440,
+# and at least 2560×1440 pixels in total.
+MIN_SCREEN_WIDTH_EXCLUSIVE: int = 1920
+MIN_SCREEN_HEIGHT: int = 1440
+MIN_SCREEN_PIXELS: int = 2560 * 1440
+
+# Watched models shown separately from the ranking, with their own status.
+# store_ids lets the collector fetch one product card when the general
+# search misses it; identifiers are strong model codes for cross-store matching.
+PRIORITY_MODELS: tuple[dict, ...] = (
+    {
+        "key": "msi-vector-17-hx-ai-a2xwig-063xru",
+        "brand": "MSI",
+        "model": "Vector 17 HX AI A2XWIG-063XRU",
+        "identifiers": ("9S7-17S372-063", "A2XWIG-063XRU"),
+        "store_ids": {"regard": "492577"},
+        "url": "https://www.regard.ru/product/492577/noutbuk-msi-vector-17-hx-ai-a2xwig-063xru",
+    },
+)
 
 # Минимальная разница между магазинами для CROSS_STORE_SAVING (руб.).
 CROSS_STORE_DIFFERENCE_RUB: int = 10_000
@@ -197,7 +220,7 @@ def is_price_in_tracking_scope(
 
 
 def format_price_cap_label(max_price: int | None = None) -> str:
-    """Human-readable cap, e.g. '300 000'."""
+    """Human-readable cap, e.g. '330 000'."""
     cap = int(MAX_TRACKED_PRICE_RUB if max_price is None else max_price)
     return f"{cap:,}".replace(",", " ")
 

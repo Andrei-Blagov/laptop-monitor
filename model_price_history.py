@@ -10,11 +10,6 @@ from typing import Any, Mapping, Sequence
 
 import config
 from comparison import Offer, ProductMatch, match_products
-from deal_ranking import (
-    collect_match_product_ids,
-    historical_mins_from_rows,
-    rank_clusters,
-)
 from storage import (
     DEFAULT_DB_PATH,
     get_all_identifiers_readonly,
@@ -247,24 +242,18 @@ def build_history_picker_items(
     *,
     limit: int = HISTORY_PICKER_LIMIT,
 ) -> list[HistoryPickerItem]:
-    products, matches, fresh = _load_matches(db_path)
-    if not fresh:
+    from russian_deals import load_russian_ranked_deals
+
+    latest = get_latest_store_runs_readonly(db_path)
+    if not get_fresh_store_slugs(latest):
         return []
+    products = get_all_products_readonly(db_path)
     id_by_key = {
         (str(p["store"]), str(p["external_id"])): int(p["id"])
         for p in products
         if p.get("id") is not None
     }
-    pids = collect_match_product_ids(matches)
-    hist_mins = historical_mins_from_rows(
-        get_price_history_for_products_readonly(db_path, pids)
-    )
-    deals = rank_clusters(
-        matches,
-        limit=int(limit),
-        fresh_stores=fresh,
-        historical_mins=hist_mins,
-    )
+    deals = load_russian_ranked_deals(db_path, limit=int(limit))
     items: list[HistoryPickerItem] = []
     for deal in deals:
         if deal.price is None or not config.is_price_in_tracking_scope(deal.price):

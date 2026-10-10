@@ -37,24 +37,11 @@ from storage import (
     update_pipeline_run,
 )
 from admin_notify import maybe_notify_ops_failure
-from comparison import match_products
-from deal_ranking import (
-    collect_match_product_ids,
-    historical_mins_from_rows,
-    rank_clusters,
-)
 from integrations.n8n import (
     build_pipeline_completed_payload,
     post_pipeline_webhook,
 )
-from store_freshness import get_fresh_store_slugs
 from stores.registry import all_adapters
-from storage import (
-    get_all_identifiers,
-    get_all_products,
-    get_latest_store_runs_readonly,
-    get_price_history_for_products_readonly,
-)
 from telegram_sender import MessageSender
 from version import APP_NAME, get_version
 import config
@@ -139,7 +126,9 @@ def run_pipeline(
         result.exit_code = exit_code
         result.duration_seconds = round(time.perf_counter() - started, 3)
         if notify_n8n:
-            _maybe_notify_n8n(db_path, result, started_at=started_at)
+            _maybe_notify_n8n(
+                db_path, result, started_at=started_at, specs_path=specs_path
+            )
         return result
 
     lock_cm = pipeline_lock(lock_path) if use_lock else None
@@ -468,27 +457,16 @@ def _maybe_notify_n8n(
     result: PipelineResult,
     *,
     started_at: str | None,
+    specs_path: Path | str | None = None,
 ) -> None:
     """Best-effort n8n webhook; never changes pipeline status."""
     try:
         top_payload: list[dict[str, Any]] = []
         try:
-            latest = get_latest_store_runs_readonly(db_path)
-            fresh = get_fresh_store_slugs(latest)
-            if fresh:
-                products = get_all_products(db_path)
-                identifiers = get_all_identifiers(db_path)
-                comparison = match_products(products, identifiers)
-                pids = collect_match_product_ids(comparison.matches)
-                hist_mins = historical_mins_from_rows(
-                    get_price_history_for_products_readonly(db_path, pids)
-                )
-                deals = rank_clusters(
-                    comparison.matches,
-                    fresh_stores=fresh,
-                    limit=10,
-                    historical_mins=hist_mins,
-                )
+            from russian_deals import load_russian_ranked_deals
+
+            deals = load_russian_ranked_deals(db_path, limit=10, specs_path=specs_path)
+            if deals:
                 top_payload = [
                     {
                         "name": d.cluster_name,

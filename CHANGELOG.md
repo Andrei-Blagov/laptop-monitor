@@ -1,5 +1,19 @@
 # Changelog
 
+## Unreleased
+
+Selection criteria for the current purchase, and a watched MSI model.
+
+- Price cap 330 000 ₽ (inclusive) for TOP, recommendation, BUY candidates, alerts, cross-store saving, and Thailand TOP / comparison. Thai captions read the configured cap
+- Hard eligibility for TOP, recommendation, BUY candidates, and model menus: RTX 5070 Ti / 5080, at least 32 GB installed RAM, and a screen wider than 1920, at least 1440 tall, and at least 2560×1440 pixels. Unknown RAM or resolution does not pass. Collection and price history keep every product
+- TOP, history picker, recommendation picker, BUY, and the n8n top payload read one filtered list
+- Title parsing ignores upgrade limits such as «до 64 ГБ». Resolutions written as `2560*1440` are recognized
+- Priority watchlist (`PRIORITY_MODELS`) with MSI Vector 17 HX AI A2XWIG-063XRU: price, last change, minimum, availability, and the exclusion reason, shown under the TOP. The Regard collector requests one product card if the GPU searches miss it
+
+### Unchanged
+
+- Ranking weights / BUY rules and the 14-day maturity / GPU target prices / Thailand matching / SQLite schema / n8n workflows / systemd
+
 ## 0.8.1 — 2026-10-06
 
 Telegram slash commands for the actions that already exist as inline buttons.

@@ -538,7 +538,7 @@ def format_daily_digest_message(
         "Магазины:",
     ]
     lines.extend(store_lines or ["• (нет данных)"])
-    lines.extend(["", "ТОП ДО 300 000 ₽:"])
+    lines.extend(["", f"ТОП ДО {config.MAX_TRACKED_PRICE_RUB:,}".replace(",", " ") + " ₽:"])
     lines.extend(top_block or ["• (нет предложений в окне)"])
     lines.extend(["", "Последний запуск:", f"{latest_time} — {latest_status}"])
     return "\n".join(lines)

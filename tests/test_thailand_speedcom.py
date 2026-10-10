@@ -172,19 +172,19 @@ class SpeedComParseTests(unittest.TestCase):
 
     def test_cap_boundaries(self) -> None:
         self.assertTrue(price_within_cap(299_999))
-        self.assertTrue(price_within_cap(300_000))
-        self.assertFalse(price_within_cap(300_001))
+        self.assertTrue(price_within_cap(330_000))
+        self.assertFalse(price_within_cap(330_001))
         inside = parse_speedcom_product(
-            _product(title=_TITLE, body=_BODY_5070, variants=[_variant(11, "300000.00")])
+            _product(title=_TITLE, body=_BODY_5070, variants=[_variant(11, "330000.00")])
         )[0]
         outside = parse_speedcom_product(
-            _product(title=_TITLE, body=_BODY_5070, variants=[_variant(11, "300001.00")])
+            _product(title=_TITLE, body=_BODY_5070, variants=[_variant(11, "330001.00")])
         )[0]
         ok_in, _, _ = offer_user_facing_eligible(inside, fx=_fx())
         ok_out, reason, _ = offer_user_facing_eligible(outside, fx=_fx())
         self.assertTrue(ok_in)
         self.assertFalse(ok_out)
-        self.assertEqual(reason, "price_above_300000_rub")
+        self.assertEqual(reason, "price_above_cap_rub")
 
     def test_detail_url(self) -> None:
         offer = parse_speedcom_product(

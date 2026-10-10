@@ -95,9 +95,23 @@ def _extract_cpu_from_name(name: str) -> str | None:
     return None
 
 
+# "до 64 ГБ", "up to 64GB", "max 96GB", "расширяется до 64 ГБ" describe the
+# upgrade limit, not the installed memory.
+_RAM_LIMIT_CONTEXT = re.compile(
+    r"(?:\bдо|up\s*to|\bmax(?:imum)?\.?|макс(?:имум|\.)?|расшир\w*(?:\s+до)?)\s*[:\-]?\s*$",
+    re.IGNORECASE,
+)
+
+
+def _is_ram_upgrade_limit(name: str, start: int) -> bool:
+    return bool(_RAM_LIMIT_CONTEXT.search(name[max(0, start - 24) : start]))
+
+
 def _ram_candidate_ok(name: str, start: int, end: int, amount: int) -> bool:
     """Reject GPU VRAM amounts mistaken for system RAM."""
     if amount not in {8, 16, 24, 32, 48, 64}:
+        return False
+    if _is_ram_upgrade_limit(name, start):
         return False
     # Tight window only — a prior "16GB GDDR7" clause must not poison later RAM.
     window_before = name[max(0, start - 18) : start]
@@ -121,7 +135,7 @@ def _extract_ram_gb_from_name(name: str) -> int | None:
     )
     for m in re.finditer(explicit_pat, name, re.I):
         amount = int(m.group(1))
-        if amount in {8, 16, 24, 32, 48, 64}:
+        if amount in {8, 16, 24, 32, 48, 64} and not _is_ram_upgrade_limit(name, m.start(1)):
             return amount
     for m in re.finditer(
         r"(?:RAM|ОЗУ|память)\s*[:\-]?\s*(\d{1,2})\s*(?:GB|ГБ)",
@@ -204,7 +218,7 @@ def _extract_screen_inch_from_name(name: str) -> float | None:
 
 
 def _extract_resolution_from_name(name: str) -> str | None:
-    m = re.search(r"\b(\d{3,4})\s*[xх×]\s*(\d{3,4})\b", name, re.I)
+    m = re.search(r"\b(\d{3,4})\s*[xх×*]\s*(\d{3,4})\b", name, re.I)
     if not m:
         return None
     w, h = int(m.group(1)), int(m.group(2))

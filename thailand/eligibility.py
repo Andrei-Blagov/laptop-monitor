@@ -16,7 +16,7 @@ from thailand.seller_trust import (
 )
 from thailand.verification import is_purchasable_confirmed, is_verified_for_ranking
 
-EXCLUDED_PRICE_ABOVE_CAP = "price_above_300000_rub"
+EXCLUDED_PRICE_ABOVE_CAP = "price_above_cap_rub"
 EXCLUDED_FX_UNUSABLE = "fx_unusable_for_price_cap"
 EXCLUDED_NOT_VERIFIED = "not_verified"
 EXCLUDED_NOT_PURCHASABLE = "not_purchasable"

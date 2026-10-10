@@ -135,11 +135,12 @@ class SortingCorrectiveTests(unittest.TestCase):
             top[0]["international_score"], top[1]["international_score"]
         )
 
-    def test_over_300k_excluded(self) -> None:
-        ok = _direct(external_id="ok", price_thb=120_000)
+    def test_over_cap_excluded(self) -> None:
+        # 2.5 RUB/THB: 132 000 THB = 330 000 RUB (in), 132 001 THB is over.
+        ok = _direct(external_id="ok", price_thb=132_000)
         bad = _direct(
             external_id="bad",
-            price_thb=120_001,
+            price_thb=132_001,
             sku="OVER",
             manufacturer_part_number="OVER",
         )
@@ -268,13 +269,13 @@ class BananaViaLazadaTests(unittest.TestCase):
         self.assertEqual(top[0]["retailer_brand"], "BaNANA")
         self.assertEqual(top[0]["channel"], "lazada")
 
-    def test_excluded_if_over_300k(self) -> None:
+    def test_excluded_if_over_cap(self) -> None:
         o = parse_lazada_listing(
             _lazada_raw(
                 seller_name="BaNANA IT",
                 official_store=False,
                 mall=True,
-                price=120_001,
+                price=132_001,
             )
         )
         assert o is not None

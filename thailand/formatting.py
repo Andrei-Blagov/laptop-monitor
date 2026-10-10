@@ -19,10 +19,15 @@ FOOTER_FX = (
     "Курс валют меняется; RUB equivalent рассчитан "
     "по указанному курсу на момент проверки."
 )
-FOOTER_CAP = (
-    "Показаны только предложения до 300 000 ₽ "
-    "по курсу на момент проверки."
-)
+def _cap_label() -> str:
+    return _rub(max_tracked_price_rub())
+
+
+def footer_cap() -> str:
+    return (
+        f"Показаны только предложения до {_cap_label()} ₽ "
+        "по курсу на момент проверки."
+    )
 
 TELEGRAM_SOFT = 3500
 
@@ -183,7 +188,7 @@ def format_thailand_comparison_message(
     else:
         lines.append("⚠️ Актуальный курс THB/RUB получить не удалось.")
         lines.append(
-            "Не удалось применить лимит 300 000 ₽: "
+            f"Не удалось применить лимит {_cap_label()} ₽: "
             "актуальный курс THB/RUB недоступен."
         )
 
@@ -240,7 +245,7 @@ def format_thailand_comparison_message(
     lines.append("")
     lines.append(FOOTER_LOCAL)
     lines.append(FOOTER_FX)
-    lines.append(FOOTER_CAP)
+    lines.append(footer_cap())
     return "\n".join(lines)[:TELEGRAM_SOFT]
 
 
@@ -303,7 +308,7 @@ def format_target_model_message(
         if primary.get("out_of_stock"):
             lines.append("Найдена, сейчас нет в наличии.")
         elif primary.get("over_cap"):
-            lines.append("Точная модель найдена, но цена выше вашего лимита 300 000 ₽.")
+            lines.append(f"Точная модель найдена, но цена выше вашего лимита {_cap_label()} ₽.")
         else:
             lines.append("в наличии")
         ru = target.get("price")
@@ -414,20 +419,21 @@ def format_thailand_alternatives_message(
         fx_usable is None and cap.get("fx_usable") is False
     ):
         return (
-            "🇹🇭 <b>ЛУЧШИЕ ЦЕНЫ В ТАИЛАНДЕ ДО 300 000 ₽</b>\n\n"
-            "Не удалось применить лимит 300 000 ₽:\n"
+            f"🇹🇭 <b>ЛУЧШИЕ ЦЕНЫ В ТАИЛАНДЕ ДО {_cap_label()} ₽</b>\n\n"
+            f"Не удалось применить лимит {_cap_label()} ₽:\n"
             "актуальный курс THB/RUB недоступен.\n\n"
             f"{FOOTER_LOCAL}"
         )[:TELEGRAM_SOFT]
     if not top and not unverified_count:
         return ""
-    lines = ["🇹🇭 <b>ЛУЧШИЕ ЦЕНЫ В ТАИЛАНДЕ ДО 300 000 ₽</b>", ""]
+    cap_rub = int(cap.get("max_tracked_price_rub") or max_tracked_price_rub()) if cap else max_tracked_price_rub()
+    lines = [f"🇹🇭 <b>ЛУЧШИЕ ЦЕНЫ В ТАИЛАНДЕ ДО {_rub(cap_rub)} ₽</b>", ""]
     if cap:
         lines.append("Лимит:")
-        lines.append(f"≤{_rub(int(cap.get('max_tracked_price_rub') or max_tracked_price_rub()))} ₽")
+        lines.append(f"≤{_rub(cap_rub)} ₽")
         lines.append("")
         lines.append(
-            f"Исключено дороже 300 000 ₽: {int(cap.get('over_cap_count') or 0)}"
+            f"Исключено дороже {_rub(cap_rub)} ₽: {int(cap.get('over_cap_count') or 0)}"
         )
         lines.append("")
     for i, row in enumerate(top[:limit], start=1):
@@ -469,6 +475,6 @@ def format_thailand_alternatives_message(
         lines.append("")
     lines.append(FOOTER_LOCAL)
     lines.append(FOOTER_FX)
-    lines.append(FOOTER_CAP)
+    lines.append(footer_cap())
     text = "\n".join(lines).rstrip()
     return text[:TELEGRAM_SOFT]

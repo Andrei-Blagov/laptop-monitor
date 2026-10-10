@@ -182,21 +182,29 @@ class ModelPriceHistoryTests(unittest.TestCase):
             conn.commit()
         return ids
 
-    def test_1_picker_only_le_300k(self) -> None:
+    def test_1_picker_only_eligible_within_cap(self) -> None:
         now = _now()
+        specs = ' RTX 5080, 32GB DDR5, 16" 2560x1600'
         save_products(
             [
-                _product("kns", "cheap", price=220_000, sku="CHEAP"),
-                _product("regard", "cheap-r", price=225_000, sku="CHEAP"),
+                _product("kns", "cheap", price=220_000, sku="CHEAP", name="Good A" + specs),
+                _product("regard", "cheap-r", price=225_000, sku="CHEAP", name="Good A" + specs),
                 _product(
-                    "kns", "dear", price=350_000, sku="DEAR", name="Overpriced X"
+                    "kns", "dear", price=350_000, sku="DEAR", name="Overpriced X" + specs
                 ),
                 _product(
                     "regard",
                     "dear-r",
                     price=360_000,
                     sku="DEAR",
-                    name="Overpriced X",
+                    name="Overpriced X" + specs,
+                ),
+                _product(
+                    "kns",
+                    "fhd",
+                    price=200_000,
+                    sku="FHD",
+                    name='Full HD Y RTX 5080, 32GB DDR5, 16" 1920x1200',
                 ),
             ],
             self.db,
@@ -207,8 +215,9 @@ class ModelPriceHistoryTests(unittest.TestCase):
         items = build_history_picker_items(self.db, limit=10)
         prices = [i.price for i in items]
         self.assertTrue(prices)
-        self.assertTrue(all(p <= 300_000 for p in prices))
+        self.assertTrue(all(p <= 330_000 for p in prices))
         self.assertTrue(all("Overpriced" not in i.name for i in items))
+        self.assertTrue(all("Full HD" not in i.name for i in items))
 
     def test_2_callback_data_le_64_bytes(self) -> None:
         data = make_model_callback(12_345_678)
