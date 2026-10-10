@@ -2,6 +2,8 @@
 
 ## Unreleased
 
+## 0.9.0 — 2026-10-10
+
 Selection criteria for the current purchase, and a watched MSI model.
 
 - Price cap 330 000 ₽ (inclusive) for TOP, recommendation, BUY candidates, alerts, cross-store saving, and Thailand TOP / comparison. Thai captions read the configured cap
@@ -9,12 +11,13 @@ Selection criteria for the current purchase, and a watched MSI model.
 - TOP, history picker, recommendation picker, BUY, and the n8n top payload read one filtered list
 - Title parsing ignores upgrade limits such as «до 64 ГБ». Resolutions written as `2560*1440` are recognized
 - Priority watchlist (`PRIORITY_MODELS`) with MSI Vector 17 HX AI A2XWIG-063XRU: price, last change, minimum, availability, and the exclusion reason, shown under the TOP. The Regard collector requests one product card if the GPU searches miss it
-- Models sold by one store are ranked with the same filters. They get no cross-store saving. When a single-store offer is the same laptop as another ranked offer (shared model code, same GPU, RAM, and screen), only the cheaper one stays
-- Daily Digest workflow JSON in the repo is generated with the cap from `config` (`generate_daily_digest_workflows.py --digest-only`). The running n8n workflow is not updated by this
+- Models sold by one store are ranked with the same filters and get no cross-store saving
+- Separate listings join only when an exact normalized identifier matches and CPU, GPU, RAM, SSD, diagonal, and resolution are all present and equal. Every store, price, and history row stays on that model. A regional suffix or a `-wpro` variant stays separate. Missing specs are not treated as a match
+- Daily Digest uses the configured 330 000 ₽ cap. The live n8n workflow `LmDailyDigest01` is updated in place: only the send-node code changes
 
 ### Unchanged
 
-- Ranking weights / BUY rules and the 14-day maturity / GPU target prices / Thailand matching / SQLite schema / n8n workflows / systemd
+- Ranking weights / BUY rules and the 14-day maturity / GPU target prices / Thailand matching / SQLite schema / systemd timers
 
 ## 0.8.1 — 2026-10-06
 

@@ -2,13 +2,13 @@
 
 Мониторинг цен на игровые ноутбуки (RTX 5070 Ti / RTX 5080 Laptop) с multi-store adapter architecture, матчингом моделей, ranking v2, Telegram alerts / control, Price History charts и n8n OPS layer.
 
-**Version:** читается из файла `VERSION` (сейчас `0.8.1`) — единственный source of truth.  
+**Version:** читается из файла `VERSION` (сейчас `0.9.0`) — единственный source of truth.  
 **Production target:** Linux VPS через **clean release bundle** + Docker + systemd  
 **Windows:** только development / testing
 
 ---
 
-## Что умеет (v0.8.1)
+## Что умеет (v0.9.0)
 
 | Область | Описание |
 |---------|----------|
@@ -16,7 +16,7 @@
 | **Region** | `MONITOR_REGION=moscow` — cross-store только по одной географии |
 | **Price semantics** | `Product.price` = публичная цена без membership/кредита/trade-in |
 | **Price cap** | User-facing TOP / alerts / cross-store / Thailand: **≤ 330 000 ₽** (`MAX_TRACKED_PRICE_RUB`) |
-| **Hard eligibility** | TOP, рекомендация, BUY и меню моделей: RTX 5070 Ti / 5080, установлено **≥ 32 GB RAM**, экран **> 1920 по горизонтали, ≥ 1440 по вертикали, ≥ 2560×1440 пикселей**. Неизвестные RAM / разрешение не проходят. Сбор и история не фильтруются. Модели одного магазина тоже в рейтинге, без cross-store saving; дубли одной модели схлопываются в более дешёвое предложение |
+| **Hard eligibility** | TOP, рекомендация, BUY и меню моделей: RTX 5070 Ti / 5080, установлено **≥ 32 GB RAM**, экран **> 1920 по горизонтали, ≥ 1440 по вертикали, ≥ 2560×1440 пикселей**. Неизвестные RAM / разрешение не проходят. Сбор и история не фильтруются. Модели одного магазина тоже в рейтинге, без cross-store saving. Одинаковая модель соединяется только при точном идентификаторе и полном совпадении CPU, GPU, RAM, SSD, диагонали и разрешения; все магазины и цены сохраняются. Региональный суффикс и `-wpro` остаются отдельными |
 | **Priority watchlist** | `PRIORITY_MODELS`: модель отслеживается отдельно от рейтинга (цена, история, наличие, причина исключения). Если поиск Regard её не вернул, запрашивается одна карточка товара |
 | **Independent snapshots** | Успешный store сохраняется отдельно; failed ≠ «все unavailable» |
 | **Fresh TOP** | Только stores с последней попыткой `ok` и age ≤ `STORE_FRESHNESS_MAX_MINUTES` (180) |

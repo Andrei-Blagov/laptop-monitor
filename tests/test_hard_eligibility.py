@@ -720,6 +720,29 @@ class ProvenIdentityMergeTests(SingleStoreRankingTests):
         )
         self.assertEqual(sorted(d.ram_gb for d in deals), [32, 64])
 
+    def test_wpro_with_full_specs_stays_separate(self) -> None:
+        merges: list[dict] = []
+        deals, _ = self._deals(
+            [
+                self._named("kns", "k1", "A2XWHG-814XRU", 258_800, sku="9S7-15M361-814"),
+                self._named("regard", "r1", "A2XWHG-814XRU", 261_090, sku="9S7-15M361-814"),
+                self._named(
+                    "kns",
+                    "k2",
+                    "A2XWHG-814XRU-WPRO",
+                    274_580,
+                    sku="9S7-15M361-814-WPRO",
+                ),
+            ],
+            merges=merges,
+        )
+        self.assertEqual(sorted(d.price for d in deals), [258_800, 274_580])
+        cluster = next(d for d in deals if d.price == 258_800)
+        self.assertEqual(cluster.next_store, "regard")
+        self.assertEqual(cluster.next_price, 261_090)
+        self.assertEqual(cluster.saving_vs_next, 2_290)
+        self.assertEqual(merges, [])
+
     def test_regional_modification_stays_separate(self) -> None:
         ambiguous: list[dict] = []
         deals, _ = self._deals(
