@@ -364,7 +364,12 @@ def build_digest() -> dict:
             "templateNote": (
                 "Daily Digest v1 at 09:00 Europe/Moscow. Reads pipelineHistory via "
                 "Execute Workflow from Pipeline Events. Telegram via LAPTOP_MONITOR_TELEGRAM_* env. "
-                "v1 uses pipeline.completed summaries only (no detailed price changes / historical lows)."
+                "v1 uses pipeline.completed summaries only (no detailed price changes / historical lows). "
+                "Import onto existing workflow id LmDailyDigest01 (open that workflow, then Import from File). "
+                "Do not import as a new workflow: execution history and lastDigestSentDate belong to this id. "
+                "This file omits staticData and credentials on purpose so an in-place import keeps the dedupe "
+                "date and does not clear env-based Telegram. The schedule is the Schedule 09:00 MSK node "
+                "(0 9 * * *, timezone Europe/Moscow) and must stay on that workflow."
             )
         },
         "nodes": [

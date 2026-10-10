@@ -78,11 +78,16 @@ Workflow: **Laptop Monitor — Daily Digest** (`LmDailyDigest01`)
   after HMAC (no SQLite access)
 - Retention: 48h or max 100 summaries
 - Window: last 24h, `instance_id=vps-prod` only
-- TOP: from latest success/partial in window, max 5, fail-safe `<=300000`
+- TOP: from latest success/partial in window, max 5, fail-safe `<= 330000`
 - Alerts section: `alerts_created` count only (no detailed drops / historical lows)
 - Dedupe: one send per MSK calendar date (`lastDigestSentDate`); Telegram failure
   does **not** mark the date sent
 - Manual test path sends `🧪 ... TEST` and does not write production dedupe key
+- Future import: open workflow `LmDailyDigest01` and import the file there.
+  A second workflow would keep the old execution history and `lastDigestSentDate`
+  on the previous id, so the new copy could send again the same day.
+  The file has the schedule (`0 9 * * *`, `Europe/Moscow`), no `staticData`,
+  and no credential ids (Telegram stays in `LAPTOP_MONITOR_TELEGRAM_*`).
 
 Logic reference: `integrations.n8n.format_daily_digest_message` (and helpers).
 

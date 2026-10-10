@@ -3,7 +3,7 @@ from __future__ import annotations
 import json
 import tempfile
 import unittest
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from unittest.mock import patch
 
@@ -28,6 +28,7 @@ from stores.common import extract_specs_from_name
 from storage import create_pipeline_run, init_db, insert_store_run, open_db, save_products
 
 SPECS = ' RTX 5080, 32GB DDR5, 17" 2560x1600'
+FULL = ' Intel Core Ultra 9 275HX, RTX 5080, 32GB DDR5, 1TB SSD, 17" 2560x1600'
 
 
 def _now() -> datetime:
@@ -537,14 +538,19 @@ class SingleStoreRankingTests(unittest.TestCase):
     def tearDown(self) -> None:
         self._tmp.cleanup()
 
-    def _deals(self, products: list[Product]):
+    def _deals(self, products: list[Product], *, merges=None, ambiguous=None):
         from russian_deals import load_russian_ranked_deals
 
         save_products(products, self.db)
         _seed_fresh(self.db, ["regard", "kns", "citilink"])
         exclusions: list[dict] = []
         deals = load_russian_ranked_deals(
-            self.db, specs_path=self.specs, limit=0, exclusions=exclusions
+            self.db,
+            specs_path=self.specs,
+            limit=0,
+            exclusions=exclusions,
+            merges=merges,
+            ambiguous=ambiguous,
         )
         return deals, exclusions
 
@@ -573,9 +579,7 @@ class SingleStoreRankingTests(unittest.TestCase):
         self.assertEqual(reasons["RV027"], HARD_FILTER_REJECTED)
         self.assertEqual(reasons["TS412"], PRICE_OVER_CAP)
 
-    def test_single_store_twin_of_cluster_is_not_duplicated(self) -> None:
-        from laptop_eligibility import DUPLICATE_MODEL
-
+    def test_regional_suffix_is_not_folded_into_cluster(self) -> None:
         base = "MSI Raider 16 HX AI A2XWHG-814XRU"
         deals, exclusions = self._deals(
             [
@@ -584,11 +588,15 @@ class SingleStoreRankingTests(unittest.TestCase):
                 _product("kns", "k2", name=base + "-wpro" + SPECS, sku="A2XWHG-814XRU-WPRO", price=274_580),
             ]
         )
-        self.assertEqual(len(deals), 1)
-        self.assertEqual(deals[0].price, 258_800)
-        self.assertTrue(any(e["reason"] == DUPLICATE_MODEL for e in exclusions))
+        self.assertEqual(sorted(d.price for d in deals), [258_800, 274_580])
+        cluster = next(d for d in deals if d.price == 258_800)
+        self.assertEqual(cluster.store, "kns")
+        self.assertEqual(cluster.next_store, "regard")
+        self.assertEqual(cluster.next_price, 261_090)
+        self.assertEqual(cluster.saving_vs_next, 2_290)
+        self.assertFalse(any(e["reason"] == "DUPLICATE_MODEL" for e in exclusions))
 
-    def test_cheaper_single_store_twin_replaces_cluster(self) -> None:
+    def test_partial_sku_does_not_replace_cluster(self) -> None:
         name = "ASUS ROG Strix G18 G815LR-TT344 90NR0LT1-M00H30" + SPECS
         deals, _ = self._deals(
             [
@@ -597,7 +605,14 @@ class SingleStoreRankingTests(unittest.TestCase):
                 _product("regard", "r1", name="ASUS G815LR (TT344)" + SPECS, sku="90NR0LT1-M00H30-R", price=320_400),
             ]
         )
-        self.assertEqual([(d.store, d.price) for d in deals], [("regard", 320_400)])
+        by_price = {d.price: d for d in deals}
+        self.assertEqual(set(by_price), {320_400, 322_178})
+        cluster = by_price[322_178]
+        self.assertEqual(cluster.store, "kns")
+        self.assertEqual(cluster.next_store, "citilink")
+        self.assertEqual(cluster.next_price, 324_055)
+        self.assertEqual(cluster.saving_vs_next, 1_877)
+        self.assertIsNone(by_price[320_400].saving_vs_next)
 
     def test_different_config_with_same_code_is_kept(self) -> None:
         base = "ASUS G614PR 90NR0NJ7-M001J0"
@@ -622,6 +637,174 @@ class SingleStoreRankingTests(unittest.TestCase):
         self.assertIsNone(deals[0].saving_vs_next)
 
 
+class ProvenIdentityMergeTests(SingleStoreRankingTests):
+    def _named(self, store: str, ext: str, code: str, price: int, *, specs: str = FULL, sku: str | None = None) -> Product:
+        return _product(
+            store,
+            ext,
+            name=f"MSI Vector 17 HX AI {code}{specs}",
+            sku=sku or f"{store.upper()}-{ext}",
+            price=price,
+        )
+
+    def test_same_model_two_sellers_keeps_prices_and_history(self) -> None:
+        code = "A2XWIG-063XRU"
+        deals, _ = self._deals(
+            [
+                self._named("kns", "k1", code, 305_000),
+                self._named("regard", "r1", code, 309_900),
+                self._named("citilink", "c1", code, 320_000),
+            ]
+        )
+        self.assertEqual(len(deals), 1)
+        deal = deals[0]
+        self.assertEqual(deal.store, "kns")
+        self.assertEqual(deal.price, 305_000)
+        self.assertEqual(deal.next_store, "regard")
+        self.assertEqual(deal.next_price, 309_900)
+        self.assertEqual(deal.saving_vs_next, 4_900)
+        older = _now() - timedelta(days=4)
+        with open_db(self.db) as conn:
+            citi = conn.execute(
+                "SELECT id FROM products WHERE store = ? AND external_id = ?",
+                ("citilink", "c1"),
+            ).fetchone()
+            conn.execute(
+                """
+                INSERT INTO price_history (product_id, price, available, checked_at)
+                VALUES (?, ?, ?, ?)
+                """,
+                (int(citi["id"]), 270_000, 1, older.isoformat()),
+            )
+        merges: list[dict] = []
+        from russian_deals import load_russian_ranked_deals
+
+        reloaded = load_russian_ranked_deals(
+            self.db, specs_path=self.specs, limit=0, merges=merges
+        )
+        self.assertEqual(len(reloaded), 1)
+        self.assertEqual(reloaded[0].historical_min, 270_000)
+        started = datetime.fromisoformat(reloaded[0].history_started_at)
+        self.assertEqual(started, older)
+        self.assertEqual(len(merges), 1)
+        self.assertEqual(set(merges[0]["stores"]), {"citilink", "kns", "regard"})
+
+    def test_different_cpu_stays_separate(self) -> None:
+        other = ' Intel Core Ultra 7 255HX, RTX 5080, 32GB DDR5, 1TB SSD, 17" 2560x1600'
+        deals, _ = self._deals(
+            [
+                self._named("regard", "r1", "A2XWIG-063XRU", 309_900),
+                self._named("kns", "k1", "A2XWIG-063XRU", 299_000, specs=other),
+            ]
+        )
+        self.assertEqual(sorted(d.price for d in deals), [299_000, 309_900])
+        self.assertTrue(all(d.saving_vs_next is None for d in deals))
+
+    def test_different_ssd_stays_separate(self) -> None:
+        other = ' Intel Core Ultra 9 275HX, RTX 5080, 32GB DDR5, 2TB SSD, 17" 2560x1600'
+        deals, _ = self._deals(
+            [
+                self._named("regard", "r1", "A2XWHG-814XRU", 261_000),
+                self._named("kns", "k1", "A2XWHG-814XRU", 280_000, specs=other),
+            ]
+        )
+        self.assertEqual(sorted((d.price, d.ssd_gb) for d in deals), [(261_000, 1024), (280_000, 2048)])
+
+    def test_different_ram_stays_separate(self) -> None:
+        other = ' Intel Core Ultra 9 275HX, RTX 5080, 64GB DDR5, 1TB SSD, 17" 2560x1600'
+        deals, _ = self._deals(
+            [
+                self._named("regard", "r1", "G815LR-TT344", 250_000),
+                self._named("kns", "k1", "G815LR-TT344", 290_000, specs=other),
+            ]
+        )
+        self.assertEqual(sorted(d.ram_gb for d in deals), [32, 64])
+
+    def test_regional_modification_stays_separate(self) -> None:
+        ambiguous: list[dict] = []
+        deals, _ = self._deals(
+            [
+                self._named("regard", "r1", "A2XWIG-063XRU", 309_900),
+                self._named("kns", "k1", "A2XWIG-063US", 301_000),
+            ],
+            ambiguous=ambiguous,
+        )
+        self.assertEqual(len(deals), 2)
+        self.assertEqual(ambiguous, [])
+
+    def test_partial_sku_overlap_stays_separate(self) -> None:
+        ambiguous: list[dict] = []
+        deals, _ = self._deals(
+            [
+                self._named("regard", "r1", "90NR0LT1-M00H30", 262_990, sku="90NR0LT1-M00H30"),
+                self._named("kns", "k1", "90NR0LT1-M00H30-R", 270_000, sku="90NR0LT1-M00H30-R"),
+            ],
+            ambiguous=ambiguous,
+        )
+        self.assertEqual(len(deals), 2)
+        self.assertEqual(ambiguous, [])
+
+    def test_leading_underscore_sku_is_not_a_partial_match(self) -> None:
+        deals, _ = self._deals(
+            [
+                self._named("regard", "r1", "90NR0LT1-M00H30", 262_990, sku="90NR0LT1-M00H30"),
+                self._named("kns", "k1", "_90NR0LT1-M00H30", 270_000, sku="_90NR0LT1-M00H30"),
+            ]
+        )
+        self.assertEqual(len(deals), 2)
+
+    def test_incomplete_cluster_does_not_absorb_another_listing(self) -> None:
+        code = "A2XWHG-814XRU"
+        merges: list[dict] = []
+        deals, _ = self._deals(
+            [
+                self._named("regard", "r1", code, 261_090, sku="9S7-15M361-814"),
+                _product("kns", "k1", name=f"MSI Raider 16 HX AI {code}", sku="9S7-15M361-814", price=258_800),
+                self._named("citilink", "c1", code, 270_000, sku="CITI-ONLY-1"),
+            ],
+            merges=merges,
+        )
+        self.assertEqual(merges, [])
+        self.assertEqual(len(deals), 2)
+        cluster = next(d for d in deals if d.saving_vs_next is not None)
+        self.assertEqual(cluster.price, 258_800)
+        self.assertEqual(cluster.next_store, "regard")
+        self.assertEqual(cluster.next_price, 261_090)
+        lone = next(d for d in deals if d.store == "citilink")
+        self.assertEqual(lone.price, 270_000)
+        self.assertIsNone(lone.saving_vs_next)
+
+    def test_missing_specs_are_not_merged(self) -> None:
+        ambiguous: list[dict] = []
+        merges: list[dict] = []
+        deals, _ = self._deals(
+            [
+                self._named("regard", "r1", "A2XWIG-063XRU", 309_900, specs=SPECS),
+                self._named("kns", "k1", "A2XWIG-063XRU", 305_000, specs=SPECS),
+            ],
+            merges=merges,
+            ambiguous=ambiguous,
+        )
+        self.assertEqual(sorted(d.price for d in deals), [305_000, 309_900])
+        self.assertEqual(merges, [])
+        self.assertEqual(len(ambiguous), 1)
+        self.assertEqual(ambiguous[0]["status"], "AMBIGUOUS")
+        self.assertIn("A2XWIG-063XRU", ambiguous[0]["shared_identifiers"])
+        self.assertIn("cpu", ambiguous[0]["missing"]["left"])
+        self.assertIn("ssd_gb", ambiguous[0]["missing"]["left"])
+
+    def test_single_store_model_stays_one_offer(self) -> None:
+        merges: list[dict] = []
+        deals, _ = self._deals(
+            [self._named("citilink", "c1", "CHUWI-GAMEBOOK-1", 192_990)],
+            merges=merges,
+        )
+        self.assertEqual(len(deals), 1)
+        self.assertEqual(deals[0].store, "citilink")
+        self.assertIsNone(deals[0].saving_vs_next)
+        self.assertEqual(merges, [])
+
+
 class DailyDigestCapTests(unittest.TestCase):
     def test_workflow_uses_config_cap(self) -> None:
         import scripts.generate_daily_digest_workflows as gen
@@ -633,6 +816,25 @@ class DailyDigestCapTests(unittest.TestCase):
         repo = json.loads((gen.DIGEST).read_text(encoding="utf-8"))
         node = next(n for n in repo["nodes"] if n["name"] == "Build and send digest")
         self.assertEqual(node["parameters"]["jsCode"], code)
+        self.assertEqual(repo["id"], "LmDailyDigest01")
+        self.assertNotIn("staticData", repo)
+        self.assertEqual(repo["settings"]["timezone"], "Europe/Moscow")
+        schedule = next(n for n in repo["nodes"] if n["name"] == "Schedule 09:00 MSK")
+        self.assertEqual(
+            schedule["parameters"]["rule"]["interval"][0]["expression"],
+            "0 9 * * *",
+        )
+        self.assertTrue(
+            all("credentials" not in n for n in repo["nodes"]),
+            "digest reads Telegram from env, so import must not carry credential ids",
+        )
+        self.assertIn("staticData.lastDigestSentDate === dateKey", code)
+        self.assertIn("staticData.lastDigestSentDate = dateKey", code)
+        self.assertIn("LmDailyDigest01", repo["meta"]["templateNote"])
+        self.assertEqual(
+            repo["connections"]["Schedule 09:00 MSK"]["main"][0][0]["node"],
+            "Mode production",
+        )
 
 
 class ThailandCapTests(unittest.TestCase):
