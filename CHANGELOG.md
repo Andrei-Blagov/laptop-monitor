@@ -2,6 +2,8 @@
 
 ## Unreleased
 
+## 0.10.0 — 2026-10-12
+
 Personal TOP-3 beside the general ranking.
 
 - MSI Raider 16 HX AI A2XWHG-814XRU (240–250 тыс. ₽), ASUS ROG Strix G16 G615LR-S5348 (250–260 тыс. ₽), and Lenovo Legion Pro 7 16AFR10H (около 275 тыс. ₽) are compared with Thailand on one shared daily job. Lenovo variants of series `16AFR10H` with RTX 5070 Ti and 32 GB are listed as candidates with their own SKUs; the series match is not EXACT and does not produce a purchase verdict
