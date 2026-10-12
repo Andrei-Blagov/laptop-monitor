@@ -755,7 +755,7 @@ def handle_personal_top(
     histories = get_price_history_for_products_readonly(DEFAULT_DB_PATH, ids) if ids else {}
     from personal_top import specs_for_products
 
-    fresh = get_fresh_store_slugs(get_latest_store_runs_readonly())
+    fresh = get_fresh_store_slugs(get_latest_store_runs_readonly(DEFAULT_DB_PATH))
     text = format_personal_board(
         build_cards(
             products=products,
@@ -782,7 +782,7 @@ def handle_personal_refresh(
     chat_id: str | int,
 ) -> None:
     from personal_top import enqueue_personal_job, specs_for_products
-    from storage import get_all_products_readonly, get_latest_store_runs_readonly
+    from storage import DEFAULT_DB_PATH, get_all_products_readonly, get_latest_store_runs_readonly
     from store_freshness import get_fresh_store_slugs
 
     products = get_all_products_readonly()
@@ -790,7 +790,7 @@ def handle_personal_refresh(
         manual=True,
         chat_id=chat_id,
         products=products,
-        fresh_stores=get_fresh_store_slugs(get_latest_store_runs_readonly()),
+        fresh_stores=get_fresh_store_slugs(get_latest_store_runs_readonly(DEFAULT_DB_PATH)),
         specs_by_key=specs_for_products(products),
     )
     if result.get("ok"):

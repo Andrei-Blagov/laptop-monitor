@@ -988,14 +988,14 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument("command", choices=("enqueue",))
     parser.add_argument("--manual", action="store_true")
     args = parser.parse_args(argv)
-    from storage import get_all_products_readonly, get_latest_store_runs_readonly
+    from storage import DEFAULT_DB_PATH, get_all_products_readonly, get_latest_store_runs_readonly
     from store_freshness import get_fresh_store_slugs
 
     products = get_all_products_readonly()
     result = enqueue_personal_job(
         manual=args.manual,
         products=products,
-        fresh_stores=get_fresh_store_slugs(get_latest_store_runs_readonly()),
+        fresh_stores=get_fresh_store_slugs(get_latest_store_runs_readonly(DEFAULT_DB_PATH)),
         specs_by_key=specs_for_products(products),
     )
     print(result.get("thailand_scan_status") or result.get("error"))

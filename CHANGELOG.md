@@ -14,6 +14,7 @@ Personal TOP-3 beside the general ranking.
 - Manual refresh uses the same worker queue and will not call the stores again while a check is still fresh or already queued
 - MSI Vector 17 stays on the priority watchlist. The general TOP is unchanged
 - One Thailand pass sends MSI `A2XWHG-814XRU`, ASUS `G615LR-S5348`, and the Lenovo series code `16AFR10H` to collectors that accept a code. Stores without that search keep the catalog walk. The card names the stores and codes that were checked, and names a skipped or rate-limited store as not checked
+- The daily enqueue, `/mytop`, and the refresh button open the production database path
 
 ## 0.9.0 — 2026-10-10
 

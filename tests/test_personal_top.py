@@ -12,6 +12,7 @@ from personal_top import (
     confirmed_specs,
     enqueue_personal_job,
     format_personal_board,
+    main,
     match_products,
     persist_personal_scan,
     russian_side,
@@ -429,3 +430,43 @@ class QueueTests(unittest.TestCase):
                 RAIDER, products, history_mins={1: 239_000}, fresh_stores={"regard"}
             )
             self.assertEqual(side["history_min"], 239_000)
+
+
+class ProductionDbPathTests(unittest.TestCase):
+    def test_enqueue_command_opens_the_production_database(self) -> None:
+        from storage import DEFAULT_DB_PATH
+
+        with (
+            mock.patch("storage.get_all_products_readonly", return_value=[]),
+            mock.patch("storage.get_latest_store_runs_readonly", return_value={}) as latest,
+            mock.patch("store_freshness.get_fresh_store_slugs", return_value=set()),
+            mock.patch("personal_top.specs_for_products", return_value={}),
+            mock.patch(
+                "personal_top.enqueue_personal_job",
+                return_value={"ok": True, "thailand_scan_status": "queued"},
+            ),
+        ):
+            code = main(["enqueue", "--manual"])
+        self.assertEqual(code, 0)
+        latest.assert_called_once_with(DEFAULT_DB_PATH)
+
+    def test_telegram_personal_handlers_open_the_production_database(self) -> None:
+        from storage import DEFAULT_DB_PATH
+        from control_bot import handle_personal_refresh, handle_personal_top
+
+        with (
+            mock.patch("storage.get_all_products_readonly", return_value=[]),
+            mock.patch("storage.get_latest_store_runs_readonly", return_value={}) as latest,
+            mock.patch("storage.get_price_history_for_products_readonly", return_value={}),
+            mock.patch("store_freshness.get_fresh_store_slugs", return_value=set()),
+            mock.patch("personal_top.specs_for_products", return_value={}),
+            mock.patch("personal_top.load_state", return_value={"history": {}}),
+            mock.patch("personal_top.build_cards", return_value=[]),
+            mock.patch("personal_top.format_personal_board", return_value="board"),
+            mock.patch("personal_top.enqueue_personal_job", return_value={"ok": False, "error": "too_soon"}),
+            mock.patch("control_bot._reply_or_edit"),
+            mock.patch("control_bot.send_message"),
+        ):
+            handle_personal_top(mock.Mock(), "token", 1)
+            handle_personal_refresh(mock.Mock(), "token", 1)
+        self.assertEqual(latest.call_args_list, [mock.call(DEFAULT_DB_PATH), mock.call(DEFAULT_DB_PATH), mock.call(DEFAULT_DB_PATH)])
