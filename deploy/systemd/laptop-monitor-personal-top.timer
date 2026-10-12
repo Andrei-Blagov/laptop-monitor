@@ -1,8 +1,8 @@
 [Unit]
-Description=Daily personal TOP-3 Thailand check (host local time; production is Europe/Moscow)
+Description=Daily personal TOP-3 Thailand check at 08:00 Europe/Moscow
 
 [Timer]
-OnCalendar=*-*-* 08:00:00
+OnCalendar=*-*-* 08:00:00 Europe/Moscow
 Persistent=true
 Unit=laptop-monitor-personal-top.service
 

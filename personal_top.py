@@ -13,7 +13,15 @@ from typing import Any, Mapping, Sequence
 
 import config
 from product_identity import normalize_identifier
-from russian_deals import _code_token, _exact_codes_in_text
+from russian_deals import (
+    _code_token,
+    _exact_codes_in_text,
+    _norm_cpu,
+    _norm_gpu,
+    _norm_inch,
+    _norm_int,
+    _norm_resolution,
+)
 from stores.common import extract_specs_from_name
 from thailand.job_models import (
     TRIGGER_PERSONAL_DAILY,
@@ -25,6 +33,20 @@ from thailand.storage import atomic_write_json
 
 DEDUPE_KEY = "personal_top"
 STATE_VERSION = 1
+
+
+def specs_for_products(products: Sequence[Mapping[str, Any]], specs_path: Path | str | None = None) -> dict[tuple[str, str], Any]:
+    from identity_sync import identity_from_cache, load_specs_cache
+
+    cache = load_specs_cache(specs_path) if specs_path is not None else load_specs_cache()
+    found: dict[tuple[str, str], Any] = {}
+    for product in products:
+        store = str(product.get("store") or "")
+        external_id = str(product.get("external_id") or "")
+        identity = identity_from_cache(cache, store, external_id)
+        if identity is not None:
+            found[(store, external_id)] = identity
+    return found
 
 
 def personal_models() -> list[dict[str, Any]]:
@@ -67,17 +89,29 @@ def product_codes(product: Mapping[str, Any]) -> set[str]:
     return found
 
 
-def model_codes(model: Mapping[str, Any]) -> set[str]:
+def exact_skus(model: Mapping[str, Any]) -> set[str]:
+    """Configuration SKUs only. A series code such as 16AFR10H is not included."""
     found: set[str] = set()
-    for raw in model.get("identifiers") or ():
+    for raw in model.get("exact_skus") or ():
         token = _code_token(str(raw)) or normalize_identifier(str(raw))
         if token:
             found.add(token)
     return found
 
 
+def series_codes(model: Mapping[str, Any]) -> set[str]:
+    found: set[str] = set()
+    for raw in model.get("series_codes") or ():
+        token = normalize_identifier(str(raw))
+        if token:
+            found.add(token)
+    return found
+
+
 def match_products(model: Mapping[str, Any], products: Sequence[Mapping[str, Any]]) -> list[dict[str, Any]]:
-    wanted = model_codes(model)
+    wanted = exact_skus(model) - series_codes(model)
+    if not wanted:
+        return []
     hits: list[dict[str, Any]] = []
     for product in products:
         if wanted & product_codes(product):
@@ -85,16 +119,73 @@ def match_products(model: Mapping[str, Any], products: Sequence[Mapping[str, Any
     return hits
 
 
+def _identity_value(identity: Any, *names: str) -> Any:
+    if identity is None:
+        return None
+    for name in names:
+        if isinstance(identity, Mapping):
+            value = identity.get(name)
+        else:
+            value = getattr(identity, name, None)
+        if value not in (None, ""):
+            return value
+    return None
+
+
+def confirmed_specs(product: Mapping[str, Any], identity: Any = None) -> dict[str, Any] | None:
+    """CPU, GPU, RAM, SSD, and screen must all be stated. Missing fields are not guessed."""
+    inferred = extract_specs_from_name(
+        " ".join(str(product.get(key) or "") for key in ("name", "sku"))
+    )
+    raw = {
+        "cpu": _identity_value(identity, "cpu") or inferred.get("cpu"),
+        "gpu": _identity_value(identity, "gpu", "normalized_gpu") or inferred.get("gpu"),
+        "ram_gb": _identity_value(identity, "ram_gb") or inferred.get("ram_gb"),
+        "ssd_gb": _identity_value(identity, "ssd_gb") or inferred.get("ssd_gb"),
+        "screen_inch": _identity_value(identity, "screen_inch", "screen_size_inch") or inferred.get("screen_inch"),
+        "screen_resolution": _identity_value(identity, "screen_resolution") or inferred.get("screen_resolution"),
+    }
+    required = {
+        "cpu": _norm_cpu(raw["cpu"]),
+        "gpu": _norm_gpu(raw["gpu"]),
+        "ram_gb": _norm_int(raw["ram_gb"]),
+        "ssd_gb": _norm_int(raw["ssd_gb"]),
+        "screen_inch": _norm_inch(raw["screen_inch"]),
+        "screen_resolution": _norm_resolution(raw["screen_resolution"]),
+    }
+    if any(value is None for value in required.values()):
+        return None
+    return required
+
+
 def russian_side(
     model: Mapping[str, Any],
     products: Sequence[Mapping[str, Any]],
     *,
     history_mins: Mapping[int, int] | None = None,
+    fresh_stores: set[str] | None = None,
+    specs_by_key: Mapping[tuple[str, str], Any] | None = None,
 ) -> dict[str, Any]:
-    hits = match_products(model, products)
-    priced = [row for row in hits if row.get("price") is not None and int(row["price"]) > 0]
-    available = [row for row in priced if row.get("available")]
-    pool = available or priced
+    hits = []
+    for row in match_products(model, products):
+        if fresh_stores is not None and str(row.get("store") or "") not in fresh_stores:
+            continue
+        if not row.get("available"):
+            continue
+        if row.get("price") is None or not config.is_price_in_tracking_scope(row.get("price")):
+            continue
+        identity = None
+        if specs_by_key is not None:
+            identity = specs_by_key.get((str(row.get("store") or ""), str(row.get("external_id") or "")))
+        specs = confirmed_specs(row, identity)
+        if specs is None:
+            continue
+        item = dict(row)
+        item["confirmed_specs"] = specs
+        hits.append(item)
+    signatures = {tuple(row["confirmed_specs"].values()) for row in hits}
+    priced = hits if len(signatures) <= 1 else []
+    pool = priced
     best = min(pool, key=lambda row: (int(row["price"]), str(row.get("store") or ""))) if pool else None
     offers = sorted(
         (
@@ -113,6 +204,7 @@ def russian_side(
         hist = history_mins.get(int(best["id"]))
     return {
         "found": best is not None,
+        "specs_conflict": len(signatures) > 1,
         "store": None if best is None else str(best.get("store") or ""),
         "price": None if best is None else int(best["price"]),
         "url": None if best is None else best.get("url"),
@@ -120,13 +212,16 @@ def russian_side(
         "available": bool(best and best.get("available")),
         "history_min": hist,
         "offers": offers,
+        "confirmed_specs": None if best is None else best.get("confirmed_specs"),
     }
 
 
 def target_for(model: Mapping[str, Any], russian: Mapping[str, Any]) -> dict[str, Any]:
-    codes = sorted(model_codes(model))
-    primary = codes[0] if codes else str(model.get("model") or "")
-    specs = extract_specs_from_name(str(russian.get("name") or ""))
+    codes = sorted(exact_skus(model))
+    primary = codes[0] if codes else None
+    specs = dict(russian.get("confirmed_specs") or {})
+    if not specs:
+        specs = extract_specs_from_name(str(russian.get("name") or ""))
     return {
         "personal_key": str(model.get("key") or ""),
         "cluster_name": str(model.get("model") or ""),
@@ -186,6 +281,62 @@ def _in_stock(row: Mapping[str, Any]) -> bool:
     return not bool(row.get("out_of_stock")) and row.get("price_rub") is not None
 
 
+def fx_confirmed(fx: Mapping[str, Any] | None) -> bool:
+    if not isinstance(fx, Mapping) or fx.get("stale") or fx.get("error"):
+        return False
+    try:
+        return float(fx.get("rub_per_thb") or 0) > 0
+    except (TypeError, ValueError):
+        return False
+
+
+def _same_spec(left: Any, right: Any, kind: str) -> bool | None:
+    if kind == "cpu":
+        a, b = _norm_cpu(left), _norm_cpu(right)
+    elif kind == "gpu":
+        a, b = _norm_gpu(left), _norm_gpu(right)
+    elif kind == "inch":
+        a, b = _norm_inch(left), _norm_inch(right)
+    elif kind == "resolution":
+        a, b = _norm_resolution(left), _norm_resolution(right)
+    else:
+        a, b = _norm_int(left), _norm_int(right)
+    if a is None or b is None:
+        return None
+    return a == b
+
+
+def confirmation_gaps(row: Mapping[str, Any], russian: Mapping[str, Any], fx: Mapping[str, Any] | None) -> list[str]:
+    """Reasons a Thai row cannot support a cheaper/dearer verdict."""
+    gaps: list[str] = []
+    if row.get("price_thb") is None or row.get("price_rub") is None:
+        gaps.append("цена")
+    if row.get("out_of_stock") or not row.get("availability_confirmed"):
+        gaps.append("наличие")
+    if str(row.get("verification_status") or "") != "VERIFIED":
+        gaps.append("достоверность предложения")
+    if row.get("marketplace") and str(row.get("seller_trust_tier") or "") not in {"A", "B"}:
+        gaps.append("продавец")
+    if not fx_confirmed(fx):
+        gaps.append("курс")
+    specs = russian.get("confirmed_specs") or {}
+    checks = (
+        ("CPU", "cpu", specs.get("cpu"), row.get("cpu")),
+        ("GPU", "gpu", specs.get("gpu"), row.get("gpu")),
+        ("RAM", "int", specs.get("ram_gb"), row.get("ram_gb")),
+        ("SSD", "int", specs.get("ssd_gb"), row.get("ssd_gb")),
+        ("диагональ", "inch", specs.get("screen_inch"), row.get("screen_size_inch")),
+        ("разрешение", "resolution", specs.get("screen_resolution"), row.get("screen_resolution")),
+    )
+    for label, kind, left, right in checks:
+        same = _same_spec(left, right, kind)
+        if same is None:
+            gaps.append(f"{label} не подтверждён")
+        elif not same:
+            gaps.append(f"{label} отличается")
+    return gaps
+
+
 def assess_model(
     model: Mapping[str, Any],
     russian: Mapping[str, Any],
@@ -200,7 +351,15 @@ def assess_model(
     family = list((search or {}).get("same_family_matches") or []) if fresh else []
     equivalent = list((search or {}).get("equivalent_matches") or []) if fresh else []
     exact_stock = [row for row in exact if _in_stock(row)]
-    winner = exact_stock[0] if exact_stock else None
+    confirmed = []
+    gap_notes: list[str] = []
+    for row in exact_stock:
+        gaps = confirmation_gaps(row, russian, fx if fresh else None)
+        if gaps:
+            gap_notes.extend(gaps)
+            continue
+        confirmed.append(row)
+    winner = min(confirmed, key=lambda row: (int(row["price_rub"]), str(row.get("store") or ""))) if confirmed else None
     analog = None
     if winner is None and fresh:
         analog_pool = [row for row in family + equivalent if _in_stock(row)] or family or equivalent
@@ -212,13 +371,15 @@ def assess_model(
     percent = None
     if delta is not None and ru:
         percent = round(delta / int(ru) * 100, 1)
-    if winner is not None and delta is not None:
+    if winner is not None and delta is not None and fx_confirmed(fx):
         if delta > 0:
             verdict = "thailand"
         elif delta < 0:
             verdict = "russia"
         else:
             verdict = "equal"
+    elif fresh and exact_stock and winner is None:
+        verdict = "unconfirmed"
     elif fresh and exact and not exact_stock:
         verdict = "exact_out_of_stock"
     elif fresh and analog is not None:
@@ -239,6 +400,7 @@ def assess_model(
         "exact": exact,
         "winner": winner,
         "analog": analog,
+        "confirmation_gaps": sorted(set(gap_notes)),
         "confirmed_extra_rub": extras,
         "unknown_costs": unknown_cost_names(),
         "thai_total_rub": thai_rub,
@@ -263,6 +425,9 @@ def _verdict_line(card: Mapping[str, Any]) -> str:
         return "Вывод: точная модель в Таиланде найдена, сейчас нет в наличии."
     if verdict == "analog_only":
         return "Вывод: точной модели в Таиланде нет. Аналог ниже не заменяет её в сравнении цены."
+    if verdict == "unconfirmed":
+        gaps = ", ".join(card.get("confirmation_gaps") or []) or "не хватает данных"
+        return f"Сравнение не подтверждено: {gaps}."
     return "Вывод: свежей тайской цены нет, сравнение не делается."
 
 
@@ -285,9 +450,14 @@ def format_personal_card(card: Mapping[str, Any], *, history: Sequence[Mapping[s
     lines = [f"<b>{card.get('model')}</b>", f"Цель: {card.get('target_label')}"]
     russian = card.get("russian") or {}
     price = russian.get("price")
-    lines.append(
-        f"Россия: {_rub(price)} ₽ — {_store_label(russian.get('store'))} — {card.get('target_position')}"
-    )
+    if russian.get("specs_conflict"):
+        lines.append("Россия: несколько разных комплектаций с одним кодом, цена не выбрана.")
+    elif price is None:
+        lines.append("Россия: свежего доступного предложения с подтверждённой комплектацией нет.")
+    else:
+        lines.append(
+            f"Россия: {_rub(price)} ₽ — {_store_label(russian.get('store'))} — {card.get('target_position')}"
+        )
     if russian.get("url"):
         lines.append(str(russian["url"]))
     if russian.get("history_min") is not None:
@@ -321,6 +491,8 @@ def format_personal_card(card: Mapping[str, Any], *, history: Sequence[Mapping[s
                 lines.append(f"Итого Таиланд: {_rub(card.get('thai_total_rub'))} ₽")
         elif card.get("verdict") == "exact_out_of_stock":
             lines.append("Таиланд: точная модель найдена, нет в наличии.")
+        elif card.get("verdict") == "unconfirmed":
+            lines.append("Таиланд: точное предложение есть, сравнение не подтверждено.")
         else:
             lines.append("Таиланд: точной модели нет.")
         analog = card.get("analog")
@@ -428,6 +600,8 @@ def build_cards(
     products: Sequence[Mapping[str, Any]],
     state: Mapping[str, Any] | None = None,
     history_mins: Mapping[int, int] | None = None,
+    fresh_stores: set[str] | None = None,
+    specs_by_key: Mapping[tuple[str, str], Any] | None = None,
     now: datetime | None = None,
 ) -> list[dict[str, Any]]:
     now = now or datetime.now(timezone.utc)
@@ -436,7 +610,13 @@ def build_cards(
     models_state = stored.get("models") if isinstance(stored.get("models"), dict) else {}
     cards: list[dict[str, Any]] = []
     for model in personal_models():
-        russian = russian_side(model, products, history_mins=history_mins)
+        russian = russian_side(
+            model,
+            products,
+            history_mins=history_mins,
+            fresh_stores=fresh_stores,
+            specs_by_key=specs_by_key,
+        )
         saved = models_state.get(str(model.get("key"))) if isinstance(models_state, dict) else None
         search = None
         checked_at = None
@@ -487,6 +667,8 @@ def enqueue_personal_job(
     manual: bool,
     chat_id: str | int | None = None,
     products: Sequence[Mapping[str, Any]] | None = None,
+    fresh_stores: set[str] | None = None,
+    specs_by_key: Mapping[tuple[str, str], Any] | None = None,
     jobs_dir: Path | str | None = None,
     state: Mapping[str, Any] | None = None,
     now: datetime | None = None,
@@ -498,7 +680,7 @@ def enqueue_personal_job(
     rows = list(products or [])
     targets = []
     for model in personal_models():
-        russian = russian_side(model, rows)
+        russian = russian_side(model, rows, fresh_stores=fresh_stores, specs_by_key=specs_by_key)
         targets.append(target_for(model, russian))
     trigger = TRIGGER_PERSONAL_MANUAL if manual else TRIGGER_PERSONAL_DAILY
     job = build_job(
@@ -529,11 +711,15 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument("command", choices=("enqueue",))
     parser.add_argument("--manual", action="store_true")
     args = parser.parse_args(argv)
-    from storage import get_all_products_readonly
+    from storage import get_all_products_readonly, get_latest_store_runs_readonly
+    from store_freshness import get_fresh_store_slugs
 
+    products = get_all_products_readonly()
     result = enqueue_personal_job(
         manual=args.manual,
-        products=get_all_products_readonly(),
+        products=products,
+        fresh_stores=get_fresh_store_slugs(get_latest_store_runs_readonly()),
+        specs_by_key=specs_for_products(products),
     )
     print(result.get("thailand_scan_status") or result.get("error"))
     return 0 if result.get("ok") or result.get("error") == "too_soon" else 1

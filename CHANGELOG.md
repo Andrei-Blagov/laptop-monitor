@@ -4,7 +4,9 @@
 
 Personal TOP-3 beside the general ranking.
 
-- MSI Raider 16 HX AI A2XWHG-814XRU (240–250 тыс. ₽), ASUS ROG Strix G16 G615LR-S5348 (250–260 тыс. ₽), and Lenovo Legion Pro 7 16AFR10H (около 275 тыс. ₽) are compared with Thailand on one shared daily job
+- MSI Raider 16 HX AI A2XWHG-814XRU (240–250 тыс. ₽), ASUS ROG Strix G16 G615LR-S5348 (250–260 тыс. ₽), and Lenovo Legion Pro 7 16AFR10H (около 275 тыс. ₽) are compared with Thailand on one shared daily job. `16AFR10H` is only the Lenovo series, so a Russian price needs an exact SKU and confirmed CPU, GPU, RAM, SSD, and screen
+- A Thailand "cheaper" verdict needs a fresh verified in-stock quote, a usable exchange rate, and the same CPU, GPU, RAM, SSD, and screen. Otherwise the card says the comparison is not confirmed
+- The daily timer is 08:00 Europe/Moscow, not the VPS local zone
 - Telegram «Мой TOP-3» shows Russian prices, a fresh Thai exact quote or a separately labeled analog, the rate and its date, the ruble and percent gap, store, stock, link, and check time
 - A Thai price older than the freshness window is not shown as current. Confirmed extra costs are added; unknown costs are named and left out of the total
 - Manual refresh uses the same worker queue and will not call the stores again while a check is still fresh or already queued

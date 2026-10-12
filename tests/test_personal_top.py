@@ -9,6 +9,7 @@ from pathlib import Path
 import config
 from personal_top import (
     assess_model,
+    confirmed_specs,
     enqueue_personal_job,
     format_personal_board,
     match_products,
@@ -20,6 +21,7 @@ from thailand.job_queue import pending_count
 
 
 NOW = datetime(2026, 10, 12, 8, 0, tzinfo=timezone.utc)
+FULL = ' Intel Core Ultra 7 255HX, RTX 5070 Ti, 32GB DDR5, 1TB SSD, 16" 2560x1600'
 
 RAIDER = config.PERSONAL_TOP3[0]
 ASUS = config.PERSONAL_TOP3[1]
@@ -39,24 +41,54 @@ def _product(store: str, ext: str, name: str, sku: str, price: int, *, available
     }
 
 
-def _exact_search(price_thb: int = 80000, price_rub: int = 200000) -> dict:
+def _confirmed_row(**overrides) -> dict:
+    row = {
+        "match_level": "EXACT",
+        "store": "jib",
+        "name": "MSI Raider A2XWHG-814XRU" + FULL,
+        "price_thb": 80000,
+        "price_rub": 200000,
+        "out_of_stock": False,
+        "availability_confirmed": True,
+        "verification_status": "VERIFIED",
+        "marketplace": False,
+        "seller_trust_tier": None,
+        "cpu": "Intel Core Ultra 7 255HX",
+        "gpu": "RTX 5070 Ti",
+        "ram_gb": 32,
+        "ssd_gb": 1024,
+        "screen_size_inch": 16,
+        "screen_resolution": "2560x1600",
+        "url": "https://jib.example/raider",
+        "spec_differences": [],
+    }
+    row.update(overrides)
+    return row
+
+
+def _exact_search(*rows: dict, price_thb: int = 80000, price_rub: int = 200000) -> dict:
+    exact = list(rows) or [_confirmed_row(price_thb=price_thb, price_rub=price_rub)]
     return {
         "match_level": "EXACT",
-        "exact_matches": [
-            {
-                "match_level": "EXACT",
-                "store": "jib",
-                "name": "MSI Raider A2XWHG-814XRU",
-                "price_thb": price_thb,
-                "price_rub": price_rub,
-                "out_of_stock": False,
-                "url": "https://jib.example/raider",
-                "spec_differences": [],
-            }
-        ],
+        "exact_matches": exact,
         "same_family_matches": [],
         "equivalent_matches": [],
         "stores_skipped": [],
+    }
+
+
+def _russian(price: int = 248_000) -> dict:
+    name = "MSI Raider A2XWHG-814XRU" + FULL
+    return {
+        "found": True,
+        "price": price,
+        "store": "regard",
+        "url": "https://ru",
+        "history_min": 240_000,
+        "offers": [],
+        "available": True,
+        "name": name,
+        "confirmed_specs": confirmed_specs({"name": name, "sku": "A2XWHG-814XRU"}),
     }
 
 
@@ -78,6 +110,32 @@ class IdentityTests(unittest.TestCase):
         watched = [item["model"] for item in config.PRIORITY_MODELS]
         self.assertIn("Vector 17 HX AI A2XWIG-063XRU", watched)
 
+    def test_lenovo_series_code_is_not_an_exact_sku(self) -> None:
+        products = [
+            _product(
+                "regard",
+                "l1",
+                "Lenovo Legion Pro 7 16AFR10H" + FULL,
+                "83F50029RK",
+                275_000,
+            )
+        ]
+        self.assertEqual(match_products(LENOVO, products), [])
+        side = russian_side(LENOVO, products, fresh_stores={"regard"})
+        self.assertFalse(side["found"])
+
+    def test_fresh_available_confirmed_offer_only(self) -> None:
+        name = "MSI Raider A2XWHG-814XRU" + FULL
+        products = [
+            _product("regard", "stale", name, "A2XWHG-814XRU", 230_000),
+            _product("kns", "gone", name, "9S7-15M361-814", 240_000, available=False),
+            _product("citilink", "ok", name, "A2XWHG-814XRU", 248_000),
+            _product("citilink", "bare", "MSI Raider A2XWHG-814XRU", "A2XWHG-814XRU", 210_000),
+        ]
+        side = russian_side(RAIDER, products, fresh_stores={"citilink", "kns"})
+        self.assertEqual(side["price"], 248_000)
+        self.assertEqual(side["store"], "citilink")
+
     def test_wpro_code_is_not_the_base_model(self) -> None:
         products = [
             _product("kns", "w", "MSI Raider A2XWHG-814XRU-WPRO", "9S7-15M361-814-WPRO", 274_000),
@@ -95,7 +153,7 @@ class IdentityTests(unittest.TestCase):
 
 class VerdictTests(unittest.TestCase):
     def test_exact_thailand_is_cheaper_after_confirmed_extra(self) -> None:
-        russian = {"found": True, "price": 248_000, "store": "regard", "url": "https://ru", "history_min": 240_000, "offers": [], "available": True, "name": "Raider"}
+        russian = _russian()
         with mock.patch.object(config, "PERSONAL_TOP_CONFIRMED_EXTRAS_RUB", ({"name": "fee", "rub": 5_000},)):
             card = assess_model(
                 RAIDER,
@@ -116,7 +174,7 @@ class VerdictTests(unittest.TestCase):
         self.assertIn("80 000 ฿", text)
 
     def test_stale_thai_price_is_not_current(self) -> None:
-        russian = {"found": True, "price": 248_000, "store": "regard", "url": None, "history_min": None, "offers": [], "available": True, "name": "Raider"}
+        russian = _russian()
         old = (NOW - timedelta(days=3)).isoformat()
         card = assess_model(
             RAIDER,
@@ -159,6 +217,43 @@ class VerdictTests(unittest.TestCase):
         self.assertIn("не заменяет", text)
         self.assertNotIn("выгоднее Таиланд", text)
 
+    def test_cheapest_confirmed_store_ignores_regional_variant(self) -> None:
+        russian = _russian(255_000)
+        regional = _confirmed_row(
+            store="invadeit",
+            name="ROG Strix G615LR-S5162",
+            price_rub=180_000,
+            price_thb=70000,
+            match_level="SAME_FAMILY",
+            spec_differences=["RAM: 32 ГБ и 64 ГБ"],
+        )
+        dearer = _confirmed_row(store="jib", price_rub=230_000, price_thb=90000)
+        cheaper = _confirmed_row(store="itcity", price_rub=210_000, price_thb=82000)
+        search = {
+            "exact_matches": [dearer, cheaper],
+            "same_family_matches": [regional],
+            "equivalent_matches": [],
+        }
+        card = assess_model(RAIDER, russian, search, fx=_fx(), checked_at=NOW.isoformat(), now=NOW)
+        self.assertEqual(card["winner"]["store"], "itcity")
+        self.assertEqual(card["winner"]["price_rub"], 210_000)
+        self.assertEqual(card["verdict"], "thailand")
+
+    def test_missing_verification_blocks_the_verdict(self) -> None:
+        row = _confirmed_row(verification_status="UNVERIFIED")
+        card = assess_model(
+            RAIDER,
+            _russian(),
+            _exact_search(row),
+            fx=_fx(),
+            checked_at=NOW.isoformat(),
+            now=NOW,
+        )
+        self.assertEqual(card["verdict"], "unconfirmed")
+        text = format_personal_board([card])
+        self.assertIn("Сравнение не подтверждено", text)
+        self.assertNotIn("выгоднее", text)
+
 
 class QueueTests(unittest.TestCase):
     def test_daily_enqueue_is_one_job_and_respects_freshness(self) -> None:
@@ -188,6 +283,19 @@ class QueueTests(unittest.TestCase):
                 now=NOW,
             )
             self.assertTrue(manual["ok"])
+            later = enqueue_personal_job(
+                manual=False,
+                products=products,
+                jobs_dir=Path(tmp) / "next-day",
+                state={"checked_at": (NOW - timedelta(hours=30)).isoformat()},
+                now=NOW,
+            )
+            self.assertTrue(later["ok"])
+            self.assertEqual(pending_count(Path(tmp) / "next-day"), 1)
+
+    def test_timer_is_pinned_to_moscow(self) -> None:
+        text = Path("deploy/systemd/laptop-monitor-personal-top.timer").read_text(encoding="utf-8")
+        self.assertIn("OnCalendar=*-*-* 08:00:00 Europe/Moscow", text)
 
     def test_persist_keeps_history_without_replacing_it_as_the_only_quote(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
@@ -200,8 +308,14 @@ class QueueTests(unittest.TestCase):
             state = persist_personal_scan(scan, path=path)
             self.assertEqual(state["models"][RAIDER["key"]]["checked_at"], NOW.isoformat())
             self.assertEqual(len(state["history"][RAIDER["key"]]), 1)
-            products = [_product("regard", "r", "MSI Raider A2XWHG-814XRU", "A2XWHG-814XRU", 248_000)]
-            cards = __import__("personal_top").build_cards(products=products, state=state, now=NOW)
+            products = [
+                _product("regard", "r", "MSI Raider A2XWHG-814XRU" + FULL, "A2XWHG-814XRU", 248_000)
+            ]
+            cards = __import__("personal_top").build_cards(
+                products=products, state=state, now=NOW, fresh_stores={"regard"}
+            )
             self.assertEqual(cards[0]["verdict"], "thailand")
-            side = russian_side(RAIDER, products, history_mins={1: 239_000})
+            side = russian_side(
+                RAIDER, products, history_mins={1: 239_000}, fresh_stores={"regard"}
+            )
             self.assertEqual(side["history_min"], 239_000)

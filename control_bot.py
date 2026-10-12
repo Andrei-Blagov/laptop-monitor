@@ -747,14 +747,22 @@ def handle_personal_top(
     )
     from deal_ranking import historical_mins_from_rows
 
+    from store_freshness import get_fresh_store_slugs
+    from storage import get_latest_store_runs_readonly
+
     products = get_all_products_readonly()
     ids = [int(row["id"]) for row in products if row.get("id") is not None]
     histories = get_price_history_for_products_readonly(DEFAULT_DB_PATH, ids) if ids else {}
+    from personal_top import specs_for_products
+
+    fresh = get_fresh_store_slugs(get_latest_store_runs_readonly())
     text = format_personal_board(
         build_cards(
             products=products,
             state=load_state(),
             history_mins=historical_mins_from_rows(histories),
+            fresh_stores=fresh,
+            specs_by_key=specs_for_products(products),
         ),
         histories=load_state().get("history") or {},
     )
@@ -773,13 +781,17 @@ def handle_personal_refresh(
     token: str,
     chat_id: str | int,
 ) -> None:
-    from personal_top import enqueue_personal_job
-    from storage import get_all_products_readonly
+    from personal_top import enqueue_personal_job, specs_for_products
+    from storage import get_all_products_readonly, get_latest_store_runs_readonly
+    from store_freshness import get_fresh_store_slugs
 
+    products = get_all_products_readonly()
     result = enqueue_personal_job(
         manual=True,
         chat_id=chat_id,
-        products=get_all_products_readonly(),
+        products=products,
+        fresh_stores=get_fresh_store_slugs(get_latest_store_runs_readonly()),
+        specs_by_key=specs_for_products(products),
     )
     if result.get("ok"):
         text = "Проверка Таиланда для TOP-3 поставлена в очередь. Магазины опрашиваются одним проходом."
