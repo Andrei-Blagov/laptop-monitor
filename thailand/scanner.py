@@ -110,22 +110,63 @@ def _rate_limited_result(adapter: ThailandStoreAdapter) -> StoreScanResult:
     )
 
 
+def collector_search_codes(
+    target_model: dict[str, Any] | None,
+    personal_targets: Sequence[dict[str, Any]] | None,
+) -> list[str]:
+    """Exact configuration codes plus series-search codes, one shared store pass."""
+    found: list[str] = []
+
+    def add(value: object) -> None:
+        text = str(value or "").strip()
+        if text and text not in found:
+            found.append(text)
+
+    for code in (target_model or {}).get("model_codes") or []:
+        add(code)
+    for target in personal_targets or []:
+        if not isinstance(target, dict):
+            continue
+        exact = [code for code in target.get("model_codes") or [] if code]
+        series = [code for code in target.get("series_codes") or [] if code]
+        for code in exact:
+            add(code)
+        # A series code is a search key only. It is not an exact configuration.
+        if not exact or target.get("required_gpu"):
+            for code in series:
+                add(code)
+    return found
+
+
 def _collect_store(adapter, timeout: float, target_codes: list[str] | None = None) -> StoreScanResult:
     kwargs: dict[str, Any] = {"timeout": timeout}
+    sent: list[str] = []
     try:
         params = inspect.signature(adapter.collect).parameters
         if "target_codes" in params and target_codes:
-            kwargs["target_codes"] = target_codes
+            sent = list(target_codes)
+            kwargs["target_codes"] = sent
     except (TypeError, ValueError):
         pass
     try:
-        return adapter.collect(**kwargs)
+        result = adapter.collect(**kwargs)
+        result.targeted_codes = sent
+        finished = (
+            bool(result.ok)
+            and result.error_code != "RATE_LIMITED"
+            and result.collection_mode not in {"rate_limited", "skipped", "failed", "disabled"}
+        )
+        if result.codes_checked is None and finished:
+            result.codes_checked = list(sent)
+        elif result.codes_checked is None:
+            result.codes_checked = []
+        return result
     except Exception as exc:  # noqa: BLE001
         logger.warning("Thailand store %s failed: %s", adapter.slug, type(exc).__name__)
         from thailand.errors import classify_store_failure
 
         code, detail = classify_store_failure(type(exc).__name__)
-        return StoreScanResult(
+        failed = StoreScanResult(
             store=adapter.slug,
             ok=False,
             offers=[],
@@ -134,6 +175,50 @@ def _collect_store(adapter, timeout: float, target_codes: list[str] | None = Non
             technical_detail=detail,
             collection_mode="failed",
         )
+        failed.targeted_codes = sent
+        failed.codes_checked = []
+        return failed
+
+
+def build_search_coverage(
+    codes: Sequence[str],
+    store_results: Sequence[StoreScanResult],
+) -> dict[str, Any]:
+    """Which stores finished a lookup, and which model codes that lookup covered."""
+    stores: list[dict[str, Any]] = []
+    for row in store_results:
+        sent = list(row.targeted_codes or [])
+        checked_codes = list(row.codes_checked or [])
+        blocked = (
+            row.collection_mode in {"rate_limited", "skipped", "failed", "disabled"}
+            or row.error_code == "RATE_LIMITED"
+            or not row.ok
+        )
+        if sent and checked_codes and blocked:
+            mode = "partial"
+            checked = True
+        elif sent and not blocked:
+            mode = "targeted"
+            checked = True
+            if not checked_codes:
+                checked_codes = list(sent)
+        elif not sent and not blocked:
+            mode = "catalog"
+            checked = True
+        else:
+            mode = "not_checked"
+            checked = False
+            checked_codes = []
+        stores.append(
+            {
+                "store": row.store,
+                "checked": checked,
+                "mode": mode,
+                "codes": checked_codes,
+                "reason": row.error_code or row.collection_mode,
+            }
+        )
+    return {"codes": list(codes), "stores": stores}
 
 
 def collect_thailand_offers(
@@ -442,10 +527,11 @@ def run_thailand_scan(
     try:
         fx = fetch_cbr_thb_rate()
         fx_runtime = time.perf_counter() - t0
-        codes = [str(c) for c in (target_model or {}).get("model_codes") or [] if c][:1]
+        codes = collector_search_codes(target_model, personal_targets)
         store_results, offers, unverified, collect_runtime = collect_thailand_offers(
             target_codes=codes or None
         )
+        search_coverage = build_search_coverage(codes, store_results)
         match_t0 = time.perf_counter()
 
         price_rub_map: dict[str, int | None] = {}
@@ -569,10 +655,16 @@ def run_thailand_scan(
                 fx=fx,
                 stores_skipped=skipped,
             )
+            found = attach_series_candidates(target, search, collected, fx)
+            own_codes = collector_search_codes(None, [target])
+            found["coverage"] = {
+                "codes": own_codes,
+                "stores": search_coverage["stores"],
+            }
             personal_searches.append(
                 {
                     "key": str(target.get("personal_key") or ""),
-                    "search": attach_series_candidates(target, search, collected, fx),
+                    "search": found,
                 }
             )
 
@@ -604,6 +696,7 @@ def run_thailand_scan(
                 "source_health": load_health().get("stores") or {},
                 "target_model": target_model,
                 "target_search": target_search,
+                "search_coverage": search_coverage,
                 "personal_searches": personal_searches,
                 "request_counts": {
                     r.store: r.request_count for r in store_results if r.request_count is not None

@@ -308,6 +308,8 @@ def collect(
                     result = _failure(started, "RATE_LIMITED", "HTTP_429")
                     result.retry_after_seconds = _retry_after_seconds(resp)
                     result.request_count = requests
+                    result.targeted_codes = [str(c) for c in (target_codes or []) if c]
+                    result.codes_checked = []
                     return result
                 if resp.status_code >= 400:
                     code, detail = classify_store_failure(status_code=resp.status_code)
@@ -334,20 +336,23 @@ def collect(
                 if len(products) < 250:
                     break
                 page += 1
-        codes = [str(c) for c in (target_codes or []) if c][:1]
-        if codes and not _catalog_has_code(discovered, codes):
+        codes = [str(c) for c in (target_codes or []) if c]
+        missing = [code for code in codes if not _catalog_has_code(discovered, [code])]
+        checked_codes = [code for code in codes if code not in missing]
+        for code in missing:
             from urllib.parse import quote
 
             url = (
-                f"{BASE}/search/suggest.json?q={quote(codes[0])}"
+                f"{BASE}/search/suggest.json?q={quote(code)}"
                 "&resources[type]=product&resources[limit]=5"
             )
             try:
                 resp = http.get(url)
                 requests += 1
             except httpx.HTTPError:
-                resp = None
-            if resp is not None and resp.status_code == 429:
+                continue
+            if resp.status_code == 429:
+                # One 429 ends the extra lookups. Do not start another code.
                 result = _failure(started, "RATE_LIMITED", "HTTP_429")
                 result.retry_after_seconds = _retry_after_seconds(resp)
                 result.request_count = requests
@@ -356,8 +361,11 @@ def collect(
                     o for o in discovered if not is_verified_for_ranking(o)
                 ]
                 result.ok = bool(result.offers)
+                result.targeted_codes = codes
+                result.codes_checked = list(checked_codes)
                 return result
-            if resp is not None and resp.status_code < 400 and "json" in (
+            checked_codes.append(code)
+            if resp.status_code < 400 and "json" in (
                 resp.headers.get("content-type") or ""
             ).lower():
                 try:
@@ -388,6 +396,8 @@ def collect(
             verified_count=len(verified),
             request_count=requests,
         )
+        result.targeted_codes = codes
+        result.codes_checked = list(checked_codes)
         return result
     finally:
         if own:

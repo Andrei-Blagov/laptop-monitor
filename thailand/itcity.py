@@ -272,10 +272,16 @@ def collect(
         }
         now = datetime.now(timezone.utc)
         queries = list(QUERIES)
-        for code in list(target_codes or [])[:1]:
-            if code and code not in queries:
-                queries.append(str(code))
+        target_list: list[str] = []
+        for code in list(target_codes or []):
+            text = str(code or "").strip()
+            if not text:
+                continue
+            target_list.append(text)
+            if text not in queries:
+                queries.append(text)
         requests = 1  # storefront page that publishes the search config
+        checked_codes: list[str] = []
         for query in queries:
             for page_no in range(3):
                 try:
@@ -293,6 +299,8 @@ def collect(
                 if resp.status_code == 429:
                     result = _failure(started, "RATE_LIMITED", "HTTP_429")
                     result.request_count = requests
+                    result.targeted_codes = list(target_list)
+                    result.codes_checked = list(checked_codes)
                     return result
                 if resp.status_code >= 400:
                     code, detail = classify_store_failure(status_code=resp.status_code)
@@ -313,9 +321,11 @@ def collect(
                 nb_pages = int(payload.get("nbPages") or 1)
                 if page_no + 1 >= nb_pages:
                     break
+            if str(query) in target_list and str(query) not in checked_codes:
+                checked_codes.append(str(query))
         verified = [o for o in discovered if is_verified_for_ranking(o)]
         unverified = [o for o in discovered if not is_verified_for_ranking(o)]
-        return StoreScanResult(
+        result = StoreScanResult(
             store=STORE,
             ok=True,
             offers=verified,
@@ -327,6 +337,9 @@ def collect(
             verified_count=len(verified),
             request_count=requests,
         )
+        result.targeted_codes = list(target_list)
+        result.codes_checked = list(target_list)
+        return result
     finally:
         if own:
             http.close()

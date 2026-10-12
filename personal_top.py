@@ -558,6 +558,14 @@ def assess_model(
     percent = None
     if delta is not None and ru:
         percent = round(delta / int(ru) * 100, 1)
+    coverage = (search or {}).get("coverage") if fresh and isinstance((search or {}).get("coverage"), Mapping) else None
+    coverage_stores = list((coverage or {}).get("stores") or [])
+    if not coverage_stores:
+        thai_check = None
+    elif any(row.get("checked") for row in coverage_stores):
+        thai_check = "checked"
+    else:
+        thai_check = "not_checked"
     if winner is not None and delta is not None and fx_confirmed(fx):
         if delta > 0:
             verdict = "thailand"
@@ -573,6 +581,8 @@ def assess_model(
         verdict = "analog_only"
     elif russian.get("candidates") or thai_candidates:
         verdict = "candidates_only"
+    elif fresh and thai_check == "not_checked":
+        verdict = "not_checked"
     else:
         verdict = "no_fresh_thai"
     return {
@@ -597,6 +607,8 @@ def assess_model(
         "delta_rub": delta,
         "delta_pct": percent,
         "verdict": verdict,
+        "coverage": dict(coverage) if coverage else None,
+        "thai_check": thai_check,
         "stores_skipped": list((search or {}).get("stores_skipped") or []) if fresh else [],
     }
 
@@ -620,6 +632,8 @@ def _verdict_line(card: Mapping[str, Any]) -> str:
     if verdict == "unconfirmed":
         gaps = ", ".join(card.get("confirmation_gaps") or []) or "не хватает данных"
         return f"Сравнение не подтверждено: {gaps}."
+    if verdict == "not_checked":
+        return "Вывод: магазины не проверены, сравнение не делается."
     return "Вывод: свежей тайской цены нет, сравнение не делается."
 
 
@@ -636,6 +650,53 @@ def _store_label(store: object) -> str:
         "andpro": "ANDPRO",
     }
     return names.get(str(store or ""), str(store or "магазин"))
+
+
+def _check_reason(reason: object) -> str:
+    labels = {
+        "RATE_LIMITED": "лимит запросов",
+        "rate_limited": "лимит запросов",
+        "TIMEOUT": "таймаут",
+        "timeout": "таймаут",
+        "skipped": "пропуск",
+        "disabled": "отключён",
+        "failed": "ошибка",
+    }
+    return labels.get(str(reason or ""), "ошибка")
+
+
+def coverage_lines(coverage: Mapping[str, Any] | None) -> list[str]:
+    """Say which codes a store actually queried. A miss is not the same as a skipped store."""
+    if not isinstance(coverage, Mapping):
+        return []
+    lines: list[str] = []
+    stores = [row for row in coverage.get("stores") or [] if isinstance(row, Mapping)]
+    for code in coverage.get("codes") or []:
+        addressed: list[str] = []
+        catalog: list[str] = []
+        missed: list[str] = []
+        for row in stores:
+            name = _store_label(row.get("store"))
+            mode = str(row.get("mode") or "")
+            found = str(code) in [str(item) for item in (row.get("codes") or [])]
+            if mode in {"targeted", "partial"} and found:
+                addressed.append(name)
+            elif mode == "catalog":
+                catalog.append(name)
+            elif mode == "partial":
+                missed.append(f"{name} ({_check_reason(row.get('reason'))})")
+            else:
+                missed.append(f"{name} ({_check_reason(row.get('reason'))})")
+        parts: list[str] = []
+        if addressed:
+            parts.append("адресный поиск " + ", ".join(addressed))
+        if catalog:
+            parts.append("каталог " + ", ".join(catalog))
+        if missed:
+            parts.append("не проверено " + ", ".join(missed))
+        if parts:
+            lines.append(f"{code}: " + "; ".join(parts))
+    return lines
 
 
 def format_personal_card(card: Mapping[str, Any], *, history: Sequence[Mapping[str, Any]] | None = None) -> list[str]:
@@ -695,8 +756,11 @@ def format_personal_card(card: Mapping[str, Any], *, history: Sequence[Mapping[s
             lines.append("Таиланд: точная модель найдена, нет в наличии.")
         elif card.get("verdict") == "unconfirmed":
             lines.append("Таиланд: точное предложение есть, сравнение не подтверждено.")
+        elif card.get("thai_check") == "not_checked":
+            lines.append("Таиланд: не проверено.")
         else:
             lines.append("Таиланд: точной модели нет.")
+        lines.extend(coverage_lines(card.get("coverage")))
         for candidate in card.get("thai_candidates") or []:
             lines.append(
                 f"Кандидат Таиланд {candidate.get('sku') or candidate.get('name') or 'модель'}: "

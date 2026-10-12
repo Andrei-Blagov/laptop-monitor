@@ -83,6 +83,10 @@ class StoreScanResult:
     policy_disabled: bool = False
     request_count: int | None = None
     retry_after_seconds: int | None = None
+    # Codes this adapter accepts. Empty means the store only walks its catalog.
+    targeted_codes: list[str] | None = None
+    # Subset of targeted_codes whose lookup finished. None means the adapter did not say.
+    codes_checked: list[str] | None = None
 
     @property
     def count(self) -> int:
