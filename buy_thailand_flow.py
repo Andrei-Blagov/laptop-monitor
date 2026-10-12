@@ -463,7 +463,13 @@ def execute_thailand_job(
     messages: list[str] = []
     target_search = scan_result.get("target_search")
     if trigger in PERSONAL_TRIGGERS:
-        from personal_top import build_cards, format_personal_board, persist_personal_scan
+        from personal_top import (
+            build_cards,
+            format_personal_board,
+            load_state,
+            persist_personal_scan,
+            specs_for_products,
+        )
         from storage import get_all_products_readonly
 
         persist_personal_scan(scan_result)
@@ -479,9 +485,29 @@ def execute_thailand_job(
                 if isinstance(item, dict)
             },
         }
+        from deal_ranking import historical_mins_from_rows
+        from storage import (
+            DEFAULT_DB_PATH,
+            get_latest_store_runs_readonly,
+            get_price_history_for_products_readonly,
+        )
+        from store_freshness import get_fresh_store_slugs
+
+        products = get_all_products_readonly()
+        ids = [int(row["id"]) for row in products if row.get("id") is not None]
+        histories = get_price_history_for_products_readonly(DEFAULT_DB_PATH, ids) if ids else {}
         messages.append(
             format_personal_board(
-                build_cards(products=get_all_products_readonly(), state=cards_state)
+                build_cards(
+                    products=products,
+                    state=cards_state,
+                    history_mins=historical_mins_from_rows(histories),
+                    fresh_stores=get_fresh_store_slugs(
+                        get_latest_store_runs_readonly(DEFAULT_DB_PATH)
+                    ),
+                    specs_by_key=specs_for_products(products),
+                ),
+                histories=(load_state().get("history") or {}),
             )
         )
         out["messages"] = [m for m in messages if m][:2]
