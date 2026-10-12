@@ -557,19 +557,24 @@ def run_thailand_scan(
                 fx=fx,
                 stores_skipped=skipped,
             )
-        personal_searches = [
-            {
-                "key": str(target.get("personal_key") or ""),
-                "search": search_collected_offers(
-                    target,
-                    collected,
-                    fx=fx,
-                    stores_skipped=skipped,
-                ),
-            }
-            for target in (personal_targets or [])
-            if isinstance(target, dict)
-        ]
+        from personal_top import attach_series_candidates
+
+        personal_searches = []
+        for target in personal_targets or []:
+            if not isinstance(target, dict):
+                continue
+            search = search_collected_offers(
+                target,
+                collected,
+                fx=fx,
+                stores_skipped=skipped,
+            )
+            personal_searches.append(
+                {
+                    "key": str(target.get("personal_key") or ""),
+                    "search": attach_series_candidates(target, search, collected, fx),
+                }
+            )
 
         finished_at = datetime.now(timezone.utc)
         result.update(

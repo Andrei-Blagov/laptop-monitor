@@ -108,6 +108,24 @@ def series_codes(model: Mapping[str, Any]) -> set[str]:
     return found
 
 
+def contains_code(text: str, code: str) -> bool:
+    """Whole token. 16AFR10H matches the series, not a longer glued identifier."""
+    import re
+
+    token = normalize_identifier(code)
+    if not token:
+        return False
+    return re.search(
+        rf"(?<![A-Z0-9]){re.escape(token)}(?![A-Z0-9])",
+        str(text or "").upper(),
+    ) is not None
+
+
+def series_hit(model: Mapping[str, Any], text: str) -> bool:
+    codes = series_codes(model)
+    return bool(codes) and any(contains_code(text, code) for code in codes)
+
+
 def match_products(model: Mapping[str, Any], products: Sequence[Mapping[str, Any]]) -> list[dict[str, Any]]:
     wanted = exact_skus(model) - series_codes(model)
     if not wanted:
@@ -156,6 +174,165 @@ def confirmed_specs(product: Mapping[str, Any], identity: Any = None) -> dict[st
     if any(value is None for value in required.values()):
         return None
     return required
+
+
+def _candidate_differences(sku: str, specs: Mapping[str, Any] | None) -> list[str]:
+    diffs: list[str] = []
+    if "WPRO" in str(sku or "").upper():
+        diffs.append("вариант -wpro")
+    if not specs:
+        return diffs + ["комплектация не подтверждена полностью"]
+    if specs.get("cpu") is None:
+        diffs.append("CPU не подтверждён")
+    if specs.get("ssd_gb") is None:
+        diffs.append("SSD не подтверждён")
+    if specs.get("screen_resolution") is None:
+        diffs.append("разрешение не подтверждено")
+    return diffs
+
+
+def _profile_specs(product: Mapping[str, Any], identity: Any = None) -> dict[str, Any]:
+    """Partial specs for a series candidate. Missing fields stay missing."""
+    inferred = extract_specs_from_name(
+        " ".join(str(product.get(key) or "") for key in ("name", "sku"))
+    )
+    raw = {
+        "cpu": _identity_value(identity, "cpu") or inferred.get("cpu"),
+        "gpu": _identity_value(identity, "gpu", "normalized_gpu") or inferred.get("gpu"),
+        "ram_gb": _identity_value(identity, "ram_gb") or inferred.get("ram_gb"),
+        "ssd_gb": _identity_value(identity, "ssd_gb") or inferred.get("ssd_gb"),
+        "screen_inch": _identity_value(identity, "screen_inch", "screen_size_inch") or inferred.get("screen_inch"),
+        "screen_resolution": _identity_value(identity, "screen_resolution") or inferred.get("screen_resolution"),
+    }
+    return {
+        "cpu": _norm_cpu(raw["cpu"]),
+        "gpu": _norm_gpu(raw["gpu"]),
+        "ram_gb": _norm_int(raw["ram_gb"]),
+        "ssd_gb": _norm_int(raw["ssd_gb"]),
+        "screen_inch": _norm_inch(raw["screen_inch"]),
+        "screen_resolution": _norm_resolution(raw["screen_resolution"]),
+    }
+
+
+def _suits_series_profile(model: Mapping[str, Any], specs: Mapping[str, Any]) -> bool:
+    from laptop_eligibility import screen_meets_minimum
+
+    required_gpu = _norm_gpu(model.get("required_gpu"))
+    if required_gpu is None or specs.get("gpu") != required_gpu:
+        return False
+    required_ram = _norm_int(model.get("required_ram_gb"))
+    if required_ram is None or specs.get("ram_gb") != required_ram:
+        return False
+    resolution = specs.get("screen_resolution")
+    if resolution is not None and screen_meets_minimum(resolution) is not True:
+        return False
+    return True
+
+
+def series_product_candidates(
+    model: Mapping[str, Any],
+    products: Sequence[Mapping[str, Any]],
+    *,
+    fresh_stores: set[str] | None = None,
+    specs_by_key: Mapping[tuple[str, str], Any] | None = None,
+) -> list[dict[str, Any]]:
+    """Suitable series variants. Never an EXACT configuration."""
+    if not series_codes(model) or not model.get("required_gpu"):
+        return []
+    found: list[dict[str, Any]] = []
+    for row in products:
+        blob = f"{row.get('name') or ''} {row.get('sku') or ''}"
+        if not series_hit(model, blob):
+            continue
+        if fresh_stores is not None and str(row.get("store") or "") not in fresh_stores:
+            continue
+        if not row.get("available") or row.get("price") is None or int(row["price"]) <= 0:
+            continue
+        identity = None
+        if specs_by_key is not None:
+            identity = specs_by_key.get((str(row.get("store") or ""), str(row.get("external_id") or "")))
+        specs = _profile_specs(row, identity)
+        if not _suits_series_profile(model, specs):
+            continue
+        sku = str(row.get("sku") or "")
+        found.append(
+            {
+                "match_level": "CANDIDATE",
+                "sku": sku,
+                "store": str(row.get("store") or ""),
+                "price": int(row["price"]),
+                "url": row.get("url"),
+                "name": str(row.get("name") or ""),
+                "differences": _candidate_differences(sku, specs),
+            }
+        )
+    return sorted(found, key=lambda item: (item["price"], item["store"], item["sku"]))
+
+
+def attach_series_candidates(
+    target: Mapping[str, Any],
+    search: Mapping[str, Any],
+    offers: Sequence[Any],
+    fx: Any = None,
+) -> dict[str, Any]:
+    """Add series variants to a Thailand search. They are never EXACT matches."""
+    from thailand.fx import thb_to_rub
+
+    out = dict(search)
+    codes = [str(code) for code in target.get("series_codes") or [] if code]
+    if not codes or not target.get("required_gpu"):
+        out.setdefault("series_candidates", [])
+        return out
+    model = {
+        "series_codes": tuple(codes),
+        "required_gpu": target.get("required_gpu"),
+        "required_ram_gb": target.get("required_ram_gb"),
+    }
+    rows: list[dict[str, Any]] = []
+    for offer in offers:
+        blob = " ".join(
+            str(getattr(offer, field, "") or "")
+            for field in ("name", "sku", "manufacturer_part_number")
+        )
+        if not series_hit(model, blob):
+            continue
+        specs = _profile_specs(
+            {"name": getattr(offer, "name", ""), "sku": getattr(offer, "sku", "")},
+            {
+                "cpu": getattr(offer, "cpu", None),
+                "gpu": getattr(offer, "gpu", None),
+                "ram_gb": getattr(offer, "ram_gb", None),
+                "ssd_gb": getattr(offer, "ssd_gb", None),
+                "screen_inch": getattr(offer, "screen_size_inch", None),
+                "screen_resolution": getattr(offer, "screen_resolution", None),
+            },
+        )
+        if not _suits_series_profile(model, specs):
+            continue
+        sku = str(getattr(offer, "sku", None) or getattr(offer, "manufacturer_part_number", None) or "")
+        price_thb = getattr(offer, "price_thb", None)
+        rows.append(
+            {
+                "match_level": "CANDIDATE",
+                "sku": sku,
+                "store": getattr(offer, "store", None),
+                "name": getattr(offer, "name", None),
+                "price_thb": price_thb,
+                "price_rub": thb_to_rub(price_thb, fx),
+                "url": getattr(offer, "url", None),
+                "out_of_stock": not bool(getattr(offer, "available", False)),
+                "differences": _candidate_differences(sku, specs),
+            }
+        )
+    out["series_candidates"] = sorted(
+        rows,
+        key=lambda item: (
+            item["price_rub"] if item.get("price_rub") is not None else 10**12,
+            str(item.get("store") or ""),
+            str(item.get("sku") or ""),
+        ),
+    )
+    return out
 
 
 def russian_side(
@@ -213,6 +390,12 @@ def russian_side(
         "history_min": hist,
         "offers": offers,
         "confirmed_specs": None if best is None else best.get("confirmed_specs"),
+        "candidates": series_product_candidates(
+            model,
+            products,
+            fresh_stores=fresh_stores,
+            specs_by_key=specs_by_key,
+        ),
     }
 
 
@@ -237,6 +420,9 @@ def target_for(model: Mapping[str, Any], russian: Mapping[str, Any]) -> dict[str
         "ssd_gb": specs.get("ssd_gb"),
         "screen_size_inch": specs.get("screen_inch"),
         "screen_resolution": specs.get("screen_resolution"),
+        "series_codes": sorted(series_codes(model)),
+        "required_gpu": model.get("required_gpu"),
+        "required_ram_gb": model.get("required_ram_gb"),
         "store": russian.get("store"),
         "price": russian.get("price"),
         "url": russian.get("url"),
@@ -350,6 +536,7 @@ def assess_model(
     exact = list((search or {}).get("exact_matches") or []) if fresh else []
     family = list((search or {}).get("same_family_matches") or []) if fresh else []
     equivalent = list((search or {}).get("equivalent_matches") or []) if fresh else []
+    thai_candidates = list((search or {}).get("series_candidates") or []) if fresh else []
     exact_stock = [row for row in exact if _in_stock(row)]
     confirmed = []
     gap_notes: list[str] = []
@@ -384,6 +571,8 @@ def assess_model(
         verdict = "exact_out_of_stock"
     elif fresh and analog is not None:
         verdict = "analog_only"
+    elif russian.get("candidates") or thai_candidates:
+        verdict = "candidates_only"
     else:
         verdict = "no_fresh_thai"
     return {
@@ -400,6 +589,7 @@ def assess_model(
         "exact": exact,
         "winner": winner,
         "analog": analog,
+        "thai_candidates": thai_candidates,
         "confirmation_gaps": sorted(set(gap_notes)),
         "confirmed_extra_rub": extras,
         "unknown_costs": unknown_cost_names(),
@@ -425,6 +615,8 @@ def _verdict_line(card: Mapping[str, Any]) -> str:
         return "Вывод: точная модель в Таиланде найдена, сейчас нет в наличии."
     if verdict == "analog_only":
         return "Вывод: точной модели в Таиланде нет. Аналог ниже не заменяет её в сравнении цены."
+    if verdict == "candidates_only":
+        return "Вывод о выгоде не делается: подтверждённой комплектации для сравнения нет."
     if verdict == "unconfirmed":
         gaps = ", ".join(card.get("confirmation_gaps") or []) or "не хватает данных"
         return f"Сравнение не подтверждено: {gaps}."
@@ -462,6 +654,16 @@ def format_personal_card(card: Mapping[str, Any], *, history: Sequence[Mapping[s
         lines.append(str(russian["url"]))
     if russian.get("history_min") is not None:
         lines.append(f"Минимум истории в России: {_rub(int(russian['history_min']))} ₽")
+    for candidate in russian.get("candidates") or []:
+        lines.append(
+            f"Кандидат {candidate.get('sku') or 'без SKU'}: {_rub(candidate.get('price'))} ₽ — "
+            f"{_store_label(candidate.get('store'))} — не EXACT"
+        )
+        diffs = list(candidate.get("differences") or [])
+        if diffs:
+            lines.append("Отличия: " + "; ".join(str(item) for item in diffs))
+        if candidate.get("url"):
+            lines.append(str(candidate["url"]))
     offers = list(russian.get("offers") or [])
     if len(offers) > 1:
         others = ", ".join(f"{_store_label(row['store'])} {_rub(row['price'])}" for row in offers[:4])
@@ -495,6 +697,17 @@ def format_personal_card(card: Mapping[str, Any], *, history: Sequence[Mapping[s
             lines.append("Таиланд: точное предложение есть, сравнение не подтверждено.")
         else:
             lines.append("Таиланд: точной модели нет.")
+        for candidate in card.get("thai_candidates") or []:
+            lines.append(
+                f"Кандидат Таиланд {candidate.get('sku') or candidate.get('name') or 'модель'}: "
+                f"{_thb(candidate.get('price_thb'))} ฿ ≈ {_rub(candidate.get('price_rub'))} ₽ — "
+                f"{_store_label(candidate.get('store'))} — не EXACT"
+            )
+            diffs = list(candidate.get("differences") or [])
+            if diffs:
+                lines.append("Отличия: " + "; ".join(str(item) for item in diffs))
+            if candidate.get("url"):
+                lines.append(str(candidate["url"]))
         analog = card.get("analog")
         if analog and card.get("verdict") != "thailand" and winner is None:
             lines.append("")

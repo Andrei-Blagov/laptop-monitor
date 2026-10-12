@@ -61,6 +61,8 @@ PERSONAL_TOP3: tuple[dict, ...] = (
         # 16AFR10H is the machine series, not one configuration.
         "exact_skus": (),
         "series_codes": ("16AFR10H",),
+        "required_gpu": "RTX 5070 Ti",
+        "required_ram_gb": 32,
         "target_min_rub": 270_000,
         "target_max_rub": 280_000,
         "target_label": "около 275 тыс. ₽",

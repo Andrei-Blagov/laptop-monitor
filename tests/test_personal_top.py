@@ -110,19 +110,64 @@ class IdentityTests(unittest.TestCase):
         watched = [item["model"] for item in config.PRIORITY_MODELS]
         self.assertIn("Vector 17 HX AI A2XWIG-063XRU", watched)
 
-    def test_lenovo_series_code_is_not_an_exact_sku(self) -> None:
+    def test_lenovo_series_variants_stay_candidates(self) -> None:
         products = [
+            _product("regard", "l1", "Lenovo Legion Pro 7 16AFR10H" + FULL, "83RU003JRK", 275_000),
+            _product("kns", "w", "Lenovo Legion Pro 7 16AFR10H" + FULL, "83RU003JRK-wpro", 280_000),
+            _product(
+                "citilink",
+                "small",
+                'Lenovo Legion Pro 7 16AFR10H RTX 5070 Ti, 16GB DDR5, 16" 2560x1600',
+                "83RU0099RK",
+                260_000,
+            ),
             _product(
                 "regard",
-                "l1",
-                "Lenovo Legion Pro 7 16AFR10H" + FULL,
-                "83F50029RK",
-                275_000,
-            )
+                "big",
+                'Lenovo Legion Pro 7 16AFR10H RTX 5080, 32GB DDR5, 1TB SSD, 16" 2560x1600',
+                "83RU0088RK",
+                390_000,
+            ),
         ]
         self.assertEqual(match_products(LENOVO, products), [])
-        side = russian_side(LENOVO, products, fresh_stores={"regard"})
+        side = russian_side(LENOVO, products, fresh_stores={"regard", "kns", "citilink"})
         self.assertFalse(side["found"])
+        skus = [row["sku"] for row in side["candidates"]]
+        self.assertEqual(skus, ["83RU003JRK", "83RU003JRK-wpro"])
+        wpro = side["candidates"][1]
+        self.assertIn("вариант -wpro", wpro["differences"])
+        card = assess_model(
+            LENOVO,
+            side,
+            {
+                "exact_matches": [],
+                "same_family_matches": [],
+                "equivalent_matches": [],
+                "series_candidates": [
+                    {
+                        "match_level": "CANDIDATE",
+                        "sku": "LEN-TH",
+                        "store": "jib",
+                        "price_thb": 90_000,
+                        "price_rub": 220_000,
+                        "out_of_stock": False,
+                        "differences": ["SSD не подтверждён"],
+                        "url": "https://jib.example/legion",
+                    }
+                ],
+            },
+            fx=_fx(),
+            checked_at=NOW.isoformat(),
+            now=NOW,
+        )
+        self.assertEqual(card["verdict"], "candidates_only")
+        self.assertIsNone(card["winner"])
+        text = format_personal_board([card])
+        self.assertIn("83RU003JRK", text)
+        self.assertIn("LEN-TH", text)
+        self.assertIn("не EXACT", text)
+        self.assertNotIn("Таиланд EXACT", text)
+        self.assertNotIn("выгоднее", text)
 
     def test_fresh_available_confirmed_offer_only(self) -> None:
         name = "MSI Raider A2XWHG-814XRU" + FULL
@@ -292,6 +337,71 @@ class QueueTests(unittest.TestCase):
             )
             self.assertTrue(later["ok"])
             self.assertEqual(pending_count(Path(tmp) / "next-day"), 1)
+
+    def test_worker_scan_covers_all_three_models(self) -> None:
+        from buy_thailand_flow import execute_thailand_job
+        from personal_top import target_for
+        from thailand.models import ThailandOffer
+
+        targets = [target_for(model, {"name": "", "confirmed_specs": {}}) for model in config.PERSONAL_TOP3]
+        self.assertEqual([item["personal_key"] for item in targets], [model["key"] for model in config.PERSONAL_TOP3])
+        legion = next(item for item in targets if item.get("required_gpu"))
+        offer = ThailandOffer(
+            store="jib",
+            external_id="legion-1",
+            name="Lenovo Legion Pro 7 16AFR10H RTX 5070 Ti 32GB",
+            url="https://jib.example/legion",
+            price_thb=110_000,
+            available=True,
+            collected_at=NOW,
+            sku="83RU003JRK",
+            gpu="RTX 5070 Ti",
+            ram_gb=32,
+            screen_resolution="2560x1600",
+        )
+        from personal_top import attach_series_candidates
+
+        attached = attach_series_candidates(legion, {"exact_matches": []}, [offer], None)
+        self.assertEqual(attached["series_candidates"][0]["match_level"], "CANDIDATE")
+        self.assertNotEqual(attached["series_candidates"][0]["match_level"], "EXACT")
+
+        def scan_fn(**kwargs):
+            self.assertEqual(len(kwargs["personal_targets"]), 3)
+            return {
+                "status": "ok",
+                "finished_at": NOW.isoformat(),
+                "fx": _fx(),
+                "stores": [{"store": "jib", "ok": True}],
+                "personal_searches": [
+                    {
+                        "key": item["personal_key"],
+                        "search": attach_series_candidates(item, {"exact_matches": [], "same_family_matches": [], "equivalent_matches": []}, [offer], None),
+                    }
+                    for item in kwargs["personal_targets"]
+                ],
+            }
+
+        with tempfile.TemporaryDirectory() as tmp:
+            with mock.patch("personal_top.state_path", return_value=Path(tmp) / "state.json"), mock.patch(
+                "storage.get_all_products_readonly", return_value=[]
+            ):
+                result = execute_thailand_job(
+                    {
+                        "job_id": "personal-test",
+                        "trigger_type": "personal_daily",
+                        "personal_targets": targets,
+                        "signals": [],
+                        "russian_context": [],
+                    },
+                    deliver=False,
+                    scan_fn=scan_fn,
+                )
+        text = result["messages"][0]
+        self.assertIn("Raider 16", text)
+        self.assertIn("G615LR-S5348", text)
+        self.assertIn("16AFR10H", text)
+        self.assertIn("83RU003JRK", text)
+        self.assertNotIn("выгоднее", text)
 
     def test_timer_is_pinned_to_moscow(self) -> None:
         text = Path("deploy/systemd/laptop-monitor-personal-top.timer").read_text(encoding="utf-8")
