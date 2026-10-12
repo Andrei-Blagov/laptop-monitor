@@ -1,0 +1,10 @@
+[Unit]
+Description=Daily personal TOP-3 Thailand check (host local time; production is Europe/Moscow)
+
+[Timer]
+OnCalendar=*-*-* 08:00:00
+Persistent=true
+Unit=laptop-monitor-personal-top.service
+
+[Install]
+WantedBy=timers.target

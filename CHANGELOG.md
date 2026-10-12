@@ -2,6 +2,14 @@
 
 ## Unreleased
 
+Personal TOP-3 beside the general ranking.
+
+- MSI Raider 16 HX AI A2XWHG-814XRU (240–250 тыс. ₽), ASUS ROG Strix G16 G615LR-S5348 (250–260 тыс. ₽), and Lenovo Legion Pro 7 16AFR10H (около 275 тыс. ₽) are compared with Thailand on one shared daily job
+- Telegram «Мой TOP-3» shows Russian prices, a fresh Thai exact quote or a separately labeled analog, the rate and its date, the ruble and percent gap, store, stock, link, and check time
+- A Thai price older than the freshness window is not shown as current. Confirmed extra costs are added; unknown costs are named and left out of the total
+- Manual refresh uses the same worker queue and will not call the stores again while a check is still fresh or already queued
+- MSI Vector 17 stays on the priority watchlist. The general TOP is unchanged
+
 ## 0.9.0 — 2026-10-10
 
 Selection criteria for the current purchase, and a watched MSI model.

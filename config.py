@@ -31,6 +31,52 @@ MIN_SCREEN_WIDTH_EXCLUSIVE: int = 1920
 MIN_SCREEN_HEIGHT: int = 1440
 MIN_SCREEN_PIXELS: int = 2560 * 1440
 
+# Personal shortlist. Compared with Thailand on its own daily job.
+# The general TOP and PRIORITY_MODELS stay independent of this list.
+PERSONAL_TOP3: tuple[dict, ...] = (
+    {
+        "key": "msi-raider-16-a2xwhg-814xru",
+        "brand": "MSI",
+        "model": "Raider 16 HX AI A2XWHG-814XRU",
+        "identifiers": ("A2XWHG-814XRU", "9S7-15M361-814"),
+        "target_min_rub": 240_000,
+        "target_max_rub": 250_000,
+        "target_label": "240–250 тыс. ₽",
+    },
+    {
+        "key": "asus-strix-g16-g615lr-s5348",
+        "brand": "ASUS",
+        "model": "ROG Strix G16 G615LR-S5348",
+        "identifiers": ("G615LR-S5348",),
+        "target_min_rub": 250_000,
+        "target_max_rub": 260_000,
+        "target_label": "250–260 тыс. ₽",
+    },
+    {
+        "key": "lenovo-legion-pro-7-16afr10h",
+        "brand": "Lenovo",
+        "model": "Legion Pro 7 16AFR10H",
+        "identifiers": ("16AFR10H",),
+        "target_min_rub": 270_000,
+        "target_max_rub": 280_000,
+        "target_label": "около 275 тыс. ₽",
+    },
+)
+# A Thai price older than this is history, not a current quote.
+PERSONAL_TOP_FRESH_HOURS: float = 26.0
+# Manual refresh will not call the stores again inside this window.
+PERSONAL_TOP_MANUAL_MIN_HOURS: float = 6.0
+# Daily enqueue skips when a fresh check already exists.
+PERSONAL_TOP_DAILY_MIN_HOURS: float = 18.0
+# Confirmed extras are added to the Thai RUB total. Unknown items are named only.
+PERSONAL_TOP_CONFIRMED_EXTRAS_RUB: tuple[dict, ...] = ()
+PERSONAL_TOP_UNKNOWN_COSTS: tuple[str, ...] = (
+    "авиаперелёт",
+    "таможня",
+    "доставка",
+)
+PERSONAL_TOP_STATE_PATH: str = "data/personal_top.json"
+
 # Watched models shown separately from the ranking, with their own status.
 # store_ids lets the collector fetch one product card when the general
 # search misses it; identifiers are strong model codes for cross-store matching.

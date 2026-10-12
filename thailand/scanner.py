@@ -423,6 +423,7 @@ def run_thailand_scan(
     snapshot_dir: Path | str | None = None,
     write_snapshot: bool = True,
     target_model: dict[str, Any] | None = None,
+    personal_targets: Sequence[dict[str, Any]] | None = None,
 ) -> dict[str, Any]:
     """
     Best-effort Thailand scan. Never raises to caller for store failures.
@@ -540,21 +541,35 @@ def run_thailand_scan(
         match_runtime = time.perf_counter() - match_t0
 
         status = derive_scan_status(store_results)
+        from thailand.target_model import search_collected_offers
+
+        skipped = [
+            {"store": r.store, "reason": r.error_code or r.collection_mode}
+            for r in store_results
+            if r.collection_mode in {"rate_limited", "skipped", "disabled"} or r.error_code == "RATE_LIMITED"
+        ]
+        collected = list(offers) + list(unverified)
         target_search = None
         if target_model:
-            from thailand.target_model import search_collected_offers
-
-            skipped = [
-                {"store": r.store, "reason": r.error_code or r.collection_mode}
-                for r in store_results
-                if r.collection_mode in {"rate_limited", "skipped", "disabled"} or r.error_code == "RATE_LIMITED"
-            ]
             target_search = search_collected_offers(
                 target_model,
-                list(offers) + list(unverified),
+                collected,
                 fx=fx,
                 stores_skipped=skipped,
             )
+        personal_searches = [
+            {
+                "key": str(target.get("personal_key") or ""),
+                "search": search_collected_offers(
+                    target,
+                    collected,
+                    fx=fx,
+                    stores_skipped=skipped,
+                ),
+            }
+            for target in (personal_targets or [])
+            if isinstance(target, dict)
+        ]
 
         finished_at = datetime.now(timezone.utc)
         result.update(
@@ -584,6 +599,7 @@ def run_thailand_scan(
                 "source_health": load_health().get("stores") or {},
                 "target_model": target_model,
                 "target_search": target_search,
+                "personal_searches": personal_searches,
                 "request_counts": {
                     r.store: r.request_count for r in store_results if r.request_count is not None
                 },

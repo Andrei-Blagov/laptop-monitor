@@ -16,6 +16,9 @@ TRIGGER_MANUAL_CHECK = "manual_check"
 TRIGGER_MANUAL_COMPARE = "manual_compare"
 TRIGGER_MANUAL_MODEL = "manual_model_compare"
 TRIGGER_MANUAL_RECOMMENDATION = "manual_recommendation"
+TRIGGER_PERSONAL_DAILY = "personal_daily"
+TRIGGER_PERSONAL_MANUAL = "personal_manual"
+PERSONAL_TRIGGERS = frozenset({TRIGGER_PERSONAL_DAILY, TRIGGER_PERSONAL_MANUAL})
 
 SECRET_KEY_FRAGMENTS = (
     "token",
@@ -133,6 +136,7 @@ def build_job(
     requested_chat_id: str | int | None = None,
     job_id: str | None = None,
     target_model: Mapping[str, Any] | None = None,
+    personal_targets: Sequence[Mapping[str, Any]] | None = None,
 ) -> dict[str, Any]:
     from deal_ranking import target_price_for_gpu
 
@@ -168,6 +172,7 @@ def build_job(
         "signals": sig_dicts,
         "russian_context": ctx_dicts,
         "target_model": dict(target_model) if target_model else None,
+        "personal_targets": [dict(item) for item in personal_targets] if personal_targets else [],
         "requested_chat_id": (
             str(requested_chat_id) if requested_chat_id is not None else None
         ),

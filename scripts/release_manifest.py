@@ -75,6 +75,8 @@ SYSTEMD_UNITS = (
     "laptop-monitor-backup.timer",
     "laptop-monitor-thailand.path",
     "laptop-monitor-thailand.service",
+    "laptop-monitor-personal-top.service",
+    "laptop-monitor-personal-top.timer",
     "n8n-watchdog.service",
     "n8n-watchdog.timer",
 )

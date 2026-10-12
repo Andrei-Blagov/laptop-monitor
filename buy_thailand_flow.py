@@ -32,6 +32,7 @@ from purchase_recommendation import (
     format_purchase_recommendation,
 )
 from thailand.job_models import (
+    PERSONAL_TRIGGERS,
     TRIGGER_BUY,
     TRIGGER_MANUAL_CHECK,
     TRIGGER_MANUAL_COMPARE,
@@ -445,6 +446,7 @@ def execute_thailand_job(
             snapshot_dir=snapshot_dir,
             write_snapshot=True,
             target_model=target_model,
+            personal_targets=job.get("personal_targets") or None,
         )
     except Exception as exc:  # noqa: BLE001
         logger.warning(
@@ -460,6 +462,41 @@ def execute_thailand_job(
 
     messages: list[str] = []
     target_search = scan_result.get("target_search")
+    if trigger in PERSONAL_TRIGGERS:
+        from personal_top import build_cards, format_personal_board, persist_personal_scan
+        from storage import get_all_products_readonly
+
+        persist_personal_scan(scan_result)
+        cards_state = {
+            "checked_at": scan_result.get("finished_at"),
+            "fx": scan_result.get("fx"),
+            "models": {
+                str(item.get("key")): {
+                    "search": item.get("search"),
+                    "checked_at": scan_result.get("finished_at"),
+                }
+                for item in (scan_result.get("personal_searches") or [])
+                if isinstance(item, dict)
+            },
+        }
+        messages.append(
+            format_personal_board(
+                build_cards(products=get_all_products_readonly(), state=cards_state)
+            )
+        )
+        out["messages"] = [m for m in messages if m][:2]
+        if deliver and sender is not None:
+            for text in out["messages"]:
+                try:
+                    res = sender.send_message(text)
+                    if getattr(res, "ok", False):
+                        out["messages_sent"] += 1
+                    else:
+                        out["messages_failed"] += 1
+                except Exception as exc:  # noqa: BLE001
+                    logger.warning("thailand job telegram failed: %s", type(exc).__name__)
+                    out["messages_failed"] += 1
+        return out
     recommend_trigger = trigger in {TRIGGER_BUY, TRIGGER_MANUAL_RECOMMENDATION}
     if recommend_trigger and deals:
         rec = build_recommendation(

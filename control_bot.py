@@ -85,6 +85,8 @@ BTN_TH_COMPARE = "ctrl:th_cmp"
 BTN_RU_TOP = "ctrl:ru_top"
 BTN_TH_FIND = "ctrl:th_find"
 BTN_RECOMMEND = "ctrl:recommend"
+BTN_PERSONAL = "ctrl:ptop"
+BTN_PERSONAL_REFRESH = "ctrl:ptop_go"
 CALLBACK_MODEL_PICK = "tm:"
 CALLBACK_RECOMMEND = "rq:"
 
@@ -96,6 +98,7 @@ BOT_COMMANDS: tuple[tuple[str, str], ...] = (
     ("top", "Топ предложений"),
     ("history", "История цен"),
     ("markets", "Россия и Таиланд"),
+    ("mytop", "Мой TOP-3"),
     ("run", "Запустить проверку"),
     ("status", "Статус системы"),
     ("version", "Версия бота"),
@@ -158,6 +161,8 @@ def handle_text_message(
         handle_recommendation_menu(client, token, chat_id)
     elif name == "markets":
         handle_markets_menu(client, token, chat_id)
+    elif name == "mytop":
+        handle_personal_top(client, token, chat_id)
     elif name == "status":
         send_message(client, token, chat_id, build_status_text())
     elif name == "version":
@@ -186,6 +191,9 @@ def _keyboard() -> dict[str, Any]:
             ],
             [
                 {"text": "🌍 Рынки", "callback_data": BTN_MARKETS},
+            ],
+            [
+                {"text": "Мой TOP-3", "callback_data": BTN_PERSONAL},
             ],
             [
                 {"text": "Статус", "callback_data": BTN_STATUS},
@@ -715,6 +723,76 @@ def build_top_text(db_path: Path | str = DEFAULT_DB_PATH) -> str:
     )
 
 
+def _personal_keyboard() -> dict[str, Any]:
+    return {
+        "inline_keyboard": [
+            [{"text": "Обновить Таиланд", "callback_data": BTN_PERSONAL_REFRESH}],
+            [{"text": "🏠 Меню", "callback_data": CALLBACK_MENU}],
+        ]
+    }
+
+
+def handle_personal_top(
+    client: httpx.Client,
+    token: str,
+    chat_id: str | int,
+    *,
+    message_id: int | None = None,
+) -> None:
+    from personal_top import build_cards, format_personal_board, load_state
+    from storage import (
+        DEFAULT_DB_PATH,
+        get_all_products_readonly,
+        get_price_history_for_products_readonly,
+    )
+    from deal_ranking import historical_mins_from_rows
+
+    products = get_all_products_readonly()
+    ids = [int(row["id"]) for row in products if row.get("id") is not None]
+    histories = get_price_history_for_products_readonly(DEFAULT_DB_PATH, ids) if ids else {}
+    text = format_personal_board(
+        build_cards(
+            products=products,
+            state=load_state(),
+            history_mins=historical_mins_from_rows(histories),
+        ),
+        histories=load_state().get("history") or {},
+    )
+    _reply_or_edit(
+        client,
+        token,
+        chat_id,
+        text,
+        message_id=message_id,
+        reply_markup=_personal_keyboard(),
+    )
+
+
+def handle_personal_refresh(
+    client: httpx.Client,
+    token: str,
+    chat_id: str | int,
+) -> None:
+    from personal_top import enqueue_personal_job
+    from storage import get_all_products_readonly
+
+    result = enqueue_personal_job(
+        manual=True,
+        chat_id=chat_id,
+        products=get_all_products_readonly(),
+    )
+    if result.get("ok"):
+        text = "Проверка Таиланда для TOP-3 поставлена в очередь. Магазины опрашиваются одним проходом."
+    elif result.get("error") == "too_soon":
+        text = "Свежая проверка уже есть. Повторный опрос магазинов пока не запускается."
+    elif result.get("error") == "already_queued":
+        text = "Проверка TOP-3 уже стоит в очереди."
+    else:
+        text = "Не удалось поставить проверку TOP-3 в очередь."
+    send_message(client, token, chat_id, text)
+    handle_personal_top(client, token, chat_id)
+
+
 def handle_markets_menu(
     client: httpx.Client,
     token: str,
@@ -1033,6 +1111,10 @@ def process_update(client: httpx.Client, token: str, update: dict[str, Any]) -> 
             handle_thailand_manual(client, token, chat_id, compare=False)
         elif data == BTN_TH_COMPARE:
             handle_thailand_manual(client, token, chat_id, compare=True)
+        elif data == BTN_PERSONAL:
+            handle_personal_top(client, token, chat_id, message_id=message_id)
+        elif data == BTN_PERSONAL_REFRESH:
+            handle_personal_refresh(client, token, chat_id)
         elif data == BTN_RECOMMEND:
             handle_recommendation_menu(client, token, chat_id, message_id=message_id)
         elif data.startswith(CALLBACK_RECOMMEND):
