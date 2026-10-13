@@ -2,9 +2,12 @@ from __future__ import annotations
 
 import re
 from dataclasses import asdict, dataclass, field
+from types import SimpleNamespace
 from typing import Any, Iterable, Mapping, Sequence
 
-from product_identity import ProductIdentity, find_config_conflicts, normalize_identifier
+from product_identity import (
+    ProductIdentity, find_config_conflicts, identity_from_collected_product, normalize_identifier,
+)
 
 
 def normalize_sku(sku: str | None) -> str | None:
@@ -99,6 +102,66 @@ class ComparisonResult:
     stats: dict[str, int]
     ambiguous: list[dict[str, Any]] = field(default_factory=list)
     conflicts: list[dict[str, Any]] = field(default_factory=list)
+
+
+def eligible_match_offers(
+    match: Any,
+    specs: Mapping[tuple[str, str], ProductIdentity],
+    fresh_stores: set[str] | None = None,
+) -> list[Any]:
+    """Validate each purchasable configuration before comparing prices."""
+    from laptop_eligibility import product_is_eligible
+
+    return [
+        offer for offer in match.offers
+        if (fresh_stores is None or offer.store in fresh_stores)
+        and product_is_eligible(
+            {"name": offer.name, "price": offer.price, "available": offer.available},
+            offer_identity(offer, specs),
+        )
+    ]
+
+
+# Strict evidence needed for a price comparison, independently of SKU identity.
+CROSS_STORE_CONFIG_FIELDS = (
+    "cpu", "gpu", "ram_gb", "ssd_gb", "screen_size_inch", "screen_resolution",
+)
+
+
+def offer_identity(offer: Any, specs: Mapping[tuple[str, str], ProductIdentity]) -> ProductIdentity:
+    cached = specs.get((offer.store, offer.external_id))
+    metadata = {
+        field: getattr(cached, field, None) for field in CROSS_STORE_CONFIG_FIELDS
+    }
+    if metadata["screen_size_inch"] is None:
+        metadata["screen_size_inch"] = getattr(cached, "screen_inch", None)
+    if metadata["gpu"] is None:
+        metadata["gpu"] = getattr(cached, "normalized_gpu", None)
+    return identity_from_collected_product(SimpleNamespace(
+        store=offer.store, external_id=offer.external_id, name=offer.name,
+        sku=offer.sku, price=offer.price, available=offer.available, url=offer.url,
+        metadata=metadata,
+    ))
+
+
+def comparable_offer_groups(match: Any, specs: Mapping[tuple[str, str], ProductIdentity],
+                             fresh_stores: set[str] | None = None) -> list[list[Any]]:
+    """Partition eligible offers using the existing configuration conflict check."""
+    groups: list[list[Any]] = []
+    for offer in eligible_match_offers(match, specs, fresh_stores):
+        identity = offer_identity(offer, specs)
+        if find_config_conflicts(identity, identity, required_fields=CROSS_STORE_CONFIG_FIELDS):
+            continue
+        for group in groups:
+            if not find_config_conflicts(
+                offer_identity(group[0], specs), identity,
+                required_fields=CROSS_STORE_CONFIG_FIELDS,
+            ):
+                group.append(offer)
+                break
+        else:
+            groups.append([offer])
+    return [group for group in groups if len({o.store for o in group}) >= 2]
 
 
 def _as_offer(row: Mapping[str, Any]) -> Offer:

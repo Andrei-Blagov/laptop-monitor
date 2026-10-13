@@ -195,12 +195,12 @@ class FreshStoreTopTests(unittest.TestCase):
             ProductMatch(
                 normalized_sku="X",
                 display_sku="X",
-                name="Model X",
+                name='Model X Core Ultra 9 275HX RTX 5070 Ti, 32GB DDR5, 1TB SSD, 16" 2560x1600',
                 offers=[
                     Offer(
                         store="regard",
                         external_id="1",
-                        name="Model X",
+                        name='Model X Core Ultra 9 275HX RTX 5070 Ti, 32GB DDR5, 1TB SSD, 16" 2560x1600',
                         sku="X",
                         price=250_000,
                         available=True,
@@ -209,7 +209,7 @@ class FreshStoreTopTests(unittest.TestCase):
                     Offer(
                         store="andpro",
                         external_id="2",
-                        name="Model X",
+                        name='Model X Core Ultra 9 275HX RTX 5070 Ti, 32GB DDR5, 1TB SSD, 16" 2560x1600',
                         sku="X",
                         price=200_000,  # cheaper but will be stale
                         available=True,
@@ -218,7 +218,7 @@ class FreshStoreTopTests(unittest.TestCase):
                     Offer(
                         store="dns",
                         external_id="3",
-                        name="Model X",
+                        name='Model X Core Ultra 9 275HX RTX 5070 Ti, 32GB DDR5, 1TB SSD, 16" 2560x1600',
                         sku="X",
                         price=240_000,
                         available=True,

@@ -14,10 +14,9 @@ from alerts import (
     EVENT_PRICE_DROP,
     EVENT_TARGET_PRICE,
     _specs_index,
-    _comparable_offer_groups,
 )
 from laptop_eligibility import product_is_eligible
-from comparison import Offer, ProductMatch, match_products
+from comparison import Offer, ProductMatch, match_products, comparable_offer_groups
 from notification_groups import (
     NotificationGroup,
     build_product_group_keys,
@@ -201,7 +200,7 @@ def _event_rejection_reason(
                     sku=r.get("sku"), price=r["price"], available=r["available"],
                     url=r.get("url"), product_id=r["id"]) for r in checked_offers.values()]
     match = ProductMatch("", "", "", offers=offers)
-    if not any(len(group) == len(offers) for group in _comparable_offer_groups(match, specs)):
+    if not any(len(group) == len(offers) for group in comparable_offer_groups(match, specs)):
         return "eligibility"
     # Configuration equality alone does not invent a new product-identity link.
     if not any({o.product_id for o in m.offers} >= set(checked_offers) for m in comparison.matches):

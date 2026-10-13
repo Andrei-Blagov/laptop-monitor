@@ -188,12 +188,12 @@ class DealRankingV2Tests(unittest.TestCase):
 
     # --- SAVING ---
     def test_17_saving_tiers(self) -> None:
-        self.assertEqual(score_cross_store_saving(4_999)[0], 0)
-        self.assertEqual(score_cross_store_saving(5_000)[0], 1)
-        self.assertEqual(score_cross_store_saving(10_000)[0], 2)
-        self.assertEqual(score_cross_store_saving(20_000)[0], 3)
-        self.assertEqual(score_cross_store_saving(30_000)[0], 4)
-        self.assertEqual(score_cross_store_saving(100_000)[0], config.SCORE_SAVING_MAX)
+        self.assertEqual(score_cross_store_saving(4_999, verified=True)[0], 0)
+        self.assertEqual(score_cross_store_saving(5_000, verified=True)[0], 1)
+        self.assertEqual(score_cross_store_saving(10_000, verified=True)[0], 2)
+        self.assertEqual(score_cross_store_saving(20_000, verified=True)[0], 3)
+        self.assertEqual(score_cross_store_saving(30_000, verified=True)[0], 4)
+        self.assertEqual(score_cross_store_saving(100_000, verified=True)[0], config.SCORE_SAVING_MAX)
 
     # --- TOTAL / BREAKDOWN ---
     def test_18_total_0_100(self) -> None:
@@ -207,6 +207,7 @@ class DealRankingV2Tests(unittest.TestCase):
             screen_resolution="2560x1600",
             historical_min=200_000,
             saving_vs_next=40_000,
+            saving_verified=True,
         )
         self.assertGreaterEqual(result.score, 0)
         self.assertLessEqual(result.score, 100)
@@ -221,6 +222,7 @@ class DealRankingV2Tests(unittest.TestCase):
             screen_inch=17,
             historical_min=210_000,
             saving_vs_next=12_000,
+            saving_verified=True,
         )
         self.assertAlmostEqual(sum(result.breakdown.values()), result.score, places=2)
 
@@ -515,8 +517,8 @@ class DealRankingV2Tests(unittest.TestCase):
         ]
         self.assertEqual(payload[0]["name"], ranked[0].cluster_name)
 
-    def test_33_cluster_specs_from_sibling_offer(self) -> None:
-        """Cheapest store may lack cache; sibling identity still supplies GPU."""
+    def test_33_unconfirmed_cheapest_does_not_borrow_sibling_specs(self) -> None:
+        """Choose the confirmed eligible seller; an unknown sibling supplies no specs."""
         match = _match(
             "Gigabyte A16",
             [
@@ -551,8 +553,9 @@ class DealRankingV2Tests(unittest.TestCase):
                 },
             )(),
         }
-        ranked = rank_clusters([match], specs_by_key=specs, fresh_stores={"kns", "regard"}, hard_filters=False)
-        self.assertEqual(ranked[0].store, "kns")
+        ranked = rank_clusters([match], specs_by_key=specs, fresh_stores={"kns", "regard"})
+        self.assertEqual(ranked[0].store, "regard")
+        self.assertIsNone(ranked[0].saving_vs_next)
         self.assertIsNotNone(canonical_gpu(ranked[0].gpu))
         self.assertGreaterEqual(ranked[0].score, 50)
 

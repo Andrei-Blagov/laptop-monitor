@@ -592,9 +592,9 @@ class SingleStoreRankingTests(unittest.TestCase):
         base = "MSI Raider 16 HX AI A2XWHG-814XRU"
         deals, exclusions = self._deals(
             [
-                _product("regard", "r1", name=base + SPECS, sku="9S7-15M361-814", price=261_090),
-                _product("kns", "k1", name=base + SPECS, sku="9S7-15M361-814", price=258_800),
-                _product("kns", "k2", name=base + "-wpro" + SPECS, sku="A2XWHG-814XRU-WPRO", price=274_580),
+                _product("regard", "r1", name=base + FULL, sku="9S7-15M361-814", price=261_090),
+                _product("kns", "k1", name=base + FULL, sku="9S7-15M361-814", price=258_800),
+                _product("kns", "k2", name=base + "-wpro" + FULL, sku="A2XWHG-814XRU-WPRO", price=274_580),
             ]
         )
         self.assertEqual(sorted(d.price for d in deals), [258_800, 274_580])
@@ -606,12 +606,12 @@ class SingleStoreRankingTests(unittest.TestCase):
         self.assertFalse(any(e["reason"] == "DUPLICATE_MODEL" for e in exclusions))
 
     def test_partial_sku_does_not_replace_cluster(self) -> None:
-        name = "ASUS ROG Strix G18 G815LR-TT344 90NR0LT1-M00H30" + SPECS
+        name = "ASUS ROG Strix G18 G815LR-TT344 90NR0LT1-M00H30" + FULL
         deals, _ = self._deals(
             [
                 _product("kns", "k1", name=name, sku="90NR0LT1-M00H30", price=322_178),
                 _product("citilink", "c1", name=name, sku="90NR0LT1-M00H30", price=324_055),
-                _product("regard", "r1", name="ASUS G815LR (TT344)" + SPECS, sku="90NR0LT1-M00H30-R", price=320_400),
+                _product("regard", "r1", name="ASUS G815LR (TT344)" + FULL, sku="90NR0LT1-M00H30-R", price=320_400),
             ]
         )
         by_price = {d.price: d for d in deals}
@@ -798,10 +798,11 @@ class ProvenIdentityMergeTests(SingleStoreRankingTests):
         )
         self.assertEqual(merges, [])
         self.assertEqual(len(deals), 2)
-        cluster = next(d for d in deals if d.saving_vs_next is not None)
-        self.assertEqual(cluster.price, 258_800)
-        self.assertEqual(cluster.next_store, "regard")
-        self.assertEqual(cluster.next_price, 261_090)
+        cluster = next(d for d in deals if d.store == "regard")
+        self.assertEqual(cluster.price, 261_090)
+        self.assertIsNone(cluster.saving_vs_next)
+        self.assertIsNone(cluster.next_store)
+        self.assertIsNone(cluster.next_price)
         lone = next(d for d in deals if d.store == "citilink")
         self.assertEqual(lone.price, 270_000)
         self.assertIsNone(lone.saving_vs_next)

@@ -35,6 +35,8 @@ class RankedDeal:
     # offer in the cluster (ISO, UTC). Used by BUY maturity / repeat rules.
     cluster_key: str | None = None
     history_started_at: str | None = None
+    # Set only after comparison.comparable_offer_groups confirms the second offer.
+    saving_verified: bool = False
 
 
 @dataclass
@@ -240,8 +242,11 @@ def score_historical_opportunity(
     return 0.0, None
 
 
-def score_cross_store_saving(saving_vs_next: int | None) -> tuple[float, str | None]:
-    if saving_vs_next is None:
+def score_cross_store_saving(
+    saving_vs_next: int | None, *, verified: bool = False,
+) -> tuple[float, str | None]:
+    """Bonus for a saving produced by the shared six-field comparison, never a raw guess."""
+    if not verified or saving_vs_next is None:
         return 0.0, None
     saving = int(saving_vs_next)
     if saving < int(config.SCORE_SAVING_TIER_1):
@@ -389,6 +394,7 @@ def score_offer(
     cpu: str | None = None,
     screen_resolution: str | None = None,
     historical_min: int | None = None,
+    saving_verified: bool = False,
 ) -> ScoreResult:
     breakdown: dict[str, float] = {
         "gpu": 0.0,
@@ -439,7 +445,7 @@ def score_offer(
     if h_reason:
         reasons.append(h_reason)
 
-    sv_pts, _ = score_cross_store_saving(saving_vs_next)
+    sv_pts, _ = score_cross_store_saving(saving_vs_next, verified=saving_verified)
     breakdown["saving"] = sv_pts
 
     total = round(sum(breakdown.values()), 2)
@@ -469,133 +475,23 @@ def _select_reasons(reasons: list[str], breakdown: Mapping[str, float]) -> list[
     return reasons[:5]
 
 
-def _norm_spec_value(field: str, value: Any) -> Any:
-    if value is None or value == "":
-        return None
-    if field in {"gpu", "cpu", "screen_resolution"}:
-        return str(value).upper().replace(" ", "")
-    if field in {"ram_gb", "ssd_gb"}:
-        try:
-            return int(value)
-        except (TypeError, ValueError):
-            return value
-    if field == "screen_inch":
-        try:
-            return round(float(value), 2)
-        except (TypeError, ValueError):
-            return value
-    return value
-
-
-def _merge_spec_field(
-    current: Any,
-    incoming: Any,
-    *,
-    field: str,
-    conflicts: list[str],
-) -> Any:
-    if field in conflicts:
-        return None
-    if incoming is None or incoming == "":
-        return current
-    if current is None or current == "":
-        return incoming
-    if _norm_spec_value(field, current) == _norm_spec_value(field, incoming):
-        return current
-    # Conflicting known values → do not use for ranking/confidence.
-    if field not in conflicts:
-        conflicts.append(field)
-    return None
-
-
 def _extract_specs(
     match: Any,
     best: Any,
     specs_by_key: Mapping[tuple[str, str], Any] | None,
 ) -> dict[str, Any]:
-    """
-    Resolve specs for a cluster without inventing values.
+    """Resolve only this offer's cache/title evidence; never borrow from another seller."""
+    from comparison import offer_identity
 
-    Prefer identity/cache from any offer in the cluster (not only the cheapest
-    store), then fall back to title/URL extraction across offer names.
-    Conflicting known values across offers are dropped (SPEC_CONFLICT).
-    """
-    gpu = None
-    ram_gb = None
-    ssd_gb = None
-    screen_inch = None
-    cpu = None
-    screen_resolution = None
-    conflicts: list[str] = []
-
-    offers = list(getattr(match, "offers", []) or [])
-    # Cheapest/fresh best first, then remaining offers.
-    ordered_offers = [best] + [o for o in offers if o is not best]
-
-    if specs_by_key:
-        for offer in ordered_offers:
-            key = (offer.store, offer.external_id)
-            spec = specs_by_key.get(key)
-            if spec is None:
-                continue
-            gpu = _merge_spec_field(
-                gpu,
-                getattr(spec, "gpu", None) or getattr(spec, "normalized_gpu", None),
-                field="gpu",
-                conflicts=conflicts,
-            )
-            ram_gb = _merge_spec_field(
-                ram_gb, getattr(spec, "ram_gb", None), field="ram_gb", conflicts=conflicts
-            )
-            ssd_gb = _merge_spec_field(
-                ssd_gb, getattr(spec, "ssd_gb", None), field="ssd_gb", conflicts=conflicts
-            )
-            screen_inch = _merge_spec_field(
-                screen_inch,
-                getattr(spec, "screen_inch", None)
-                or getattr(spec, "screen_size_inch", None),
-                field="screen_inch",
-                conflicts=conflicts,
-            )
-            cpu = _merge_spec_field(
-                cpu, getattr(spec, "cpu", None), field="cpu", conflicts=conflicts
-            )
-            screen_resolution = _merge_spec_field(
-                screen_resolution,
-                getattr(spec, "screen_resolution", None),
-                field="screen_resolution",
-                conflicts=conflicts,
-            )
-
-    from stores.common import extract_specs_from_name
-
-    # Title fallback is weaker: fill only still-missing fields; never override.
-    name_parts = [getattr(match, "name", None)]
-    for offer in ordered_offers:
-        name_parts.append(getattr(offer, "name", None))
-        name_parts.append(getattr(offer, "url", None))
-    name_blob = " ".join(x for x in name_parts if x)
-    inferred = extract_specs_from_name(name_blob)
-    if gpu is None and "gpu" not in conflicts:
-        gpu = inferred.get("gpu")
-    if ram_gb is None and "ram_gb" not in conflicts:
-        ram_gb = inferred.get("ram_gb")
-    if ssd_gb is None and "ssd_gb" not in conflicts:
-        ssd_gb = inferred.get("ssd_gb")
-    if screen_inch is None and "screen_inch" not in conflicts:
-        screen_inch = inferred.get("screen_inch")
-    if cpu is None and "cpu" not in conflicts:
-        cpu = inferred.get("cpu")
-    if screen_resolution is None and "screen_resolution" not in conflicts:
-        screen_resolution = inferred.get("screen_resolution")
+    identity = offer_identity(best, specs_by_key or {})
     return {
-        "gpu": gpu,
-        "ram_gb": ram_gb,
-        "ssd_gb": ssd_gb,
-        "screen_inch": screen_inch,
-        "cpu": cpu,
-        "screen_resolution": screen_resolution,
-        "spec_conflicts": list(conflicts),
+        "gpu": identity.gpu,
+        "ram_gb": identity.ram_gb,
+        "ssd_gb": identity.ssd_gb,
+        "screen_inch": identity.screen_size_inch,
+        "cpu": identity.cpu,
+        "screen_resolution": identity.screen_resolution,
+        "spec_conflicts": [],
     }
 
 
@@ -621,9 +517,11 @@ def rank_clusters(
     history_starts: optional product_id → first observation (does not affect score).
 
     hard_filters: drop clusters that fail laptop_eligibility (GPU, installed
-    RAM, SSD, screen). Scores of the remaining clusters are unchanged.
+    RAM, SSD, screen). A missing/incompatible peer never drops a suitable offer.
     exclusions: when given, receives one record per dropped cluster.
     """
+    from comparison import comparable_offer_groups, eligible_match_offers
+
     allowed = fresh_stores if fresh_stores is not None else allowed_stores
     ranked: list[RankedDeal] = []
     for match in matches:
@@ -639,10 +537,18 @@ def rank_clusters(
             if exclusions is not None:
                 exclusions.append(_exclusion_record(match, allowed, specs_by_key))
             continue
+        if hard_filters:
+            eligible = eligible_match_offers(match, specs_by_key or {}, allowed)
+            if eligible:
+                available = eligible
         ordered = sorted(available, key=lambda o: (int(o.price), o.store))
         best = ordered[0]
-        # Saving is a cross-store figure: the next offer must be another store.
-        nxt = next((o for o in ordered[1:] if o.store != best.store), None)
+        # The same group is used by CROSS-STORE; unmatched/unknown peers add no saving.
+        comparable = next((group for group in comparable_offer_groups(
+            match, specs_by_key or {}, allowed,
+        ) if best in group), [])
+        nxt = next((o for o in sorted(comparable, key=lambda o: (int(o.price), o.store))
+                    if o.store != best.store), None)
         saving = int(nxt.price) - int(best.price) if nxt is not None else None
 
         specs = _extract_specs(match, best, specs_by_key)
@@ -677,6 +583,7 @@ def rank_clusters(
             ssd_gb=specs["ssd_gb"],
             screen_inch=specs["screen_inch"],
             saving_vs_next=saving,
+            saving_verified=nxt is not None,
             cpu=specs["cpu"],
             screen_resolution=specs["screen_resolution"],
             historical_min=hist_min,
@@ -699,6 +606,7 @@ def rank_clusters(
                 price=int(best.price),
                 url=best.url,
                 saving_vs_next=saving,
+                saving_verified=nxt is not None,
                 next_store=nxt.store if nxt else None,
                 next_price=int(nxt.price) if nxt else None,
                 ram_gb=specs["ram_gb"],
@@ -810,6 +718,17 @@ def _exclusion_record(
     )
 
 
+def effective_deal_score(deal: RankedDeal) -> float:
+    """Remove unverified savings from an older restored score without changing other weights."""
+    if deal.saving_verified:
+        return float(deal.score)
+    breakdown = deal.score_breakdown or {}
+    raw_bonus = float(breakdown.get("saving") or 0.0)
+    if "saving" not in breakdown and deal.saving_vs_next is not None:
+        raw_bonus = score_cross_store_saving(deal.saving_vs_next, verified=True)[0]
+    return max(0.0, round(float(deal.score) - raw_bonus, 2))
+
+
 def _store_label(store: str) -> str:
     if store == "andpro":
         return "ANDPRO"
@@ -856,13 +775,14 @@ def format_top_deals_message(
         if cfg:
             lines.append(" / ".join(cfg))
         lines.append(f"{_store_label(deal.store)}: {price} ₽")
-        lines.append(f"Оценка: {deal.score:g}/100")
+        lines.append(f"Оценка: {effective_deal_score(deal):g}/100")
         if deal.confidence < 100:
             lines.append(f"Данные: {deal.confidence}%")
         if deal.reasons:
             lines.append("Почему: " + " · ".join(deal.reasons[:5]))
         if (
-            deal.saving_vs_next
+            deal.saving_verified
+            and deal.saving_vs_next
             and deal.next_store
             and deal.saving_vs_next >= int(config.SCORE_SAVING_TIER_1)
         ):
