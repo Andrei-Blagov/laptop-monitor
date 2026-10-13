@@ -65,7 +65,7 @@ def _product(
         store=store,
         external_id=external_id,
         url=f"https://example.test/{store}/{external_id}",
-        name=name,
+        name=name + " RTX 5070 Ti, 32GB DDR5, 1TB SSD, 2560x1600",
         sku=sku,
         price=price,
         available=available,

@@ -62,6 +62,7 @@ def _confirmed_row(**overrides) -> dict:
         "screen_resolution": "2560x1600",
         "url": "https://jib.example/raider",
         "spec_differences": [],
+        "purchase_eligible": True,
     }
     row.update(overrides)
     return row
@@ -165,7 +166,7 @@ class IdentityTests(unittest.TestCase):
         self.assertIsNone(card["winner"])
         text = format_personal_board([card])
         self.assertIn("83RU003JRK", text)
-        self.assertIn("LEN-TH", text)
+        self.assertNotIn("LEN-TH", text)  # Legacy candidate has unconfirmed SSD.
         self.assertIn("не EXACT", text)
         self.assertNotIn("Таиланд EXACT", text)
         self.assertNotIn("выгоднее", text)
@@ -244,7 +245,14 @@ class VerdictTests(unittest.TestCase):
             "same_family_matches": [
                 {
                     "match_level": "SAME_FAMILY",
-                    "name": "ROG Strix G615LR-S5162",
+                    "name": "Suitable test Strix variant",
+                    "gpu": "RTX 5070 Ti",
+                    "ram_gb": 64,
+                    "ssd_gb": 1024,
+                    "screen_resolution": "2560x1600",
+                    "availability_confirmed": True,
+                    "verification_status": "VERIFIED",
+                    "purchase_eligible": True,
                     "store": "jib",
                     "price_thb": 90000,
                     "price_rub": 220000,
@@ -356,13 +364,20 @@ class QueueTests(unittest.TestCase):
             available=True,
             collected_at=NOW,
             sku="83RU003JRK",
+            ssd_gb=1024,
+            gpu_source="structured_api",
+            verification_status="VERIFIED",
+            availability_confirmed=True,
+            availability_status="in_stock",
             gpu="RTX 5070 Ti",
             ram_gb=32,
             screen_resolution="2560x1600",
         )
         from personal_top import attach_series_candidates
+        from thailand.models import FxRate
+        rate = FxRate(source="test", currency="THB", nominal=1, official_rate=2.5, rub_per_thb=2.5, published_date=None, fetched_at=NOW)
 
-        attached = attach_series_candidates(legion, {"exact_matches": []}, [offer], None)
+        attached = attach_series_candidates(legion, {"exact_matches": []}, [offer], rate)
         self.assertEqual(attached["series_candidates"][0]["match_level"], "CANDIDATE")
         self.assertNotEqual(attached["series_candidates"][0]["match_level"], "EXACT")
 
@@ -376,16 +391,17 @@ class QueueTests(unittest.TestCase):
                 "personal_searches": [
                     {
                         "key": item["personal_key"],
-                        "search": attach_series_candidates(item, {"exact_matches": [], "same_family_matches": [], "equivalent_matches": []}, [offer], None),
+                        "search": attach_series_candidates(item, {"exact_matches": [], "same_family_matches": [], "equivalent_matches": []}, [offer], rate),
                     }
                     for item in kwargs["personal_targets"]
                 ],
             }
 
         with tempfile.TemporaryDirectory() as tmp:
-            with mock.patch("personal_top.state_path", return_value=Path(tmp) / "state.json"), mock.patch(
+            with mock.patch("personal_top.datetime", wraps=datetime) as clock, mock.patch("personal_top.state_path", return_value=Path(tmp) / "state.json"), mock.patch(
                 "storage.get_all_products_readonly", return_value=[]
             ):
+                clock.now.return_value = NOW
                 result = execute_thailand_job(
                     {
                         "job_id": "personal-test",

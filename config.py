@@ -25,6 +25,8 @@ MAX_TRACKED_PRICE_RUB: int = 330_000
 # Hard eligibility for user-facing selection (TOP, recommendation, BUY, menus).
 # Collection and price history keep every product; only selection is filtered.
 MIN_INSTALLED_RAM_GB: int = 32
+# Store adapters normalize 1 TB to 1024 GB; some catalogs use 1000 GB.
+MIN_SSD_GB: int = 1000
 # Screen: horizontal side above Full HD width, vertical side at least 1440,
 # and at least 2560×1440 pixels in total.
 MIN_SCREEN_WIDTH_EXCLUSIVE: int = 1920

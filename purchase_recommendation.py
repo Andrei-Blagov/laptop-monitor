@@ -9,6 +9,8 @@ from typing import Any, Sequence
 import config
 from buy_opportunity import evaluate_buy_rules
 from deal_ranking import RankedDeal
+from laptop_eligibility import deal_is_eligible
+from thailand.eligibility import search_row_user_facing_eligible
 
 BUY_NOW_RUSSIA = "BUY_NOW_RUSSIA"
 THAILAND_BETTER = "THAILAND_BETTER"
@@ -120,6 +122,11 @@ def format_purchase_recommendation(
     alternatives: Sequence[dict[str, Any]] | None = None,
 ) -> str:
     """One user-facing recommendation. Internal enums stay out of the text."""
+    if not deal_is_eligible(deal):
+        return (
+            f"{deal.cluster_name or 'Модель'}\n"
+            "Не рекомендовано: характеристики или цена не подтверждены либо не соответствуют требованиям покупки."
+        )
     lines = ["🏆 <b>ЧТО ПОКУПАТЬ СЕЙЧАС</b>", ""]
     lines.append(str(deal.cluster_name or "Модель"))
     bits = [b for b in (deal.gpu, deal.cpu) if b]
@@ -188,7 +195,7 @@ def format_purchase_recommendation(
     lines.append("")
     lines.append("✅ Вывод")
     lines.append(_conclusion(deal, rec))
-    alts = [row for row in (alternatives or []) if row.get("name")][:2]
+    alts = [row for row in (alternatives or []) if row.get("name") and search_row_user_facing_eligible(row)][:2]
     if alts:
         lines.append("")
         lines.append("Альтернативы в Таиланде:")
@@ -351,7 +358,7 @@ def coverage_notes_from_stores(stores: Sequence[dict[str, Any]] | None) -> tuple
 def _in_stock_rows(rows: Sequence[dict[str, Any]]) -> list[dict[str, Any]]:
     return [
         row for row in rows
-        if not row.get("out_of_stock") and row.get("price_rub") is not None and int(row.get("price_rub") or 0) > 0
+        if search_row_user_facing_eligible(row)
     ]
 
 
@@ -363,6 +370,11 @@ def build_recommendation(
     now: datetime | None = None,
 ) -> Recommendation:
     """One verdict from the current Russian deal and an already collected Thailand search."""
+    if not deal_is_eligible(deal):
+        return Recommendation(
+            verdict=INSUFFICIENT_DATA,
+            reasons=["ru_purchase_requirements_not_met"],
+        )
     search = search or {}
     days = history_days_for_deal(deal, now)
     mature = days is not None and days >= float(config.BUY_MIN_HISTORY_DAYS)

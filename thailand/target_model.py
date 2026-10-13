@@ -286,6 +286,9 @@ def _row(
     fx: FxRate | None,
     cap: int,
 ) -> dict[str, Any]:
+    from thailand.eligibility import offer_user_facing_eligible
+
+    eligible, excluded, _ = offer_user_facing_eligible(offer, fx=fx)
     rub = thb_to_rub(offer.price_thb, fx) if fx is not None else None
     purchasable = offer.availability_status in {"in_stock", "online_available", "store_pickup_only"} and offer.available
     level = str(detail.get("match_level") or "")
@@ -317,6 +320,9 @@ def _row(
         "over_cap": rub is not None and rub > cap,
         "out_of_stock": not purchasable,
         "gpu_source": offer.gpu_source,
+        "purchase_eligible": eligible,
+        "purchase_excluded_reason": excluded,
+        "price_verified_for_variant": offer.price_verified_for_variant,
     }
 
 

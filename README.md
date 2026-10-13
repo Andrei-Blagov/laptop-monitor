@@ -16,7 +16,7 @@
 | **Region** | `MONITOR_REGION=moscow` — cross-store только по одной географии |
 | **Price semantics** | `Product.price` = публичная цена без membership/кредита/trade-in |
 | **Price cap** | User-facing TOP / alerts / cross-store / Thailand: **≤ 330 000 ₽** (`MAX_TRACKED_PRICE_RUB`) |
-| **Hard eligibility** | TOP, рекомендация, BUY и меню моделей: RTX 5070 Ti / 5080, установлено **≥ 32 GB RAM**, экран **> 1920 по горизонтали, ≥ 1440 по вертикали, ≥ 2560×1440 пикселей**. Неизвестные RAM / разрешение не проходят. Сбор и история не фильтруются. Модели одного магазина тоже в рейтинге, без cross-store saving. Одинаковая модель соединяется только при точном идентификаторе и полном совпадении CPU, GPU, RAM, SSD, диагонали и разрешения; все магазины и цены сохраняются. Региональный суффикс и `-wpro` остаются отдельными |
+| **Hard eligibility** | Единый фильтр для RU / TH рейтингов, BUY, PRICE DROP, HISTORICAL LOW, TARGET PRICE, CROSS-STORE и рекомендаций: RTX 5070 Ti / 5080, установлено **≥ 32 GB RAM**, **SSD ≥ 1 TB** (1000 / 1024 GB), экран **> 1920 по горизонтали, ≥ 1440 по вертикали, ≥ 2560×1440 пикселей**. Неизвестные GPU / RAM / SSD / разрешение не проходят. Поиск широкий, любых производителей; личный TOP-3 — эталон, не список разрешённых моделей. Сбор и история не фильтруются. Модели одного магазина тоже в рейтинге, без cross-store saving. Одинаковая модель соединяется только при точном идентификаторе и полном совпадении CPU, GPU, RAM, SSD, диагонали и разрешения; все магазины и цены сохраняются. Региональный суффикс и `-wpro` остаются отдельными |
 | **Priority watchlist** | `PRIORITY_MODELS`: модель отслеживается отдельно от рейтинга (цена, история, наличие, причина исключения). Если поиск Regard её не вернул, запрашивается одна карточка товара. Сейчас там MSI Vector 17 HX AI A2XWIG-063XRU |
 | **Мой TOP-3** | Три личные модели сравниваются с Таиландом одним ежедневным заданием существующего worker. В Telegram: цены РФ и свежая цена THB, курс, экономия, история и вывод. Устаревшая тайская цена не показывается как актуальная |
 | **Independent snapshots** | Успешный store сохраняется отдельно; failed ≠ «все unavailable» |
@@ -42,7 +42,7 @@
   - `laptop-monitor-thailand.path` → worker container → Thailand scan / comparison Telegram
 - Scan только при новом BUY signal или вручную из Telegram **🌍 Рынки** (enqueue-only в control bot)
 - Сравнение предполагает локальную покупку в Таиланде (без авиа / таможни / пересылки)
-- User-facing Thailand recommendations: **verified + purchasable + ≤ 330 000 ₽**, sorted **price_rub ASC**
+- User-facing Thailand recommendations: **verified + purchasable + единый фильтр GPU / RAM / SSD / экрана + ≤ 330 000 ₽ по актуальному курсу**, sorted **price_rub ASC**. Старые результаты без отметки новой проверки не поддерживают рекомендацию покупки до свежего скана; исходные предложения и история сохраняются.
 - Sources: JIB (direct); Advice / BaNANA direct (experimental/fail-safe); Lazada marketplace (labels `Lazada · seller`, never as direct)
 - Over-cap Thai offers may remain in snapshots; Telegram shows only the excluded count
 
@@ -111,7 +111,7 @@ MONITOR_REGION=moscow
 Приоритет идентификации: normalized SKU → MPN → alternative PN → strong ID → config compatibility.  
 Конфликт конфигурации блокирует плохой cluster.
 
-**Scoring v2** (после eligibility: fresh + available + valid price ≤ 300k):
+**Scoring v2** (после eligibility: fresh + available + подтверждённые GPU / RAM / SSD / экран + valid price ≤ 330k):
 
 | Component | Max |
 |-----------|-----|

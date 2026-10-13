@@ -227,7 +227,7 @@ class FreshStoreTopTests(unittest.TestCase):
                 ],
             )
         ]
-        deals = rank_clusters(matches, fresh_stores={"regard", "dns"})
+        deals = rank_clusters(matches, fresh_stores={"regard", "dns"}, hard_filters=False)
         self.assertEqual(len(deals), 1)
         self.assertEqual(deals[0].store, "dns")
         self.assertEqual(deals[0].price, 240_000)

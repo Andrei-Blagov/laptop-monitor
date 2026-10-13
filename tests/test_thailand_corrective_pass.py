@@ -60,6 +60,7 @@ def _direct(**kwargs) -> ThailandOffer:
         ram_gb=32,
         ssd_gb=1024,
         screen_size_inch=16.0,
+        screen_resolution="2560x1600",
         sku="G614PR-TS113W",
         manufacturer_part_number="G614PR-TS113W",
         channel="direct",
@@ -75,7 +76,7 @@ def _lazada_raw(**kwargs):
         "skuId": "sku-1",
         "name": (
             "ASUS ROG Strix G16 G614PR-TS113W RTX 5070 Ti "
-            "Ryzen 9 32GB 1TB 16 inch"
+            "Ryzen 9 32GB 1TB 16 inch 2560x1600"
         ),
         "price": 84990,
         "url": "https://www.lazada.co.th/products/asus-i123456789-ssku-1.html",
@@ -89,6 +90,7 @@ def _lazada_raw(**kwargs):
         "ram_gb": 32,
         "ssd_gb": 1024,
         "screen_size_inch": 16.0,
+        "screen_resolution": "2560x1600",
         "mpn": "G614PR-TS113W",
         "price_verified_for_variant": True,
     }
@@ -263,6 +265,8 @@ class BananaViaLazadaTests(unittest.TestCase):
             )
         )
         assert o is not None
+        # Ranking fixture has confirmed resolution from product enrichment.
+        o.screen_resolution = "2560x1600"
         top = build_thai_top([o], fx=_fx(2.5))
         self.assertEqual(len(top), 1)
         self.assertEqual(top[0]["store_label"], "Lazada · BaNANA IT")
@@ -542,6 +546,8 @@ class CrossChannelGroupingTests(unittest.TestCase):
             _lazada_raw(seller_name="BaNANA IT", official_store=False, mall=True)
         )
         assert o is not None
+        # Ranking fixture has confirmed resolution from product enrichment.
+        o.screen_resolution = "2560x1600"
         top = build_thai_top([o], fx=_fx(2.5))
         self.assertEqual(top[0]["store_label"], "Lazada · BaNANA IT")
         text = format_thailand_alternatives_message(top)

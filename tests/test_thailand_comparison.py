@@ -44,6 +44,7 @@ def _match(**kwargs) -> CrossCountryMatch:
         ram_gb=32,
         ssd_gb=1024,
         screen_size_inch=16.0,
+        screen_resolution="2560x1600",
         cpu="Intel Core Ultra 9 275HX",
         availability_status="in_stock",
         availability_confirmed=True,
@@ -124,7 +125,7 @@ class VerdictTests(unittest.TestCase):
         self.assertEqual(c.verdict, VERDICT_INSUFFICIENT_THAI)
 
     def test_same_family_incomplete_no_clearly_better(self) -> None:
-        from thailand.comparison import VERDICT_INCOMPLETE_CONFIG, VERDICT_THAI_CLEARLY
+        from thailand.comparison import VERDICT_INSUFFICIENT_THAI, VERDICT_THAI_CLEARLY
 
         m = _match(
             level="SAME_FAMILY",
@@ -137,7 +138,7 @@ class VerdictTests(unittest.TestCase):
         m.thai_offer.ram_gb = None
         m.thai_offer.ssd_gb = None
         c = country_verdict(m, fx=_fx())
-        self.assertEqual(c.verdict, VERDICT_INCOMPLETE_CONFIG)
+        self.assertEqual(c.verdict, VERDICT_INSUFFICIENT_THAI)
         self.assertNotEqual(c.verdict, VERDICT_THAI_CLEARLY)
 
     def test_no_comparable(self) -> None:

@@ -8,6 +8,14 @@ from pathlib import Path
 from typing import Any, Callable
 
 import config
+from alerts import (
+    EVENT_CROSS_STORE,
+    EVENT_HISTORICAL_LOW,
+    EVENT_PRICE_DROP,
+    EVENT_TARGET_PRICE,
+    _specs_index,
+)
+from laptop_eligibility import product_is_eligible
 from comparison import match_products
 from notification_groups import (
     NotificationGroup,
@@ -100,6 +108,7 @@ def deliver_alert_events(
     dry_run: bool = False,
     max_attempts: int | None = None,
     sleep: Callable[[float], None] = time.sleep,
+    specs_path: Path | str | None = None,
 ) -> dict[str, Any]:
     """
     Доставляет undelivered alert_events в Telegram с grouping.
@@ -130,6 +139,7 @@ def deliver_alert_events(
         "failed": 0,
         "skipped_limit": 0,
         "dry_run": 0,
+        "excluded_eligibility": 0,
     }
     messages: list[dict[str, Any]] = []
 
@@ -143,6 +153,31 @@ def deliver_alert_events(
                 max_attempts=max_attempts,
             )
             stats["unsent_alert_events"] = len(events)
+            # Revalidate pending/retry events made by previous versions. Keep
+            # the event and price history so later enrichment can resolve it.
+            products = {int(p["id"]): p for p in get_all_products(db_path)}
+            specs = _specs_index(specs_path)
+            eligible_events = []
+            for event in events:
+                if event.get("event_type") in {
+                    EVENT_CROSS_STORE,
+                    EVENT_HISTORICAL_LOW,
+                    EVENT_PRICE_DROP,
+                    EVENT_TARGET_PRICE,
+                }:
+                    product = products.get(event.get("product_id"))
+                    if (
+                        product is None
+                        or not config.is_price_in_tracking_scope(event.get("new_price"))
+                        or not product_is_eligible(
+                            product,
+                            specs.get((str(product["store"]), str(product["external_id"]))),
+                        )
+                    ):
+                        stats["excluded_eligibility"] += 1
+                        continue
+                eligible_events.append(event)
+            events = eligible_events
             groups = _build_groups(events, db_path)
             stats["grouped_messages"] = len(groups)
 

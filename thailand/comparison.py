@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import config
 from thailand.fx import fx_usable_for_verdict
+from thailand.eligibility import offer_user_facing_eligible
 from thailand.models import CountryComparison, CrossCountryMatch, FxRate
 from thailand.verification import (
     VERIFIED,
@@ -137,6 +138,14 @@ def country_verdict(
         return CountryComparison(
             verdict=VERDICT_FX_UNAVAILABLE,
             reasons=["нет актуального курса THB/RUB для вердикта"],
+            match=match,
+        )
+
+    eligible, exclusion, _ = offer_user_facing_eligible(match.thai_offer, fx=fx)
+    if not eligible:
+        return CountryComparison(
+            verdict=VERDICT_INSUFFICIENT_THAI,
+            reasons=[exclusion or "purchase_requirements_not_met"],
             match=match,
         )
 

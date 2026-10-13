@@ -59,6 +59,7 @@ def _deal(**kwargs) -> RankedDeal:
         ram_gb=32,
         ssd_gb=1024,
         screen_inch=17.0,
+        screen_resolution="2560x1600",
         cpu="Intel Core Ultra 9 275HX",
         confidence=100,
         historical_min=224990,

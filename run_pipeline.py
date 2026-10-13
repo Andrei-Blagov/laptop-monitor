@@ -337,6 +337,7 @@ def run_pipeline(
                     db_path,
                     sender=sender,
                     dry_run=False,
+                    specs_path=specs_path,
                 )
                 stats = delivery["stats"]
                 result.messages_sent = int(stats.get("sent", 0))

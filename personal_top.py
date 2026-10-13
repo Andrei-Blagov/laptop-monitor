@@ -215,7 +215,7 @@ def _profile_specs(product: Mapping[str, Any], identity: Any = None) -> dict[str
 
 
 def _suits_series_profile(model: Mapping[str, Any], specs: Mapping[str, Any]) -> bool:
-    from laptop_eligibility import screen_meets_minimum
+    from laptop_eligibility import evaluate_hardware
 
     required_gpu = _norm_gpu(model.get("required_gpu"))
     if required_gpu is None or specs.get("gpu") != required_gpu:
@@ -223,10 +223,12 @@ def _suits_series_profile(model: Mapping[str, Any], specs: Mapping[str, Any]) ->
     required_ram = _norm_int(model.get("required_ram_gb"))
     if required_ram is None or specs.get("ram_gb") != required_ram:
         return False
-    resolution = specs.get("screen_resolution")
-    if resolution is not None and screen_meets_minimum(resolution) is not True:
-        return False
-    return True
+    return evaluate_hardware(
+        gpu=specs.get("gpu"),
+        ram_gb=specs.get("ram_gb"),
+        ssd_gb=specs.get("ssd_gb"),
+        screen_resolution=specs.get("screen_resolution"),
+    ).eligible
 
 
 def series_product_candidates(
@@ -246,7 +248,7 @@ def series_product_candidates(
             continue
         if fresh_stores is not None and str(row.get("store") or "") not in fresh_stores:
             continue
-        if not row.get("available") or row.get("price") is None or int(row["price"]) <= 0:
+        if not row.get("available") or not config.is_price_in_tracking_scope(row.get("price")):
             continue
         identity = None
         if specs_by_key is not None:
@@ -277,6 +279,7 @@ def attach_series_candidates(
 ) -> dict[str, Any]:
     """Add series variants to a Thailand search. They are never EXACT matches."""
     from thailand.fx import thb_to_rub
+    from thailand.eligibility import offer_user_facing_eligible
 
     out = dict(search)
     codes = [str(code) for code in target.get("series_codes") or [] if code]
@@ -290,6 +293,8 @@ def attach_series_candidates(
     }
     rows: list[dict[str, Any]] = []
     for offer in offers:
+        if not offer_user_facing_eligible(offer, fx=fx)[0]:
+            continue
         blob = " ".join(
             str(getattr(offer, field, "") or "")
             for field in ("name", "sku", "manufacturer_part_number")
@@ -322,6 +327,15 @@ def attach_series_candidates(
                 "url": getattr(offer, "url", None),
                 "out_of_stock": not bool(getattr(offer, "available", False)),
                 "differences": _candidate_differences(sku, specs),
+                "gpu": getattr(offer, "gpu", None),
+                "ram_gb": getattr(offer, "ram_gb", None),
+                "ssd_gb": getattr(offer, "ssd_gb", None),
+                "screen_resolution": getattr(offer, "screen_resolution", None),
+                "availability_confirmed": bool(getattr(offer, "availability_confirmed", False)),
+                "verification_status": getattr(offer, "verification_status", None),
+                "marketplace": bool(getattr(offer, "marketplace", False)),
+                "price_verified_for_variant": bool(getattr(offer, "price_verified_for_variant", False)),
+                "purchase_eligible": True,
             }
         )
     out["series_candidates"] = sorted(
@@ -355,7 +369,14 @@ def russian_side(
         if specs_by_key is not None:
             identity = specs_by_key.get((str(row.get("store") or ""), str(row.get("external_id") or "")))
         specs = confirmed_specs(row, identity)
-        if specs is None:
+        from laptop_eligibility import evaluate_hardware
+
+        if specs is None or not evaluate_hardware(
+            gpu=specs.get("gpu"),
+            ram_gb=specs.get("ram_gb"),
+            ssd_gb=specs.get("ssd_gb"),
+            screen_resolution=specs.get("screen_resolution"),
+        ).eligible:
             continue
         item = dict(row)
         item["confirmed_specs"] = specs
@@ -495,6 +516,10 @@ def _same_spec(left: Any, right: Any, kind: str) -> bool | None:
 def confirmation_gaps(row: Mapping[str, Any], russian: Mapping[str, Any], fx: Mapping[str, Any] | None) -> list[str]:
     """Reasons a Thai row cannot support a cheaper/dearer verdict."""
     gaps: list[str] = []
+    from thailand.eligibility import search_row_user_facing_eligible
+
+    if not search_row_user_facing_eligible(dict(row)):
+        gaps.append("соответствие требованиям покупки")
     if row.get("price_thb") is None or row.get("price_rub") is None:
         gaps.append("цена")
     if row.get("out_of_stock") or not row.get("availability_confirmed"):
@@ -536,7 +561,12 @@ def assess_model(
     exact = list((search or {}).get("exact_matches") or []) if fresh else []
     family = list((search or {}).get("same_family_matches") or []) if fresh else []
     equivalent = list((search or {}).get("equivalent_matches") or []) if fresh else []
-    thai_candidates = list((search or {}).get("series_candidates") or []) if fresh else []
+    from thailand.eligibility import search_row_user_facing_eligible
+
+    thai_candidates = [
+        row for row in (search or {}).get("series_candidates") or []
+        if search_row_user_facing_eligible(row)
+    ] if fresh else []
     exact_stock = [row for row in exact if _in_stock(row)]
     confirmed = []
     gap_notes: list[str] = []
@@ -549,7 +579,7 @@ def assess_model(
     winner = min(confirmed, key=lambda row: (int(row["price_rub"]), str(row.get("store") or ""))) if confirmed else None
     analog = None
     if winner is None and fresh:
-        analog_pool = [row for row in family + equivalent if _in_stock(row)] or family or equivalent
+        analog_pool = [row for row in family + equivalent if search_row_user_facing_eligible(row)]
         analog = analog_pool[0] if analog_pool else None
     extras = confirmed_extra_rub()
     thai_rub = None if winner is None else int(winner["price_rub"]) + extras

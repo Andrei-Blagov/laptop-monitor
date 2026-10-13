@@ -608,7 +608,7 @@ def rank_clusters(
     allowed_stores: set[str] | None = None,
     historical_mins: Mapping[int, int] | None = None,
     history_starts: Mapping[int, str] | None = None,
-    hard_filters: bool = False,
+    hard_filters: bool = True,
     exclusions: list[dict[str, Any]] | None = None,
 ) -> list[RankedDeal]:
     """
@@ -621,7 +621,7 @@ def rank_clusters(
     history_starts: optional product_id → first observation (does not affect score).
 
     hard_filters: drop clusters that fail laptop_eligibility (GPU, installed
-    RAM, screen). Scores of the remaining clusters are unchanged.
+    RAM, SSD, screen). Scores of the remaining clusters are unchanged.
     exclusions: when given, receives one record per dropped cluster.
     """
     allowed = fresh_stores if fresh_stores is not None else allowed_stores
@@ -652,6 +652,7 @@ def rank_clusters(
             verdict = evaluate_hardware(
                 gpu=specs["gpu"],
                 ram_gb=specs["ram_gb"],
+                ssd_gb=specs["ssd_gb"],
                 screen_resolution=specs["screen_resolution"],
             )
             if not verdict.eligible:
@@ -757,6 +758,7 @@ def _exclusion_dict(
         "store": store,
         "gpu": specs.get("gpu"),
         "ram_gb": specs.get("ram_gb"),
+        "ssd_gb": specs.get("ssd_gb"),
         "screen_resolution": specs.get("screen_resolution"),
         "screen_inch": specs.get("screen_inch"),
         "offers": [
@@ -784,6 +786,7 @@ def _exclusion_record(
     hardware = evaluate_hardware(
         gpu=specs.get("gpu"),
         ram_gb=specs.get("ram_gb"),
+        ssd_gb=specs.get("ssd_gb"),
         screen_resolution=specs.get("screen_resolution"),
     )
     also = [f"also:{d}" for d in hardware.details]

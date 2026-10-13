@@ -175,10 +175,10 @@ class SpeedComParseTests(unittest.TestCase):
         self.assertTrue(price_within_cap(330_000))
         self.assertFalse(price_within_cap(330_001))
         inside = parse_speedcom_product(
-            _product(title=_TITLE, body=_BODY_5070, variants=[_variant(11, "330000.00")])
+            _product(title=_TITLE, body=_BODY_5070.replace("16GB", "32GB") + " 2560x1600", variants=[_variant(11, "330000.00")])
         )[0]
         outside = parse_speedcom_product(
-            _product(title=_TITLE, body=_BODY_5070, variants=[_variant(11, "330001.00")])
+            _product(title=_TITLE, body=_BODY_5070.replace("16GB", "32GB") + " 2560x1600", variants=[_variant(11, "330001.00")])
         )[0]
         ok_in, _, _ = offer_user_facing_eligible(inside, fx=_fx())
         ok_out, reason, _ = offer_user_facing_eligible(outside, fx=_fx())

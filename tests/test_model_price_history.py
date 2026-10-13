@@ -184,7 +184,7 @@ class ModelPriceHistoryTests(unittest.TestCase):
 
     def test_1_picker_only_eligible_within_cap(self) -> None:
         now = _now()
-        specs = ' RTX 5080, 32GB DDR5, 16" 2560x1600'
+        specs = ' RTX 5080, 32GB DDR5, 1TB SSD, 16" 2560x1600'
         save_products(
             [
                 _product("kns", "cheap", price=220_000, sku="CHEAP", name="Good A" + specs),

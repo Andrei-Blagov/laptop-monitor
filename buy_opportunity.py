@@ -82,6 +82,10 @@ def evaluate_buy_rules(deal: RankedDeal) -> BuySignal | None:
 
     No automatic signal without historical_min.
     """
+    from laptop_eligibility import deal_is_eligible
+
+    if not deal_is_eligible(deal):
+        return None
     price = deal.price
     hist = deal.historical_min
     conf = int(deal.confidence or 0)

@@ -100,8 +100,8 @@ class ItCityParseTests(unittest.TestCase):
         self.assertEqual(offer.url, "https://www.itcity.in.th/product/PRD1")
 
     def test_cap_filtering(self) -> None:
-        inside = parse_itcity_hit(_hit(price=330000))[0]
-        outside = parse_itcity_hit(_hit(price=330001))[0]
+        inside = parse_itcity_hit(_hit(price=330000, shortDescription="RTX 5070 Ti Laptop GPU 32GB DDR5 1TB SSD 2560x1600"))[0]
+        outside = parse_itcity_hit(_hit(price=330001, shortDescription="RTX 5070 Ti Laptop GPU 32GB DDR5 1TB SSD 2560x1600"))[0]
         self.assertTrue(offer_user_facing_eligible(inside, fx=_fx())[0])
         ok, reason, _ = offer_user_facing_eligible(outside, fx=_fx())
         self.assertFalse(ok)

@@ -40,9 +40,10 @@ def _offer(**kwargs) -> ThailandOffer:
         gpu="RTX 5070 Ti",
         gpu_source=GPU_SOURCE_STRUCTURED_PRODUCT_PAGE,
         cpu="AMD Ryzen 9 8940HX",
-        ram_gb=16,
+        ram_gb=32,
         ssd_gb=1024,
         screen_size_inch=16.0,
+        screen_resolution="2560x1600",
         collected_at=datetime.now(timezone.utc),
     )
     base.update(kwargs)

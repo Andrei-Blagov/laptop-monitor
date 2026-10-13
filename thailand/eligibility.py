@@ -5,6 +5,7 @@ from __future__ import annotations
 from typing import Any
 
 import config
+from laptop_eligibility import evaluate_purchase, row_hardware_eligible
 from thailand.fx import fx_usable_for_verdict, thb_to_rub
 from thailand.models import FxRate, ThailandOffer
 from thailand.seller_trust import (
@@ -105,7 +106,35 @@ def offer_user_facing_eligible(
         offer.seller_trust_tier = tier
         if not marketplace_eligible_for_top(offer, tier=tier):
             return False, EXCLUDED_SELLER_TRUST, price_rub
+    hardware = evaluate_purchase(
+        price_rub=price_rub,
+        gpu=offer.gpu,
+        ram_gb=offer.ram_gb,
+        ssd_gb=offer.ssd_gb,
+        screen_resolution=offer.screen_resolution,
+    )
+    if not hardware.eligible:
+        return False, hardware.reason, price_rub
     return True, None, price_rub
+
+
+def search_row_user_facing_eligible(row: dict[str, Any]) -> bool:
+    """Revalidate serialized search results, including pre-upgrade snapshots.
+
+    Fresh searches include the full offer gate result. Pre-upgrade snapshots
+    without it need a fresh scan before supporting a purchase recommendation.
+    """
+    if not row_hardware_eligible(row):
+        return False
+    if row.get("out_of_stock") or not row.get("availability_confirmed"):
+        return False
+    if row.get("verification_status") != "VERIFIED":
+        return False
+    if row.get("purchase_eligible") is not True:
+        return False
+    if row.get("marketplace"):
+        return row.get("price_verified_for_variant") is True
+    return True
 
 
 def sort_value_rows(rows: list[dict[str, Any]]) -> list[dict[str, Any]]:

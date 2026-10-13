@@ -114,7 +114,7 @@ class DealRankingV2Tests(unittest.TestCase):
             "Over",
             [_offer(price=350_000, available=True)],
         )
-        self.assertEqual(rank_clusters([match]), [])
+        self.assertEqual(rank_clusters([match], hard_filters=False), [])
 
     # --- CPU ---
     def test_05_hx_stronger_than_non_hx(self) -> None:
@@ -297,6 +297,7 @@ class DealRankingV2Tests(unittest.TestCase):
             [m5080, m5070],
             specs_by_key=specs,
             historical_mins={1: 290_000, 2: 204_000},
+            hard_filters=False,
         )
         self.assertEqual(len(ranked), 2)
         # Value 5070 Ti near target/min should beat near-cap 5080.
@@ -339,7 +340,7 @@ class DealRankingV2Tests(unittest.TestCase):
                 },
             )(),
         }
-        ranked = rank_clusters([cheap_weak, strong], specs_by_key=specs)
+        ranked = rank_clusters([cheap_weak, strong], specs_by_key=specs, hard_filters=False)
         self.assertEqual(ranked[0].cluster_name, "Strong")
 
     def test_24_hardware_alone_not_always_win(self) -> None:
@@ -348,7 +349,7 @@ class DealRankingV2Tests(unittest.TestCase):
 
     def test_25_over_cap_never_ranked(self) -> None:
         match = _match("X", [_offer(price=330_001)])
-        self.assertEqual(rank_clusters([match]), [])
+        self.assertEqual(rank_clusters([match], hard_filters=False), [])
 
     def test_26_stale_store_excluded(self) -> None:
         match = _match(
@@ -358,7 +359,7 @@ class DealRankingV2Tests(unittest.TestCase):
                 _offer(store="regard", external_id="2", price=200_000, product_id=2),
             ],
         )
-        ranked = rank_clusters([match], fresh_stores={"kns"})
+        ranked = rank_clusters([match], fresh_stores={"kns"}, hard_filters=False)
         self.assertEqual(len(ranked), 1)
         self.assertEqual(ranked[0].store, "kns")
         self.assertEqual(ranked[0].price, 210_000)
@@ -377,7 +378,7 @@ class DealRankingV2Tests(unittest.TestCase):
                 ),
             ],
         )
-        ranked = rank_clusters([match])
+        ranked = rank_clusters([match], hard_filters=False)
         self.assertEqual(ranked[0].store, "regard")
 
     # --- HISTORY BULK ---
@@ -505,7 +506,7 @@ class DealRankingV2Tests(unittest.TestCase):
                 },
             )(),
         }
-        ranked = rank_clusters(matches, specs_by_key=specs)
+        ranked = rank_clusters(matches, specs_by_key=specs, hard_filters=False)
         names = [d.cluster_name for d in ranked]
         self.assertEqual(names[0], "High")
         payload = [
@@ -550,7 +551,7 @@ class DealRankingV2Tests(unittest.TestCase):
                 },
             )(),
         }
-        ranked = rank_clusters([match], specs_by_key=specs, fresh_stores={"kns", "regard"})
+        ranked = rank_clusters([match], specs_by_key=specs, fresh_stores={"kns", "regard"}, hard_filters=False)
         self.assertEqual(ranked[0].store, "kns")
         self.assertIsNotNone(canonical_gpu(ranked[0].gpu))
         self.assertGreaterEqual(ranked[0].score, 50)
@@ -564,7 +565,7 @@ class DealRankingV2Tests(unittest.TestCase):
                 sku="B",
             ),
         ]
-        ranked = rank_clusters(matches)
+        ranked = rank_clusters(matches, hard_filters=False)
         self.assertTrue(all((d.price or 0) <= 330_000 for d in ranked))
         self.assertTrue(all(d.cluster_name != "B" for d in ranked))
 

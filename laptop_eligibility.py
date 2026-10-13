@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import re
 from dataclasses import dataclass, field
-from typing import Any
+from typing import Any, Mapping
 
 import config
 from deal_ranking import canonical_gpu
@@ -64,11 +64,24 @@ def ram_meets_minimum(ram_gb: Any) -> bool | None:
         return None
     try:
         value = int(ram_gb)
-    except (TypeError, ValueError):
+    except (TypeError, ValueError, OverflowError):
         return None
     if value <= 0:
         return None
     return value >= int(config.MIN_INSTALLED_RAM_GB)
+
+
+def ssd_meets_minimum(ssd_gb: Any) -> bool | None:
+    """Installed SSD capacity, accepting catalog representations of 1 TB."""
+    if ssd_gb is None or isinstance(ssd_gb, bool):
+        return None
+    try:
+        value = int(ssd_gb)
+    except (TypeError, ValueError, OverflowError):
+        return None
+    if value <= 0:
+        return None
+    return value >= int(config.MIN_SSD_GB)
 
 
 def evaluate_hardware(
@@ -76,25 +89,34 @@ def evaluate_hardware(
     gpu: Any,
     ram_gb: Any,
     screen_resolution: Any,
+    ssd_gb: Any = None,
 ) -> Eligibility:
-    """GPU, installed RAM, and screen. Unknown values are not treated as a pass."""
-    details: list[str] = []
-    if canonical_gpu(str(gpu) if gpu else None) not in TARGET_GPUS:
+    """Shared hardware policy. Unknown values are not treated as a pass."""
+    if (
+        not gpu
+        or not re.search(r"\bRTX\s*(?:5070\s*TI|5080)\b", str(gpu), re.I)
+        or canonical_gpu(str(gpu)) not in TARGET_GPUS
+    ):
         return Eligibility(False, GPU_NOT_DETECTED, ["gpu_unknown" if not gpu else f"gpu:{gpu}"])
 
     ram_ok = ram_meets_minimum(ram_gb)
     screen_ok = screen_meets_minimum(screen_resolution)
+    ssd_ok = ssd_meets_minimum(ssd_gb)
     missing = []
     if ram_ok is None:
         missing.append("ram_unknown")
     if screen_ok is None:
         missing.append("resolution_unknown")
+    if ssd_ok is None:
+        missing.append("ssd_unknown")
     rejected = []
     if ram_ok is False:
         rejected.append(f"ram_{int(ram_gb)}gb")
     if screen_ok is False:
         w, h = parse_resolution(screen_resolution) or (0, 0)
         rejected.append(f"resolution_{w}x{h}")
+    if ssd_ok is False:
+        rejected.append(f"ssd_{int(ssd_gb)}gb")
     details = rejected + missing
     if rejected:
         return Eligibility(False, HARD_FILTER_REJECTED, details)
@@ -103,15 +125,56 @@ def evaluate_hardware(
     return Eligibility(True, None, [])
 
 
+def evaluate_purchase(*, price_rub: Any, **hardware: Any) -> Eligibility:
+    """One price and hardware gate for both markets (after FX conversion)."""
+    if isinstance(price_rub, bool) or not config.is_price_in_tracking_scope(price_rub):
+        return Eligibility(False, PRICE_OVER_CAP, ["price_missing_or_out_of_scope"])
+    return evaluate_hardware(**hardware)
+
+
 def deal_is_eligible(deal: Any) -> bool:
-    """Same rule for a RankedDeal that already passed availability and the price cap."""
-    price = getattr(deal, "price", None)
-    if not config.is_price_in_tracking_scope(price):
-        return False
-    return evaluate_hardware(
+    """Defensive gate for BUY / recommendations, including restored job data."""
+    return evaluate_purchase(
+        price_rub=getattr(deal, "price", None),
         gpu=getattr(deal, "gpu", None),
         ram_gb=getattr(deal, "ram_gb", None),
+        ssd_gb=getattr(deal, "ssd_gb", None),
         screen_resolution=getattr(deal, "screen_resolution", None),
+    ).eligible
+
+
+def product_is_eligible(product: Mapping[str, Any], identity: Any = None) -> bool:
+    """Individual Russian offer: cache evidence first, explicit title fallback.
+
+    No specs are copied from the personal TOP-3, search query, or another SKU.
+    """
+    from stores.common import extract_specs_from_name
+
+    if not product.get("available"):
+        return False
+    inferred = extract_specs_from_name(str(product.get("name") or ""))
+
+    def value(key: str) -> Any:
+        known = getattr(identity, key, None)
+        return known if known is not None else inferred.get(key)
+
+    return evaluate_purchase(
+        price_rub=product.get("price"),
+        gpu=value("gpu"),
+        ram_gb=value("ram_gb"),
+        ssd_gb=value("ssd_gb"),
+        screen_resolution=value("screen_resolution"),
+    ).eligible
+
+
+def row_hardware_eligible(row: Mapping[str, Any], *, price_key: str = "price_rub") -> bool:
+    """Same gate for serialized recommendations and cached Thailand results."""
+    return evaluate_purchase(
+        price_rub=row.get(price_key),
+        gpu=row.get("gpu"),
+        ram_gb=row.get("ram_gb"),
+        ssd_gb=row.get("ssd_gb"),
+        screen_resolution=row.get("screen_resolution"),
     ).eligible
 
 
@@ -121,7 +184,7 @@ REASON_TEXT_RU = {
     NOT_AVAILABLE: "нет в наличии",
     SPECS_MISSING: "характеристики не подтверждены",
     PRICE_OVER_CAP: "цена выше лимита",
-    HARD_FILTER_REJECTED: "не подходит по RAM или экрану",
+    HARD_FILTER_REJECTED: "не подходит по RAM, SSD или экрану",
     LOW_RANK: "подходит, но ниже ТОП",
     DUPLICATE_MODEL: "та же модель уже есть в рейтинге",
 }
