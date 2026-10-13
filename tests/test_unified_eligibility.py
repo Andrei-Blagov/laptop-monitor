@@ -16,7 +16,7 @@ from alerts import (
     evaluate_price_drop, evaluate_target_price, get_current_deals, run_monitor,
 )
 from buy_opportunity import evaluate_buy_rules
-from comparison import Offer, ProductMatch
+from comparison import Offer, ProductMatch, match_products
 from deal_ranking import RankedDeal, rank_clusters
 from deliver import deliver_alert_events
 from identity_sync import save_specs_cache
@@ -30,9 +30,10 @@ from purchase_recommendation import (
 )
 from storage import (
     count_price_history, count_products, get_all_products, init_db, open_db,
-    save_alert_event, save_products,
+    save_alert_event, save_products, get_alert_events, get_delivery,
+    count_unsent_alert_events, get_all_identifiers, upsert_product_identifier,
 )
-from telegram_sender import FakeTelegramSender
+from telegram_sender import FakeTelegramSender, SendResult
 from thailand.comparison import VERDICT_INSUFFICIENT_THAI, country_verdict
 from thailand.eligibility import offer_user_facing_eligible
 from thailand.formatting import format_thailand_alternatives_message, format_target_model_message
@@ -125,7 +126,7 @@ class RussianPathTests(unittest.TestCase):
         identities = {
             (p.store, p.external_id): ProductIdentity(
                 store=p.store, external_id=p.external_id, name=p.name, sku=p.sku,
-                price=p.price, available=True, url=p.url, **(GOOD | fields),
+                price=p.price, available=True, url=p.url, cpu="Core Ultra 9 275HX", screen_size_inch=16, **(GOOD | fields),
             ) for p in products
         }
         save_specs_cache({f"{s}:{e}": i.to_dict() for (s, e), i in identities.items()}, specs_path)
@@ -189,6 +190,222 @@ class RussianPathTests(unittest.TestCase):
         identities[(match.offers[0].store, "2")] = next(iter(identities.values()))
         with open_db(db) as conn:
             self.assertEqual(evaluate_cross_store(conn, [match], specs_by_key=identities), [])
+
+    def _cache(self, identities, specs):
+        save_specs_cache({f"{s}:{e}": i.to_dict() for (s, e), i in identities.items()}, specs)
+
+    def _cross_event(self):
+        db, specs, rows, identities, match = self._scenario({})
+        with open_db(db) as conn:
+            events = evaluate_cross_store(conn, [match], specs_by_key=identities)
+        self.assertEqual(len(events), 1)
+        return db, specs, rows, identities, events[0]
+
+    def _rescan(self, db, row, **changes):
+        values = {key: row.get(key) for key in ("store", "external_id", "url", "name", "sku", "price", "available")}
+        save_products([Product(**(values | changes), checked_at=datetime.now(timezone.utc))], db)
+
+    def _assert_skipped(self, db, event, specs, reason):
+        sender = FakeTelegramSender()
+        dry = deliver_alert_events(db, specs_path=specs, sender=sender, dry_run=True)
+        self.assertEqual(dry["stats"]["excluded_stale"], 1)
+        self.assertEqual(dry["messages"], [])
+        with open_db(db) as conn:
+            self.assertEqual(count_unsent_alert_events(conn, channel="telegram", destination="default", max_attempts=5), 1)
+        result = deliver_alert_events(db, specs_path=specs, sender=sender)
+        self.assertEqual(result["stats"]["excluded_stale"], 1)
+        self.assertEqual(sender.calls, 0)
+        with open_db(db) as conn:
+            delivery = get_delivery(conn, alert_event_id=event["id"], channel="telegram", destination="default")
+            self.assertEqual(delivery["status"], "skipped")
+            self.assertEqual(delivery["last_error"], reason)
+            self.assertEqual(len(get_alert_events(conn)), 1)
+            self.assertEqual(count_products(conn), 2)
+            self.assertGreaterEqual(count_price_history(conn), 4)
+        again = deliver_alert_events(db, specs_path=specs, sender=sender)
+        self.assertEqual(again["stats"]["unsent_alert_events"], 0)
+
+    def test_same_sku_different_cpu_never_cross_store(self):
+        self._assert_different_config("cpu", "Core Ultra 9 285HX")
+
+    def test_same_sku_different_ssd_never_cross_store(self):
+        self._assert_different_config("ssd_gb", 2048)
+
+    def _assert_different_config(self, field, value):
+        db, specs, rows, identities, match = self._scenario({})
+        setattr(identities[("kns", "1")], field, value)
+        self._cache(identities, specs)
+        with open_db(db) as conn:
+            self.assertEqual(evaluate_cross_store(conn, [match], specs_by_key=identities), [])
+        self.assertEqual(get_current_deals(db, specs_path=specs).cross_store, [])
+        result = run_monitor(db, specs_path=specs)
+        self.assertFalse(any(e["event_type"] == "CROSS_STORE_SAVING" for e in result.created))
+
+    def test_every_config_field_must_be_confirmed_and_equal(self):
+        for field, wrong in (
+            ("cpu", "Core Ultra 9"), ("gpu", "RTX 5080"), ("ram_gb", 64),
+            ("ssd_gb", 2048), ("screen_size_inch", 18), ("screen_resolution", "2560x1440"),
+        ):
+            for value in (wrong, None):
+                with self.subTest(field=field, value=value):
+                    self._assert_different_config(field, value)
+
+    def test_equivalent_catalog_spellings_pass_existing_normalizers(self):
+        db, specs, rows, identities, match = self._scenario({})
+        identities[("kns", "1")].cpu = "Intel Core Ultra 9 275HX"
+        identities[("kns", "1")].gpu = "NVIDIA GeForce RTX 5070 Ti Laptop GPU"
+        identities[("kns", "1")].screen_resolution = "2560 × 1600"
+        self._cache(identities, specs)
+        with open_db(db) as conn:
+            self.assertEqual(len(evaluate_cross_store(conn, [match], specs_by_key=identities)), 1)
+        self.assertEqual(len(get_current_deals(db, specs_path=specs).cross_store), 1)
+
+    def test_cheaper_incompatible_offer_does_not_hide_valid_pair(self):
+        db, specs, rows, identities, match = self._scenario({})
+        third = replace(match.offers[0], store="andpro", external_id="3", price=210_000, product_id=None)
+        identities[("andpro", "3")] = replace(identities[("regard", "1")], store="andpro", external_id="3", cpu="Core Ultra 9 285HX")
+        match.offers.append(third)
+        with open_db(db) as conn:
+            events = evaluate_cross_store(conn, [match], specs_by_key=identities)
+        self.assertEqual(len(events), 1)
+        self.assertEqual(events[0]["metadata"]["cheapest_store"], "regard")
+        self.assertEqual({o["store"] for o in events[0]["metadata"]["offers"]}, {"regard", "kns"})
+
+    def test_stale_price_events_terminal_and_history_preserved(self):
+        for event_type in ("PRICE_DROP", "NEW_HISTORICAL_LOW", "TARGET_PRICE"):
+            with self.subTest(event_type=event_type):
+                db, specs, rows, identities, _ = self._scenario({})
+                p = rows[0]
+                with open_db(db) as conn:
+                    event = save_alert_event(conn, event_type=event_type, product_id=p["id"],
+                                             dedupe_key="old", old_price=300_000, new_price=p["price"])
+                self._rescan(db, p, price=p["price"]+1000)
+                self._assert_skipped(db, event, specs, "stale_price")
+
+    def test_compared_price_change_invalidates_cross_event(self):
+        db, specs, rows, identities, event = self._cross_event()
+        self._rescan(db, next(p for p in rows if p["store"] == "kns"), price=250_000)
+        self._assert_skipped(db, event, specs, "stale_compared_offer")
+
+    def test_compared_offer_unavailable_invalidates_cross_event(self):
+        db, specs, rows, identities, event = self._cross_event()
+        self._rescan(db, next(p for p in rows if p["store"] == "kns"), available=False)
+        self._assert_skipped(db, event, specs, "unavailable_offer")
+
+    def test_same_sku_compared_cpu_change_defers_then_expires(self):
+        db, specs, rows, identities, event = self._cross_event()
+        identities[("kns", "1")].cpu = "Core Ultra 9 285HX"
+        self._cache(identities, specs)
+        sender = FakeTelegramSender()
+        self.assertEqual(deliver_alert_events(db, specs_path=specs, sender=sender)["stats"]["excluded_eligibility"], 1)
+        self.assertEqual(sender.calls, 0)
+        with open_db(db) as conn:
+            conn.execute("UPDATE alert_events SET created_at=?", ((NOW-timedelta(hours=25)).isoformat(),))
+        self._assert_skipped(db, event, specs, "expired_event")
+
+    def test_characteristics_corrected_without_price_change_keep_event(self):
+        db, specs, rows, identities, event = self._cross_event()
+        identities[("kns", "1")].cpu = None
+        self._cache(identities, specs)
+        sender = FakeTelegramSender()
+        self.assertEqual(deliver_alert_events(db, specs_path=specs, sender=sender)["stats"]["sent"], 0)
+        identities[("kns", "1")].cpu = "Intel Core Ultra 9 275HX"
+        self._cache(identities, specs)
+        # A subsequent snapshot/enrichment has a new timestamp, the same prices.
+        with open_db(db) as conn:
+            conn.execute("UPDATE products SET last_checked_at=?", (datetime.now(timezone.utc).isoformat(),))
+        self.assertEqual(deliver_alert_events(db, specs_path=specs, sender=sender)["stats"]["sent"], 1)
+        with open_db(db) as conn:
+            self.assertEqual(len(get_alert_events(conn)), 1)
+            self.assertEqual(count_price_history(conn), 4)
+
+    def test_missing_specs_cannot_accumulate_forever(self):
+        db, specs, rows, identities, _ = self._scenario({"ram_gb": None})
+        with open_db(db) as conn:
+            event = save_alert_event(conn, event_type=EVENT_PRICE_DROP, product_id=rows[0]["id"],
+                                     dedupe_key="unconfirmed", old_price=300_000, new_price=rows[0]["price"],
+                                     created_at=(NOW-timedelta(hours=25)).isoformat())
+        self._assert_skipped(db, event, specs, "expired_event")
+
+    def test_old_snapshot_is_not_current_even_if_price_unchanged(self):
+        db, specs, rows, identities, event = self._cross_event()
+        with open_db(db) as conn:
+            conn.execute("UPDATE products SET last_checked_at=? WHERE store='kns'", ((NOW-timedelta(hours=4)).isoformat(),))
+        self._assert_skipped(db, event, specs, "stale_snapshot")
+
+    def test_legacy_cross_event_resolves_exact_saved_urls(self):
+        db, specs, rows, identities, event = self._cross_event()
+        meta = dict(event["metadata"])
+        for key in ("cheapest_external_id", "other_external_id", "offers"):
+            meta.pop(key, None)
+        import json
+        with open_db(db) as conn:
+            conn.execute("UPDATE alert_events SET metadata_json=?", (json.dumps(meta),))
+        sender = FakeTelegramSender()
+        self.assertEqual(deliver_alert_events(db, specs_path=specs, sender=sender)["stats"]["sent"], 1)
+
+    def test_price_changed_during_429_wait_not_retried(self):
+        db, specs, rows, identities, event = self._cross_event()
+        sender = FakeTelegramSender(responses=[SendResult(ok=False, status_code=429, retry_after=1)])
+        def change_price(_seconds):
+            with open_db(db) as conn:
+                conn.execute("UPDATE products SET price=250000 WHERE store='kns'")
+        result = deliver_alert_events(db, specs_path=specs, sender=sender, sleep=change_price)
+        self.assertEqual(sender.calls, 1)
+        self.assertEqual(result["stats"]["excluded_stale"], 1)
+        self.assertEqual(result["stats"]["sent"], 0)
+        with open_db(db) as conn:
+            self.assertEqual(count_unsent_alert_events(conn, channel="telegram", destination="default", max_attempts=5), 0)
+            skipped = get_delivery(conn, alert_event_id=event["id"], channel="telegram", destination="default")
+            self.assertEqual(skipped["status"], "skipped")
+
+    def test_stale_cross_removed_from_failed_group_valid_drop_still_delivered(self):
+        db, specs, rows, identities, cross = self._cross_event()
+        p = next(r for r in rows if r["store"] == "regard")
+        with open_db(db) as conn:
+            drop = save_alert_event(conn, event_type=EVENT_PRICE_DROP, product_id=p["id"],
+                                    dedupe_key="drop", old_price=300_000, new_price=p["price"], metadata={"name": p["name"]})
+        sender = FakeTelegramSender(fail_times=1)
+        first = deliver_alert_events(db, specs_path=specs, sender=sender)
+        self.assertEqual(first["stats"]["failed"], 1)
+        with open_db(db) as conn:
+            conn.execute("UPDATE products SET price=250000 WHERE store='kns'")
+        second = deliver_alert_events(db, specs_path=specs, sender=sender)
+        self.assertEqual(second["stats"]["sent"], 1)
+        self.assertNotIn("CROSS", sender.sent[-1])
+        with open_db(db) as conn:
+            rejected = get_delivery(conn, alert_event_id=cross["id"], channel="telegram", destination="default")
+            accepted = get_delivery(conn, alert_event_id=drop["id"], channel="telegram", destination="default")
+            self.assertEqual(rejected["status"], "skipped")
+            self.assertEqual(accepted["status"], "sent")
+            self.assertEqual(accepted["attempts"], 2)
+            self.assertEqual(len(get_alert_events(conn)), 2)
+
+
+    def test_strong_identifier_comparison_delivers_and_removed_link_is_skipped(self):
+        for removed in (False, True):
+            with self.subTest(removed=removed):
+                db, specs, rows, identities, _ = self._scenario({})
+                for row in rows:
+                    self._rescan(db, row, sku=f"REGIONAL-{row['store']}")
+                rows = get_all_products(db)
+                with open_db(db) as conn:
+                    for row in rows:
+                        upsert_product_identifier(conn, product_id=row["id"],
+                                                  identifier_type="manufacturer_part_number", value="SHARED-123456",
+                                                  normalized_value="SHARED-123456", source="test")
+                comparison = match_products(rows, get_all_identifiers(db), specs_by_key=identities)
+                self.assertEqual(comparison.matches[0].match_method, "strong_identifier")
+                with open_db(db) as conn:
+                    events = evaluate_cross_store(conn, comparison.matches, specs_by_key=identities)
+                    self.assertEqual(len(events), 1)
+                    if removed:
+                        conn.execute("DELETE FROM product_identifiers")
+                if removed:
+                    self._assert_skipped(db, events[0], specs, "comparison_identity_changed")
+                else:
+                    sender = FakeTelegramSender()
+                    self.assertEqual(deliver_alert_events(db, specs_path=specs, sender=sender)["stats"]["sent"], 1)
 
     def test_personal_exact_reference_also_requires_minimum_ssd(self):
         model = {"exact_skus": ("TEST-1",), "model": "Test"}

@@ -4,7 +4,7 @@ import json
 import os
 import tempfile
 import unittest
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from unittest.mock import patch
 
@@ -46,9 +46,7 @@ PRODUCTION_DB = Path(DEFAULT_DB_PATH).resolve()
 
 
 def _now(offset_sec: int = 0) -> datetime:
-    return datetime(2026, 1, 1, 12, 0, tzinfo=timezone.utc).replace(
-        second=offset_sec % 60
-    )
+    return datetime.now(timezone.utc) + timedelta(seconds=offset_sec)
 
 
 def _product(

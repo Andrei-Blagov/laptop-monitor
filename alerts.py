@@ -2,13 +2,14 @@ from __future__ import annotations
 
 from dataclasses import dataclass, field
 from pathlib import Path
+from types import SimpleNamespace
 from typing import Any, Mapping, Sequence
 
 import config
 from comparison import match_products
 from identity_sync import identity_from_cache, load_specs_cache
 from laptop_eligibility import product_is_eligible
-from product_identity import ProductIdentity
+from product_identity import ProductIdentity, find_config_conflicts, identity_from_collected_product
 from storage import (
     DEFAULT_DB_PATH,
     get_all_identifiers,
@@ -292,6 +293,44 @@ def _eligible_match_offers(
     ]
 
 
+# Strict evidence needed for a price comparison, independently of SKU identity.
+CROSS_STORE_CONFIG_FIELDS = (
+    "cpu", "gpu", "ram_gb", "ssd_gb", "screen_size_inch", "screen_resolution",
+)
+
+
+def _offer_identity(offer: Any, specs: Mapping[tuple[str, str], ProductIdentity]) -> ProductIdentity:
+    cached = specs.get((offer.store, offer.external_id))
+    metadata = {
+        field: getattr(cached, field, None) for field in CROSS_STORE_CONFIG_FIELDS
+    }
+    return identity_from_collected_product(SimpleNamespace(
+        store=offer.store, external_id=offer.external_id, name=offer.name,
+        sku=offer.sku, price=offer.price, available=offer.available, url=offer.url,
+        metadata=metadata,
+    ))
+
+
+def _comparable_offer_groups(match: Any, specs: Mapping[tuple[str, str], ProductIdentity],
+                             fresh_stores: set[str] | None = None) -> list[list[Any]]:
+    """Partition eligible offers using the existing configuration conflict check."""
+    groups: list[list[Any]] = []
+    for offer in _eligible_match_offers(match, specs, fresh_stores):
+        identity = _offer_identity(offer, specs)
+        if find_config_conflicts(identity, identity, required_fields=CROSS_STORE_CONFIG_FIELDS):
+            continue
+        for group in groups:
+            if not find_config_conflicts(
+                _offer_identity(group[0], specs), identity,
+                required_fields=CROSS_STORE_CONFIG_FIELDS,
+            ):
+                group.append(offer)
+                break
+        else:
+            groups.append([offer])
+    return [group for group in groups if len({o.store for o in group}) >= 2]
+
+
 def evaluate_cross_store(
     conn,
     matches: Sequence[Any],
@@ -307,8 +346,10 @@ def evaluate_cross_store(
     created: list[dict] = []
     threshold = int(config.CROSS_STORE_DIFFERENCE_RUB)
 
-    for match in matches:
-        available = _eligible_match_offers(match, specs_by_key or {}, fresh_stores)
+    for match, available in (
+        (match, group) for match in matches
+        for group in _comparable_offer_groups(match, specs_by_key or {}, fresh_stores)
+    ):
         if len(available) < 2:
             continue
         ordered = sorted(available, key=lambda o: (o.price or 0, o.store))
@@ -347,6 +388,8 @@ def evaluate_cross_store(
                 "match_method": match.match_method,
                 "matched_identifier": match.matched_identifier,
                 "cheapest_store": cheapest.store,
+                "cheapest_external_id": cheapest.external_id,
+                "other_external_id": other.external_id,
                 "cheapest_price": int(cheapest.price),
                 "cheapest_url": cheapest.url,
                 "cheapest_sku": cheapest.sku,
@@ -501,8 +544,10 @@ def get_current_deals(
 
     cross_deals: list[dict] = []
     threshold_diff = int(config.CROSS_STORE_DIFFERENCE_RUB)
-    for match in comparison.matches:
-        available = _eligible_match_offers(match, specs)
+    for match, available in (
+        (match, group) for match in comparison.matches
+        for group in _comparable_offer_groups(match, specs)
+    ):
         if len(available) < 2:
             continue
         ordered = sorted(available, key=lambda o: (o.price or 0, o.store))
@@ -520,6 +565,8 @@ def get_current_deals(
                 "match_method": match.match_method,
                 "matched_identifier": match.matched_identifier,
                 "cheapest_store": cheapest.store,
+                "cheapest_external_id": cheapest.external_id,
+                "other_external_id": other.external_id,
                 "cheapest_price": int(cheapest.price),
                 "cheapest_url": cheapest.url,
                 "other_store": other.store,

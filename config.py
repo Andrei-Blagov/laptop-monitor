@@ -253,6 +253,8 @@ CHANNEL_TELEGRAM = "telegram"
 # Стабильный ключ destination в DB (chat_id используется только API-клиентом).
 TELEGRAM_DESTINATION = "default"
 MAX_DELIVERY_ATTEMPTS: int = 5
+# Bounded wait for specification enrichment; events remain in history after expiry.
+ALERT_EVENT_MAX_AGE_HOURS: float = 24.0
 # Минимальный интервал между sendMessage в один chat (сек).
 TELEGRAM_MIN_SEND_INTERVAL_SECONDS: float = 1.1
 

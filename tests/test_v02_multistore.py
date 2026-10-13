@@ -175,7 +175,7 @@ class MatchingMultiStoreTests(unittest.TestCase):
                 Offer(
                     store="regard",
                     external_id="1",
-                    name="L RTX 5070 Ti, 32GB DDR5, 1TB SSD, 2560x1600",
+                    name="L Core Ultra 9 275HX, RTX 5070 Ti, 32GB DDR5, 1TB SSD, 16\" 2560x1600",
                     sku="G614",
                     price=200_000,
                     available=True,
@@ -185,7 +185,7 @@ class MatchingMultiStoreTests(unittest.TestCase):
                 Offer(
                     store="andpro",
                     external_id="2",
-                    name="L RTX 5070 Ti, 32GB DDR5, 1TB SSD, 2560x1600",
+                    name="L Core Ultra 9 275HX, RTX 5070 Ti, 32GB DDR5, 1TB SSD, 16\" 2560x1600",
                     sku="G614",
                     price=230_000,
                     available=True,
