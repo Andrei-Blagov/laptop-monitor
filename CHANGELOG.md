@@ -2,6 +2,15 @@
 
 ## Unreleased
 
+## 0.10.1 — 2026-10-14
+
+One purchase filter for Russian and Thai recommendations, and a confirmed cross-store saving.
+
+- TOP, alerts, BUY, and Thailand user-facing offers share one gate: RTX 5070 Ti or RTX 5080, at least 32 GB installed RAM, at least 1 TB SSD, a numeric QHD-class resolution, and a price of at most 330 000 ₽. Unknown specs do not pass. ASUS cards with 16 GB RAM stay out of recommendations
+- A cross-store saving is shown and scored only when CPU, GPU, RAM, SSD, diagonal, and resolution are confirmed equal. A suitable laptop without that second offer stays in the TOP with no saving
+- Pending Telegram events are checked again before send. Stale or ineligible events are marked skipped and kept. History is not deleted
+- On the 13 October 2026 production snapshot the ranked list went from 15 models to 14. The KNS ASUS `90NR0LT1-M00H30` card does not confirm its own RAM, SSD, or resolution, so it is not ranked. Regard `G815LR-TT344` remains
+
 ## 0.10.0 — 2026-10-12
 
 Personal TOP-3 beside the general ranking.
