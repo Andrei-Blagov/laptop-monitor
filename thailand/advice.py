@@ -335,6 +335,7 @@ def collect(
             result.discovery_mode = "gpu_search"
             result.discovery_limitations = limitations
             result.discovery_rate_limited = rate_limited
+            result.queries_finished = list(completed)
             result.queries_completed = len(completed)
             result.targeted_codes = wanted
             result.codes_checked = [query for query in completed if query in wanted]

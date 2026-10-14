@@ -17,7 +17,7 @@ from thailand.discovery import (
 )
 from thailand.scanner import build_search_coverage
 from thailand.verification import VERIFIED, UNVERIFIED
-from thailand.models import StoreScanResult, ThailandOffer
+from thailand.models import FxRate, StoreScanResult, ThailandOffer
 
 
 NOW = datetime(2026, 10, 14, 8, 0, tzinfo=timezone.utc)
@@ -39,6 +39,19 @@ def _offer(**kwargs) -> ThailandOffer:
     )
     base.update(kwargs)
     return ThailandOffer(**base)
+
+
+def _fx(*, stale: bool = False) -> FxRate:
+    return FxRate(
+        source="test",
+        currency="THB",
+        nominal=1,
+        official_rate=2.5,
+        rub_per_thb=2.5,
+        published_date="2026-10-14",
+        fetched_at=NOW,
+        stale=stale,
+    )
 
 
 class QueryListTests(unittest.TestCase):
@@ -90,34 +103,98 @@ class QueryListTests(unittest.TestCase):
 
 class CoverageTests(unittest.TestCase):
     def test_incomplete_offer_is_kept_out_of_the_purchase_gate(self) -> None:
-        class Fx:
-            rub_per_thb = 2.5
-
         incomplete = _offer(external_id="partial", ram_gb=None, ssd_gb=None, screen_resolution=None)
         ready = _offer(external_id="ready", price_thb=80_000)
-        report = coverage_for_offers([incomplete, ready], fx=Fx())
+        report = coverage_for_offers([incomplete, ready], fx=_fx())
         self.assertEqual(report["discovered"], 2)
         self.assertEqual(report["spec_checked"], 1)
         self.assertEqual(report["meets_requirements"], 1)
         self.assertEqual(report["hardware_and_price"], 1)
         self.assertGreater(report["exclusion_reasons"].get("SPECS_MISSING", 0), 0)
 
-    def test_hardware_match_is_not_a_purchase_offer(self) -> None:
-        class Fx:
-            rub_per_thb = 2.5
+    def test_unchecked_query_keys_are_not_inferred_from_a_count(self) -> None:
+        report = coverage_for_offers(
+            [],
+            queries=["notebook rtx 5070 ti", "SKU-A", "SKU-B"],
+            queries_finished=["notebook rtx 5070 ti", "SKU-B"],
+            rate_limited=True,
+        )
+        self.assertEqual(report["queries_finished"], ["notebook rtx 5070 ti", "SKU-B"])
+        self.assertEqual(report["queries_not_completed"], ["SKU-A"])
+        self.assertEqual(report["query_skip_reason"], "stopped_on_429")
 
+    def test_hardware_match_is_not_a_purchase_offer(self) -> None:
         unverified = _offer(verification_status=UNVERIFIED)
-        verified = _offer(external_id="ready", verification_status=VERIFIED)
-        report = coverage_for_offers([unverified, verified], fx=Fx())
+        verified = _offer(
+            external_id="ready",
+            verification_status=VERIFIED,
+            availability_confirmed=True,
+            available=True,
+            availability_status="in_stock",
+        )
+        report = coverage_for_offers([unverified, verified], fx=_fx())
         self.assertEqual(report["hardware_and_price"], 2)
         self.assertEqual(report["purchasable"], 1)
 
-    def test_confirmed_offer_meets_the_shared_gate(self) -> None:
-        class Fx:
-            rub_per_thb = 2.5
+    def test_purchasable_requires_stock_fx_and_variant_price(self) -> None:
+        from thailand.seller_trust import TIER_A, TIER_C
 
-        report = coverage_for_offers([_offer()], fx=Fx())
+        fx = _fx()
+        stocked = _offer(
+            verification_status=VERIFIED,
+            availability_confirmed=True,
+            available=True,
+            availability_status="in_stock",
+            gpu_source="explicit_title",
+        )
+        unconfirmed = _offer(
+            external_id="nostock",
+            verification_status=VERIFIED,
+            availability_confirmed=False,
+            available=True,
+        )
+        variant = _offer(
+            external_id="variant",
+            verification_status=VERIFIED,
+            availability_confirmed=True,
+            available=True,
+            availability_status="in_stock",
+            marketplace=True,
+            price_verified_for_variant=False,
+            seller_trust_tier=TIER_A,
+        )
+        untrusted = _offer(
+            external_id="seller",
+            verification_status=VERIFIED,
+            availability_confirmed=True,
+            available=True,
+            availability_status="in_stock",
+            marketplace=True,
+            price_verified_for_variant=True,
+            seller_trust_tier=TIER_C,
+        )
+        report = coverage_for_offers([stocked, unconfirmed, variant, untrusted], fx=fx)
+        self.assertEqual(report["hardware_and_price"], 4)
+        self.assertEqual(report["purchasable"], 1)
+        stale = _fx(stale=True)
+        stale_report = coverage_for_offers([stocked], fx=stale)
+        self.assertEqual(stale_report["hardware_and_price"], 1)
+        self.assertEqual(stale_report["purchasable"], 0)
+
+    def test_confirmed_offer_meets_the_shared_gate(self) -> None:
+        report = coverage_for_offers(
+            [
+                _offer(
+                    verification_status=VERIFIED,
+                    availability_confirmed=True,
+                    available=True,
+                    availability_status="in_stock",
+                )
+            ],
+            fx=_fx(),
+        )
         self.assertEqual(report["meets_requirements"], 1)
+        self.assertEqual(report["purchasable"], 1)
         self.assertEqual(report["exclusion_reasons"], {})
 
 
@@ -203,6 +280,64 @@ class CollectorQueryTests(unittest.TestCase):
         self.assertEqual(result.codes_checked, [])
         self.assertIn("16AFR10H", result.targeted_codes or [])
         self.assertIn("stopped_on_429", result.discovery_limitations or [])
+
+    def test_jib_429_does_not_open_product_pages(self) -> None:
+        from thailand.jib import collect
+
+        calls: list[str] = []
+
+        def get(url, params=None, timeout=None):
+            calls.append(str(url))
+            response = mock.Mock()
+            response.headers = {"content-type": "application/json"}
+            term = (params or {}).get("term", "")
+            if term != "notebook rtx 5070 ti":
+                response.status_code = 429
+                return response
+            response.status_code = 200
+            response.json.return_value = {
+                "rec": [{
+                    "id": "77",
+                    "title": "MSI Raider RTX 5070 Ti 32GB 1TB 2560x1600",
+                    "price": "89900",
+                }]
+            }
+            return response
+
+        client = mock.Mock()
+        client.get.side_effect = get
+        result = collect(client=client, verify_details=True, target_codes=["16AFR10H"])
+        self.assertFalse(result.ok)
+        self.assertEqual(result.error_code, "RATE_LIMITED")
+        self.assertGreaterEqual(result.discovered_count or 0, 1)
+        self.assertEqual(calls, ["https://www.jib.co.th/web/product/search_suggestion"] * 2)
+        self.assertFalse(any("readProduct" in url for url in calls))
+        self.assertEqual(result.queries_finished, ["notebook rtx 5070 ti"])
+        self.assertNotIn("16AFR10H", result.queries_finished or [])
+
+    def test_jib_failed_middle_query_does_not_hide_a_later_code(self) -> None:
+        from thailand.discovery import coverage_for_result
+        from thailand.jib import collect
+
+        def get(url, params=None, timeout=None):
+            response = mock.Mock()
+            response.headers = {"content-type": "application/json"}
+            term = (params or {}).get("term", "")
+            if term == "notebook rtx 5080":
+                response.status_code = 400
+                return response
+            response.status_code = 200
+            response.json.return_value = {"rec": []}
+            return response
+
+        client = mock.Mock()
+        client.get.side_effect = get
+        result = collect(client=client, verify_details=False, target_codes=["16AFR10H"])
+        self.assertIn("16AFR10H", result.codes_checked or [])
+        self.assertNotIn("notebook rtx 5080", result.queries_finished or [])
+        report = coverage_for_result(result)
+        self.assertEqual(report["queries_not_completed"], ["notebook rtx 5080"])
+        self.assertIn("16AFR10H", report["queries_finished"])
 
     def test_advice_429_before_regional_sku_is_partial(self) -> None:
         from thailand.advice import collect

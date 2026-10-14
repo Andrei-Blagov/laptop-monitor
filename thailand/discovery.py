@@ -12,9 +12,9 @@ from datetime import datetime, timezone
 from typing import Any
 
 from laptop_eligibility import evaluate_purchase
+from thailand.eligibility import offer_user_facing_eligible
 from thailand.fx import thb_to_rub
 from thailand.models import StoreScanResult, ThailandOffer
-from thailand.verification import is_verified_for_ranking
 
 # Primary net: any notebook with the target GPU, in English and Thai.
 # "RTX 5070" without Ti is a different GPU and is not used as a substitute.
@@ -104,6 +104,7 @@ def coverage_for_offers(
     *,
     fx: Any = None,
     queries: list[str] | None = None,
+    queries_finished: list[str] | None = None,
     search_mode: str | None = None,
     limitations: list[str] | None = None,
     rate_limited: bool = False,
@@ -128,19 +129,33 @@ def coverage_for_offers(
         )
         if verdict.eligible:
             hardware_and_price += 1
-            if is_verified_for_ranking(offer):
-                purchasable += 1
-            continue
-        reasons[verdict.reason or "unknown"] += 1
-        for item in verdict.details:
-            details[str(item)] += 1
+        else:
+            reasons[verdict.reason or "unknown"] += 1
+            for item in verdict.details:
+                details[str(item)] += 1
+        purchase_ok, purchase_reason, _rub = offer_user_facing_eligible(
+            offer, fx=fx, require_verified=True
+        )
+        if purchase_ok:
+            purchasable += 1
+        elif purchase_reason and not verdict.eligible and purchase_reason != verdict.reason:
+            reasons[purchase_reason] += 1
+        elif purchase_reason and verdict.eligible:
+            reasons[purchase_reason] += 1
     planned = list(queries or [])
-    completed = (
-        len(planned)
-        if queries_completed is None
-        else max(0, min(len(planned), int(queries_completed)))
-    )
-    skipped = planned[completed:]
+    if queries_finished is not None:
+        finished = [query for query in queries_finished if query in planned or not planned]
+        finished_set = set(finished)
+        skipped = [query for query in planned if query not in finished_set]
+    elif queries_completed is None:
+        finished = list(planned)
+        skipped = []
+    else:
+        # Legacy callers that only know a count still report a tail, but new
+        # collectors pass the finished keys instead.
+        completed = max(0, min(len(planned), int(queries_completed)))
+        finished = planned[:completed]
+        skipped = planned[completed:]
     skip_reason = None
     if skipped and rate_limited:
         skip_reason = "stopped_on_429"
@@ -156,7 +171,8 @@ def coverage_for_offers(
         "exclusion_reasons": dict(reasons),
         "exclusion_details": dict(details),
         "queries": planned,
-        "queries_completed": completed,
+        "queries_finished": finished,
+        "queries_completed": len(finished),
         "queries_not_completed": skipped,
         "query_skip_reason": skip_reason,
         "search_mode": search_mode or "catalog",
@@ -176,8 +192,9 @@ def coverage_for_result(result: StoreScanResult, fx: Any = None) -> dict[str, An
         offers,
         fx=fx,
         queries=result.discovery_queries,
+        queries_finished=result.queries_finished,
         search_mode=result.discovery_mode,
         limitations=limitations,
         rate_limited=bool(result.discovery_rate_limited or result.error_code == "RATE_LIMITED"),
-        queries_completed=result.queries_completed,
+        queries_completed=None if result.queries_finished is not None else result.queries_completed,
     )

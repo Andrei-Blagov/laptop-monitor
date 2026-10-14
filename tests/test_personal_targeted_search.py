@@ -156,6 +156,35 @@ class SpeedComCodeBudgetTests(unittest.TestCase):
         self.assertEqual(result.codes_checked, ["A2XWHG-814XRU"])
         self.assertNotIn("G615LR-S5348", result.codes_checked)
 
+    def test_regional_codes_are_not_added_past_the_suggest_budget(self) -> None:
+        from thailand.discovery import QUERY_BUDGET
+        from thailand.speedcom import collect
+
+        seen: list[str] = []
+
+        def get(url):
+            seen.append(url)
+            response = mock.Mock()
+            response.headers = {"content-type": "application/json"}
+            response.status_code = 200
+            response.json.return_value = (
+                {"resources": {"results": {"products": []}}}
+                if "suggest.json" in url
+                else {"products": []}
+            )
+            return response
+
+        codes = [f"CODE{index:02d}" for index in range(30)]
+        client = mock.Mock()
+        client.get.side_effect = get
+        result = collect(client=client, target_codes=codes)
+        suggests = [url for url in seen if "suggest.json" in url]
+        self.assertLessEqual(len(suggests), QUERY_BUDGET)
+        self.assertEqual(len(suggests), len(set(suggests)))
+        self.assertEqual(result.codes_checked, codes[:QUERY_BUDGET])
+        self.assertNotIn("CODE29", result.codes_checked or [])
+        self.assertTrue(result.ok)
+
 
 class CoverageTextTests(unittest.TestCase):
     def test_not_found_stays_separate_from_not_checked(self) -> None:

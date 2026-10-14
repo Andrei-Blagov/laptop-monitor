@@ -492,7 +492,7 @@ def collect(
                 prev.candidate_gpu = o.candidate_gpu
 
         candidates = list(by_id.values())
-        if verify_details and candidates:
+        if verify_details and candidates and not rate_limited:
             for i, offer in enumerate(candidates):
                 if i >= max_detail_fetches:
                     break
@@ -547,6 +547,7 @@ def collect(
         result.discovery_mode = "gpu_search"
         result.discovery_limitations = limitations
         result.discovery_rate_limited = rate_limited
+        result.queries_finished = list(completed)
         result.queries_completed = len(completed)
         result.targeted_codes = wanted
         result.codes_checked = checked_codes

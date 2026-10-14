@@ -352,9 +352,6 @@ def collect(
                 break
             if line not in suggest_terms:
                 suggest_terms.append(line)
-        for code in missing:
-            if code not in suggest_terms:
-                suggest_terms.append(code)
         checked_codes = [code for code in codes if code not in missing]
         completed_lines: list[str] = []
         for code in suggest_terms:
@@ -385,29 +382,33 @@ def collect(
                 result.discovery_mode = "mixed"
                 result.discovery_rate_limited = True
                 result.discovery_limitations = ["stopped_on_429"]
-                result.queries_completed = len(COLLECTIONS) + len(completed_lines)
+                result.queries_finished = list(COLLECTIONS) + list(completed_lines) + [
+                    item for item in checked_codes if item in missing
+                ]
+                result.queries_completed = len(result.queries_finished)
                 return result
+            if resp.status_code >= 400 or "json" not in (
+                resp.headers.get("content-type") or ""
+            ).lower():
+                continue
             if code in codes:
                 checked_codes.append(code)
             else:
                 completed_lines.append(code)
-            if resp.status_code < 400 and "json" in (
-                resp.headers.get("content-type") or ""
-            ).lower():
-                try:
-                    payload = resp.json()
-                except ValueError:
-                    payload = {}
-                products = (
-                    (payload.get("resources") or {}).get("results") or {}
-                ).get("products") or []
-                now = datetime.now(timezone.utc)
-                for product in products:
-                    if isinstance(product, dict):
-                        for offer in parse_speedcom_product(product, collected_at=now):
-                            if offer.external_id not in seen:
-                                seen.add(offer.external_id)
-                                discovered.append(offer)
+            try:
+                payload = resp.json()
+            except ValueError:
+                payload = {}
+            products = (
+                (payload.get("resources") or {}).get("results") or {}
+            ).get("products") or []
+            now = datetime.now(timezone.utc)
+            for product in products:
+                if isinstance(product, dict):
+                    for offer in parse_speedcom_product(product, collected_at=now):
+                        if offer.external_id not in seen:
+                            seen.add(offer.external_id)
+                            discovered.append(offer)
         verified = [o for o in discovered if is_verified_for_ranking(o)]
         unverified = [o for o in discovered if not is_verified_for_ranking(o)]
         result = StoreScanResult(
@@ -431,9 +432,10 @@ def collect(
             "line suggests rotate inside the request budget",
             "regional codes are extra suggest keys",
         ]
-        result.queries_completed = len(COLLECTIONS) + len(completed_lines) + len(
-            [code for code in checked_codes if code in missing]
-        )
+        result.queries_finished = list(COLLECTIONS) + list(completed_lines) + [
+            code for code in checked_codes if code in missing
+        ]
+        result.queries_completed = len(result.queries_finished)
         return result
     finally:
         if own:

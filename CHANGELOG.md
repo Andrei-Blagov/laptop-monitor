@@ -4,8 +4,9 @@
 
 Thailand discovery searches by GPU and manufacturer line, not only by a known SKU.
 
-- JIB, Advice, and IT City query the target GPUs in English and Thai first, then supplied regional codes, then rotating manufacturer lines inside one request budget. RTX 5070 is not treated as RTX 5070 Ti. A 429 keeps offers already found and is not a complete success
-- SpeedCom still walks its GPU collections and can add a few line lookups. InvadeIT still walks the notebook category. Incomplete offers stay out of the purchase TOP
+- JIB, Advice, and IT City query the target GPUs in English and Thai first, then supplied regional codes, then rotating manufacturer lines inside one request budget. RTX 5070 is not treated as RTX 5070 Ti. The first HTTP 429 stops every remaining call to that store, including JIB product pages. Offers already found stay, and the pass is not a complete success
+- SpeedCom still walks its GPU collections, then at most 12 extra suggests. Regional codes are not appended again after that budget. InvadeIT still walks the notebook category
+- A purchasable Thai offer needs a usable exchange rate, confirmed stock, seller trust, and a variant price. Hardware and price are counted separately. Query coverage follows the keys that actually finished; a regional SKU the search never reached stays unchecked
 - BaNANA and Lazada stay disabled
 
 ## 0.10.1 — 2026-10-14

@@ -92,6 +92,8 @@ class StoreScanResult:
     discovery_limitations: list[str] | None = None
     discovery_rate_limited: bool = False
     queries_completed: int | None = None
+    # Query keys that returned a usable response. Not a prefix count.
+    queries_finished: list[str] | None = None
 
     @property
     def count(self) -> int:

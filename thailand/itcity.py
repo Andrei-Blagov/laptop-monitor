@@ -317,6 +317,7 @@ def collect(
                     result.discovery_mode = "gpu_search"
                     result.discovery_rate_limited = True
                     result.discovery_limitations = ["stopped_on_429"]
+                    result.queries_finished = list(completed_queries)
                     result.queries_completed = len(completed_queries)
                     return result
                 if resp.status_code >= 400:
@@ -364,6 +365,7 @@ def collect(
             "manufacturer lines rotate inside the request budget",
             "up to 3 pages per query",
         ]
+        result.queries_finished = list(completed_queries)
         result.queries_completed = len(completed_queries)
         return result
     finally:
