@@ -326,7 +326,7 @@ def _offer_record(
     specs, extras = _field_evidence(
         offer,
         identity,
-        captured_at=observed_at,
+        listing_observed_at=observed_at,
         specs_by_key=specs_by_key,
     )
     variant_id = _variant_id(specs)
@@ -389,11 +389,15 @@ def _current_offer_records(
 
 
 def _groups_by_configuration(records: Sequence[dict[str, Any]]) -> list[list[dict[str, Any]]]:
-    """Keep offers together only when no confirmed core field disagrees."""
+    """Keep offers together only when no confirmed core field disagrees.
+
+    Compatibility is checked against every member. An offer with an unknown
+    CPU must not pull two different known CPUs into one configuration.
+    """
     groups: list[list[dict[str, Any]]] = []
     for record in records:
         for group in groups:
-            if _configuration_compatible(group[0], record):
+            if all(_configuration_compatible(member, record) for member in group):
                 group.append(record)
                 break
         else:
@@ -425,6 +429,16 @@ def _model_record(
 ) -> dict[str, Any]:
     member_keys = {(str(offer["store"]), str(offer["external_id"])) for offer in offers}
     conflicts = _conflicts_for(member_keys, ambiguous)
+    if _members_disagree(offers):
+        conflicts = [
+            *conflicts,
+            {
+                "status": "AMBIGUOUS",
+                "reason": "confirmed_fields_disagree",
+                "shared_identifiers": [],
+                "different": _disagreeing_fields(offers),
+            },
+        ]
     strong = _unique(
         item
         for offer in offers
@@ -609,9 +623,16 @@ def _field_evidence(
     offer: Any,
     identity: Any,
     *,
-    captured_at: str | None,
+    listing_observed_at: str | None,
     specs_by_key: Mapping[tuple[str, str], Any] | None = None,
 ) -> tuple[dict[str, Any], dict[str, Any]]:
+    """Evidence for one offer. A specs-cache value keeps its own capture time.
+
+    The cache records a source label in ``field_provenance`` and, only when a
+    caller stored one, a timestamp in ``field_captured_at``. A later price or
+    stock check does not become that timestamp. Title text is dated by the
+    listing observation because that text was seen then.
+    """
     from comparison import offer_identity
     from stores.common import extract_specs_from_name
 
@@ -621,22 +642,26 @@ def _field_evidence(
     for public_name, identity_name, title_name in CORE_FIELDS:
         cached = None if identity is None else getattr(identity, identity_name, None)
         if cached is not None:
-            value, method = _json_value(getattr(proven, identity_name, None)), "specs_cache"
+            value = _json_value(getattr(proven, identity_name, None))
+            evidence = _spec_evidence(
+                offer,
+                identity,
+                method="specs_cache",
+                field_names=(identity_name, public_name),
+                listing_observed_at=listing_observed_at,
+            )
         elif title.get(title_name) is not None:
-            value, method = _json_value(title.get(title_name)), "title"
+            value = _json_value(title.get(title_name))
+            evidence = _spec_evidence(
+                offer,
+                identity,
+                method="title",
+                field_names=(public_name, title_name),
+                listing_observed_at=listing_observed_at,
+            )
         else:
-            value, method = None, None
-        specs[public_name] = {
-            "value": value,
-            "evidence": None
-            if method is None
-            else {
-                "source": offer.store,
-                "external_id": str(offer.external_id),
-                "captured_at": captured_at,
-                "method": method,
-            },
-        }
+            value, evidence = None, None
+        specs[public_name] = {"value": value, "evidence": evidence}
     extras: dict[str, Any] = {}
     if identity is not None:
         for name in EXTRA_FIELDS:
@@ -645,14 +670,104 @@ def _field_evidence(
                 continue
             extras[name] = {
                 "value": _json_value(cached),
-                "evidence": {
-                    "source": offer.store,
-                    "external_id": str(offer.external_id),
-                    "captured_at": captured_at,
-                    "method": "specs_cache",
-                },
+                "evidence": _spec_evidence(
+                    offer,
+                    identity,
+                    method="specs_cache",
+                    field_names=(name,),
+                    listing_observed_at=listing_observed_at,
+                ),
             }
     return specs, extras
+
+
+def _spec_evidence(
+    offer: Any,
+    identity: Any,
+    *,
+    method: str,
+    field_names: tuple[str, ...],
+    listing_observed_at: str | None,
+) -> dict[str, Any]:
+    if method == "specs_cache":
+        captured_at = _known_spec_time(identity, field_names)
+        capture_state = "known" if captured_at else "unknown"
+    elif method == "title" and listing_observed_at:
+        captured_at = listing_observed_at
+        capture_state = "listing"
+    else:
+        captured_at = None
+        capture_state = "unknown"
+    return {
+        "source": offer.store,
+        "external_id": str(offer.external_id),
+        "captured_at": captured_at,
+        "capture_state": capture_state,
+        "method": method,
+        "provenance": _provenance_label(identity, field_names),
+    }
+
+
+def _source_identifiers(identity: Any) -> dict[str, Any]:
+    raw = getattr(identity, "source_identifiers", None)
+    return raw if isinstance(raw, dict) else {}
+
+
+def _known_spec_time(identity: Any, field_names: Sequence[str]) -> str | None:
+    """Return a timestamp only when the cache stored one for this field."""
+    captured = _source_identifiers(identity).get("field_captured_at")
+    if not isinstance(captured, dict):
+        return None
+    for name in field_names:
+        moment = _parse_time(_text_or_none(captured.get(name)))
+        if moment is not None:
+            return _iso(moment)
+    return None
+
+
+def _provenance_label(identity: Any, field_names: Sequence[str]) -> str | None:
+    raw = _source_identifiers(identity).get("field_provenance")
+    if not isinstance(raw, dict):
+        return None
+    for name in field_names:
+        value = raw.get(name)
+        if isinstance(value, str) and value.strip():
+            return value.strip()
+    return None
+
+
+def _members_disagree(offers: Sequence[Mapping[str, Any]]) -> bool:
+    for index, left in enumerate(offers):
+        for right in offers[index + 1 :]:
+            if not _configuration_compatible(left, right):
+                return True
+    return False
+
+
+def _disagreeing_fields(offers: Sequence[Mapping[str, Any]]) -> list[str]:
+    found: list[str] = []
+    names = [name for name, _identity_name, _title_name in CORE_FIELDS]
+    if any(
+        (left.get("known_extras") or {}).get("gpu_vram_gb", {}).get("value") is not None
+        and (right.get("known_extras") or {}).get("gpu_vram_gb", {}).get("value") is not None
+        and (left.get("known_extras") or {}).get("gpu_vram_gb", {}).get("value")
+        != (right.get("known_extras") or {}).get("gpu_vram_gb", {}).get("value")
+        for left in offers
+        for right in offers
+    ):
+        names.append("gpu_vram_gb")
+    for name in names:
+        values = []
+        for offer in offers:
+            if name == "gpu_vram_gb":
+                value = (offer.get("known_extras") or {}).get(name, {}).get("value")
+            else:
+                value = (offer.get("specs") or {}).get(name, {}).get("value")
+            if value is not None:
+                values.append(value)
+        if len(set(map(str, values))) > 1 and name not in found:
+            found.append(name)
+    return found
 
 
 def _variant_id(specs: Mapping[str, Mapping[str, Any]]) -> str | None:

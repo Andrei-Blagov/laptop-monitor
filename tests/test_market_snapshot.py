@@ -13,6 +13,7 @@ from buy_opportunity import evaluate_buy_rules
 from identity_sync import save_specs_cache
 from market_snapshot import (
     RussianSnapshotError,
+    _groups_by_configuration,
     export_russian_market_snapshot,
     load_russian_market_snapshot,
     retain_russian_market_snapshots,
@@ -261,9 +262,13 @@ class RussianMarketSnapshotTests(unittest.TestCase):
             self.assertEqual(slot["evidence"]["source"], "regard")
             self.assertEqual(slot["evidence"]["external_id"], "base-17")
             self.assertEqual(slot["evidence"]["method"], "specs_cache")
-            self.assertEqual(slot["evidence"]["captured_at"], MODEL17_AT.isoformat())
+            self.assertIsNone(slot["evidence"]["captured_at"])
+            self.assertEqual(slot["evidence"]["capture_state"], "unknown")
+            self.assertNotEqual(slot["evidence"]["captured_at"], offer["price_checked_at"])
         self.assertEqual(offer["specs"]["screen_inch"]["value"], 16.0)
         self.assertEqual(offer["specs"]["screen_inch"]["evidence"]["external_id"], "base-17")
+        self.assertIsNone(offer["specs"]["screen_inch"]["evidence"]["captured_at"])
+        self.assertEqual(offer["specs"]["screen_inch"]["evidence"]["capture_state"], "unknown")
         self.assertEqual(model["state"], "proven")
         self.assertEqual(model["member_offer_ids"], [offer["offer_id"]])
 
@@ -320,6 +325,119 @@ class RussianMarketSnapshotTests(unittest.TestCase):
         msi = next(row for row in document["offers"] if row["external_id"] == "msi-1")
         self.assertIn(msi["model_id"], profiles["msi-raider-16-a2xwhg-814xru"]["model_ids"])
         self.assertNotIn(msi["model_id"], legion["model_ids"])
+
+    def test_old_specs_cache_is_not_dated_by_a_new_price_check(self) -> None:
+        new_price = 187_500
+        spec_time = (NOW - timedelta(days=3)).isoformat()
+        with open_db(self.db_path) as conn:
+            conn.execute(
+                """
+                UPDATE products
+                SET price=?, last_checked_at=?, last_seen_at=?
+                WHERE store=? AND external_id=?
+                """,
+                (new_price, NOW.isoformat(), NOW.isoformat(), "regard", "base-17"),
+            )
+            conn.execute(
+                """
+                UPDATE price_history
+                SET price=?, checked_at=?
+                WHERE product_id = (
+                    SELECT id FROM products WHERE store='regard' AND external_id='base-17'
+                )
+                """,
+                (new_price, NOW.isoformat()),
+            )
+        cache = json.loads(self.specs_path.read_text(encoding="utf-8"))
+        entry = cache["regard:base-17"]
+        source = dict(entry.get("source_identifiers") or {})
+        source["field_provenance"] = {
+            "cpu": "regard.api",
+            "screen_size_inch": "regard.api",
+        }
+        source.pop("field_captured_at", None)
+        entry["source_identifiers"] = source
+        entry["price"] = new_price
+        self.specs_path.write_text(json.dumps(cache), encoding="utf-8")
+
+        self._export()
+        offer = next(row for row in self._load()["offers"] if row["external_id"] == "base-17")
+        self.assertEqual(offer["public_price_rub"], new_price)
+        self.assertEqual(offer["price_checked_at"], NOW.isoformat())
+        self.assertEqual(offer["availability_checked_at"], NOW.isoformat())
+        for field in ("cpu", "screen_inch"):
+            evidence = offer["specs"][field]["evidence"]
+            self.assertEqual(evidence["method"], "specs_cache")
+            self.assertEqual(evidence["provenance"], "regard.api")
+            self.assertIsNone(evidence["captured_at"])
+            self.assertEqual(evidence["capture_state"], "unknown")
+            self.assertNotEqual(evidence["captured_at"], offer["price_checked_at"])
+        self.assertIn("275HX", str(offer["specs"]["cpu"]["value"]).upper().replace(" ", ""))
+        self.assertEqual(offer["specs"]["screen_inch"]["value"], 16.0)
+
+        source["field_captured_at"] = {"cpu": spec_time, "screen_size_inch": spec_time}
+        entry["source_identifiers"] = source
+        self.specs_path.write_text(json.dumps(cache), encoding="utf-8")
+        self._export()
+        dated = next(row for row in self._load()["offers"] if row["external_id"] == "base-17")
+        self.assertEqual(dated["price_checked_at"], NOW.isoformat())
+        self.assertEqual(dated["availability_checked_at"], NOW.isoformat())
+        for field in ("cpu", "screen_inch"):
+            evidence = dated["specs"][field]["evidence"]
+            self.assertEqual(evidence["captured_at"], spec_time)
+            self.assertEqual(evidence["capture_state"], "known")
+            self.assertNotEqual(evidence["captured_at"], dated["price_checked_at"])
+
+    def test_unknown_cpu_does_not_join_conflicting_cpus(self) -> None:
+        groups = _groups_by_configuration([
+            _core_offer(None),
+            _core_offer("275HX"),
+            _core_offer("285HX"),
+        ])
+        self.assertEqual(len(groups), 2)
+        for group in groups:
+            known = [row["specs"]["cpu"]["value"] for row in group if row["specs"]["cpu"]["value"] is not None]
+            self.assertLessEqual(len(set(known)), 1)
+        self.assertTrue(any(row["specs"]["cpu"]["value"] == "275HX" for row in groups[0]))
+        self.assertTrue(all(row["specs"]["cpu"]["value"] != "285HX" for row in groups[0]))
+
+        products = [
+            Product("regard", "cpu-a", "https://example.test/regard/cpu-a", "Transitive A", "TRANS-CPU-01", 327_000, True, OBSERVED),
+            Product("kns", "cpu-b", "https://example.test/kns/cpu-b", "Transitive B", "TRANS-CPU-01", 327_500, True, OBSERVED),
+            Product("andpro", "cpu-c", "https://example.test/andpro/cpu-c", "Transitive C", "TRANS-CPU-01", 328_000, True, OBSERVED),
+        ]
+        save_products(products, self.db_path)
+        cache = json.loads(self.specs_path.read_text(encoding="utf-8"))
+        for product, cpu in zip(products, (None, "Core Ultra 9 275HX", "Core Ultra 9 285HX")):
+            cache[f"{product.store}:{product.external_id}"] = _identity(
+                product.store, product.external_id, product.sku or "", product.price or 0, product.name, cpu=cpu,
+            ).to_dict()
+        self.specs_path.write_text(json.dumps(cache), encoding="utf-8")
+        with open_db(self.db_path) as conn:
+            run_id = conn.execute("SELECT id FROM pipeline_runs ORDER BY id DESC LIMIT 1").fetchone()["id"]
+            insert_store_run(
+                conn,
+                pipeline_run_id=int(run_id),
+                store="andpro",
+                attempted_at=OBSERVED.isoformat(),
+                finished_at=OBSERVED.isoformat(),
+                status="ok",
+                products_count=1,
+            )
+        self._export()
+        document = self._load()
+        rows = {row["external_id"]: row for row in document["offers"] if row["external_id"] in {"cpu-a", "cpu-b", "cpu-c"}}
+        self.assertEqual(set(rows), {"cpu-a", "cpu-b", "cpu-c"})
+        self.assertNotEqual(rows["cpu-b"]["model_id"], rows["cpu-c"]["model_id"])
+        for model in document["models"]:
+            members = {
+                row["external_id"]
+                for row in document["offers"]
+                if row["offer_id"] in model["member_offer_ids"]
+            }
+            self.assertFalse({"cpu-b", "cpu-c"} <= members)
+            if model["state"] == "proven":
+                self.assertNotIn("cpu-a", members)
 
     def test_stale_and_unverified_offers_are_not_current(self) -> None:
         self._export()
@@ -582,6 +700,20 @@ class PipelineSnapshotIsolationTests(unittest.TestCase):
             self.assertEqual(document["pipeline_run_id"], str(result.run_id))
             self.assertEqual(document["schema_version"], 1)
             self.assertFalse(any((root / "jobs").glob("*.json")))
+
+
+def _core_offer(cpu: str | None) -> dict:
+    return {
+        "specs": {
+            "cpu": {"value": cpu},
+            "gpu": {"value": "RTX 5070 Ti"},
+            "ram_gb": {"value": 32},
+            "ssd_gb": {"value": 1024},
+            "screen_inch": {"value": 16.0},
+            "screen_resolution": {"value": "2560x1600"},
+        },
+        "known_extras": {},
+    }
 
 
 def _deal_signature(deals) -> list[tuple]:
