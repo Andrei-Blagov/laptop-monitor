@@ -91,6 +91,8 @@ class PipelineResult:
     thailand_scan_triggered: bool | None = None
     thailand_scan_status: str | None = None
     thailand_job_id: str | None = None
+    russian_snapshot_id: str | None = None
+    russian_snapshot_status: str | None = None
 
 def run_pipeline(
     db_path: Path | str = DEFAULT_DB_PATH,
@@ -107,6 +109,7 @@ def run_pipeline(
     use_lock: bool = True,
     buy_state_path: Path | str | None = None,
     thailand_jobs_dir: Path | str | None = None,
+    russian_snapshot_root: Path | str | None = None,
 ) -> PipelineResult:
     """
     Полный production pipeline.
@@ -423,6 +426,17 @@ def run_pipeline(
             result.thailand_scan_triggered = False
             result.thailand_scan_status = "enqueue_failed"
 
+        # Full Russian catalog for later comparison. Export failure stays local.
+        _publish_russian_market_snapshot(
+            db_path,
+            result,
+            specs_path=specs_path,
+            snapshot_root=russian_snapshot_root,
+            pipeline_run_id=run_id,
+            lock_path=lock_path,
+            pipeline_lock_held=use_lock,
+        )
+
         _record_run(
             db_path,
             run_id,
@@ -451,6 +465,41 @@ def run_pipeline(
                 lock_cm.__exit__(None, None, None)
             except Exception:
                 pass
+
+
+def _publish_russian_market_snapshot(
+    db_path: Path | str,
+    result: PipelineResult,
+    *,
+    specs_path: Path | str | None,
+    snapshot_root: Path | str | None,
+    pipeline_run_id: int | None,
+    lock_path: Path | str,
+    pipeline_lock_held: bool,
+) -> None:
+    """Publish the full Russian snapshot. Never changes the Russian run status."""
+    try:
+        from market_snapshot import export_russian_market_snapshot
+
+        root = (
+            Path(snapshot_root)
+            if snapshot_root is not None
+            else Path(db_path).resolve().parent / "russian_market"
+        )
+        manifest = export_russian_market_snapshot(
+            db_path,
+            specs_path=specs_path,
+            snapshot_root=root,
+            pipeline_run_id=pipeline_run_id,
+            instance_id=result.instance_id or config.get_instance_id(),
+            lock_path=lock_path,
+            pipeline_lock_held=pipeline_lock_held,
+        )
+        result.russian_snapshot_id = str(manifest.get("snapshot_id") or "") or None
+        result.russian_snapshot_status = "published"
+    except Exception:
+        traceback.print_exc()
+        result.russian_snapshot_status = "export_failed"
 
 
 def _maybe_notify_n8n(

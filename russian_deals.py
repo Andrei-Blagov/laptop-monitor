@@ -405,6 +405,78 @@ def fold_proven_duplicates(
     return folded
 
 
+def prepare_russian_matches(
+    products: Sequence[Mapping[str, Any]],
+    identifiers: Sequence[Mapping[str, Any]],
+    specs_cache: Mapping[str, Any],
+    *,
+    include_single_store: bool = True,
+    merges: list[dict[str, Any]] | None = None,
+    ambiguous: list[dict[str, Any]] | None = None,
+) -> tuple[list[ProductMatch], dict[tuple[str, str], Any]]:
+    """Group listings the same way the Russian ranking does, without a TOP cap."""
+    comparison = match_products(products, identifiers)
+    singles = single_store_matches(comparison.unmatched) if include_single_store else []
+    matches = list(comparison.matches) + singles
+    specs_by_key: dict[tuple[str, str], Any] = {}
+    for product in products:
+        identity = identity_from_cache(specs_cache, str(product["store"]), str(product["external_id"]))
+        if identity is not None:
+            specs_by_key[(str(product["store"]), str(product["external_id"]))] = identity
+    matches = split_conflicting_configs(matches, specs_by_key)
+    matches = fold_proven_duplicates(
+        matches, specs_by_key, merges=merges, ambiguous=ambiguous
+    )
+    return matches, specs_by_key
+
+
+def eligible_cluster_offers(
+    match: ProductMatch,
+    specs_by_key: Mapping[tuple[str, str], Any] | None,
+    fresh_stores: set[str] | None,
+) -> list[Offer]:
+    """Offers rank_clusters would price for this cluster. Same filter, no new score."""
+    from comparison import eligible_match_offers
+
+    allowed = fresh_stores
+    available = [
+        offer
+        for offer in match.offers
+        if offer.available
+        and offer.price is not None
+        and config.is_price_in_tracking_scope(offer.price)
+        and (allowed is None or offer.store in allowed)
+    ]
+    if not available:
+        return []
+    eligible = eligible_match_offers(match, specs_by_key or {}, allowed)
+    if eligible:
+        return list(eligible)
+    return available
+
+
+def rank_prepared_matches(
+    matches: Sequence[ProductMatch],
+    specs_by_key: Mapping[tuple[str, str], Any],
+    histories: Mapping[int, Sequence[Mapping[str, Any]]],
+    fresh_stores: set[str],
+    *,
+    hard_filters: bool = True,
+    exclusions: list[dict[str, Any]] | None = None,
+) -> list[RankedDeal]:
+    """Full ranked list. Callers apply TOP_DEALS_LIMIT themselves."""
+    return rank_clusters(
+        matches,
+        specs_by_key=specs_by_key,
+        limit=None,
+        fresh_stores=fresh_stores,
+        historical_mins=historical_mins_from_rows(histories),
+        history_starts=history_starts_from_rows(histories),
+        hard_filters=hard_filters,
+        exclusions=exclusions,
+    )
+
+
 def load_russian_ranked_deals(
     db_path: Path | str = DEFAULT_DB_PATH,
     *,
@@ -432,28 +504,22 @@ def load_russian_ranked_deals(
         return []
     products = get_all_products_readonly(db_path)
     identifiers = get_all_identifiers_readonly(db_path)
-    comparison = match_products(products, identifiers)
-    singles = single_store_matches(comparison.unmatched) if include_single_store else []
-    matches = list(comparison.matches) + singles
     cache = load_specs_cache(specs_path) if specs_path is not None else load_specs_cache()
-    specs_by_key: dict[tuple[str, str], Any] = {}
-    for p in products:
-        identity = identity_from_cache(cache, str(p["store"]), str(p["external_id"]))
-        if identity is not None:
-            specs_by_key[(str(p["store"]), str(p["external_id"]))] = identity
-    matches = split_conflicting_configs(matches, specs_by_key)
-    matches = fold_proven_duplicates(
-        matches, specs_by_key, merges=merges, ambiguous=ambiguous
+    matches, specs_by_key = prepare_russian_matches(
+        products,
+        identifiers,
+        cache,
+        include_single_store=include_single_store,
+        merges=merges,
+        ambiguous=ambiguous,
     )
     pids = collect_match_product_ids(matches)
     histories = get_price_history_for_products_readonly(db_path, pids)
-    ranked = rank_clusters(
+    ranked = rank_prepared_matches(
         matches,
-        specs_by_key=specs_by_key,
-        limit=None,
-        fresh_stores=fresh,
-        historical_mins=historical_mins_from_rows(histories),
-        history_starts=history_starts_from_rows(histories),
+        specs_by_key,
+        histories,
+        fresh,
         hard_filters=hard_filters,
         exclusions=exclusions,
     )
