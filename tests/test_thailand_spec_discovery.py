@@ -7,14 +7,17 @@ from datetime import datetime, timezone
 from unittest import mock
 
 import config
-from laptop_eligibility import evaluate_purchase
 from thailand.discovery import (
     GPU_SEARCH_QUERIES,
     LINE_SEARCH_QUERIES,
+    QUERY_BUDGET,
+    context_gpu,
     coverage_for_offers,
     search_queries,
 )
-from thailand.models import ThailandOffer
+from thailand.scanner import build_search_coverage
+from thailand.verification import VERIFIED, UNVERIFIED
+from thailand.models import StoreScanResult, ThailandOffer
 
 
 NOW = datetime(2026, 10, 14, 8, 0, tzinfo=timezone.utc)
@@ -58,6 +61,32 @@ class QueryListTests(unittest.TestCase):
         self.assertIn("โน้ตบุ๊ค RTX 5080", queries)
         self.assertLess(queries.index("notebook rtx 5070 ti"), queries.index("A2XWHG-814XRU"))
 
+    def test_rtx_5070_is_not_treated_as_5070_ti(self) -> None:
+        for query in GPU_SEARCH_QUERIES + LINE_SEARCH_QUERIES:
+            lowered = query.lower()
+            if "5070" in lowered:
+                self.assertIn("ti", lowered)
+        self.assertIsNone(context_gpu("ROG Strix RTX 5070"))
+        self.assertEqual(context_gpu("ROG Strix RTX 5070 Ti"), "RTX 5070 Ti")
+        self.assertEqual(context_gpu("notebook rtx 5080"), "RTX 5080")
+
+    def test_line_queries_rotate_without_dropping_gpu_search(self) -> None:
+        first = search_queries(now=datetime(2026, 1, 1, tzinfo=timezone.utc))
+        second = search_queries(now=datetime(2026, 1, 2, tzinfo=timezone.utc))
+        self.assertEqual(first[: len(GPU_SEARCH_QUERIES)], list(GPU_SEARCH_QUERIES))
+        self.assertEqual(second[: len(GPU_SEARCH_QUERIES)], list(GPU_SEARCH_QUERIES))
+        lines_first = [query for query in first if query in LINE_SEARCH_QUERIES]
+        lines_second = [query for query in second if query in LINE_SEARCH_QUERIES]
+        self.assertNotEqual(lines_first, lines_second)
+        self.assertTrue(set(LINE_SEARCH_QUERIES) <= set(lines_first) | set(lines_second))
+
+    def test_budget_keeps_gpu_queries_ahead_of_codes(self) -> None:
+        codes = [f"SKU-{index}" for index in range(20)]
+        queries = search_queries(extra_codes=codes)
+        self.assertEqual(queries[: len(GPU_SEARCH_QUERIES)], list(GPU_SEARCH_QUERIES))
+        self.assertEqual(len(queries), QUERY_BUDGET)
+        self.assertTrue(queries[len(GPU_SEARCH_QUERIES)].startswith("SKU-"))
+
 
 class CoverageTests(unittest.TestCase):
     def test_incomplete_offer_is_kept_out_of_the_purchase_gate(self) -> None:
@@ -70,15 +99,18 @@ class CoverageTests(unittest.TestCase):
         self.assertEqual(report["discovered"], 2)
         self.assertEqual(report["spec_checked"], 1)
         self.assertEqual(report["meets_requirements"], 1)
+        self.assertEqual(report["hardware_and_price"], 1)
         self.assertGreater(report["exclusion_reasons"].get("SPECS_MISSING", 0), 0)
-        blocked = evaluate_purchase(
-            price_rub=200_000,
-            gpu=incomplete.gpu,
-            ram_gb=incomplete.ram_gb,
-            ssd_gb=incomplete.ssd_gb,
-            screen_resolution=incomplete.screen_resolution,
-        )
-        self.assertFalse(blocked.eligible)
+
+    def test_hardware_match_is_not_a_purchase_offer(self) -> None:
+        class Fx:
+            rub_per_thb = 2.5
+
+        unverified = _offer(verification_status=UNVERIFIED)
+        verified = _offer(external_id="ready", verification_status=VERIFIED)
+        report = coverage_for_offers([unverified, verified], fx=Fx())
+        self.assertEqual(report["hardware_and_price"], 2)
+        self.assertEqual(report["purchasable"], 1)
 
     def test_confirmed_offer_meets_the_shared_gate(self) -> None:
         class Fx:
@@ -114,6 +146,9 @@ class CollectorQueryTests(unittest.TestCase):
         self.assertTrue(any("ROG" in term or "Legion" in term or "โน้ตบุ๊ค" in term for term in seen))
         self.assertNotIn("G615LR-S5348", seen)
         self.assertTrue(result.discovery_rate_limited)
+        self.assertFalse(result.ok)
+        self.assertEqual(result.error_code, "RATE_LIMITED")
+        self.assertEqual(result.codes_checked, [])
         self.assertLess(len(seen), len(result.discovery_queries or []))
 
     def test_advice_queries_are_wider_than_one_sku(self) -> None:
@@ -137,6 +172,73 @@ class CollectorQueryTests(unittest.TestCase):
         self.assertIn("16AFR10H", joined)
         self.assertGreater(len(result.discovery_queries or []), 2)
         self.assertEqual(result.queries_completed, len(result.discovery_queries or []))
+
+    def test_jib_429_after_a_hit_keeps_the_offer_and_is_not_a_full_success(self) -> None:
+        from thailand.jib import collect
+
+        def get(url, params=None, timeout=None):
+            response = mock.Mock()
+            response.headers = {"content-type": "application/json"}
+            term = (params or {}).get("term", "")
+            if term != "notebook rtx 5070 ti":
+                response.status_code = 429
+                return response
+            response.status_code = 200
+            response.json.return_value = {
+                "rec": [{
+                    "id": "77",
+                    "title": "MSI Raider RTX 5070 Ti 32GB 1TB 2560x1600",
+                    "price": "89900",
+                }]
+            }
+            return response
+
+        client = mock.Mock()
+        client.get.side_effect = get
+        result = collect(client=client, verify_details=False, target_codes=["16AFR10H"])
+        self.assertFalse(result.ok)
+        self.assertEqual(result.error_code, "RATE_LIMITED")
+        self.assertTrue(result.discovery_rate_limited)
+        self.assertGreaterEqual(result.discovered_count or 0, 1)
+        self.assertEqual(result.codes_checked, [])
+        self.assertIn("16AFR10H", result.targeted_codes or [])
+        self.assertIn("stopped_on_429", result.discovery_limitations or [])
+
+    def test_advice_429_before_regional_sku_is_partial(self) -> None:
+        from thailand.advice import collect
+
+        def get(url, timeout=None):
+            response = mock.Mock()
+            response.headers = {"content-type": "text/html"}
+            response.text = "<html></html>"
+            response.status_code = 429 if "16AFR10H" in url else 200
+            return response
+
+        client = mock.Mock()
+        client.get.side_effect = get
+        result = collect(client=client, target_codes=["16AFR10H"])
+        self.assertFalse(result.ok)
+        self.assertEqual(result.error_code, "RATE_LIMITED")
+        self.assertEqual(result.codes_checked, [])
+        self.assertIn("16AFR10H", result.discovery_queries or [])
+        self.assertLess(result.queries_completed or 0, len(result.discovery_queries or []))
+
+    def test_unchecked_code_is_not_marked_found_or_missing(self) -> None:
+        limited = StoreScanResult(
+            store="jib",
+            ok=False,
+            offers=[_offer()],
+            error_code="RATE_LIMITED",
+            collection_mode="http",
+        )
+        limited.targeted_codes = ["A2XWHG-814XRU", "16AFR10H"]
+        limited.codes_checked = ["A2XWHG-814XRU"]
+        limited.discovery_rate_limited = True
+        coverage = build_search_coverage(["A2XWHG-814XRU", "16AFR10H"], [limited])
+        row = coverage["stores"][0]
+        self.assertEqual(row["mode"], "partial")
+        self.assertEqual(row["codes"], ["A2XWHG-814XRU"])
+        self.assertEqual(row["codes_not_checked"], ["16AFR10H"])
 
     def test_disabled_stores_stay_disabled(self) -> None:
         from thailand.registry import get_thailand_adapters

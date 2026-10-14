@@ -282,14 +282,14 @@ def collect(
         now = datetime.now(timezone.utc)
         offers: list[ThailandOffer] = []
         errors: list[str] = []
-        from thailand.discovery import search_queries
+        from thailand.discovery import context_gpu, search_queries
         from urllib.parse import quote_plus
 
         queries = search_queries(extra_codes=target_codes)
         completed: list[str] = []
         rate_limited = False
         for query in queries:
-            gpu = "RTX 5080" if "5080" in query else "RTX 5070 Ti"
+            gpu = context_gpu(query)
             url = f"{BASE}/search?keyword={quote_plus(query)}"
             try:
                 resp = client.get(url, timeout=timeout)
@@ -328,6 +328,7 @@ def collect(
         limitations = ["keyword search", "no brand filter"]
         if rate_limited:
             limitations.append("stopped_on_429")
+        wanted = [str(code) for code in (target_codes or []) if code]
 
         def _annotate(result: StoreScanResult) -> StoreScanResult:
             result.discovery_queries = queries
@@ -335,11 +336,15 @@ def collect(
             result.discovery_limitations = limitations
             result.discovery_rate_limited = rate_limited
             result.queries_completed = len(completed)
-            result.targeted_codes = [str(code) for code in (target_codes or []) if code]
+            result.targeted_codes = wanted
+            result.codes_checked = [query for query in completed if query in wanted]
             result.discovered_count = len(final)
+            if rate_limited:
+                result.ok = False
+                result.error_code = "RATE_LIMITED"
             return result
 
-        if not final:
+        if not final and not rate_limited:
             if not errors:
                 return _annotate(StoreScanResult(
                     store=STORE,
@@ -366,10 +371,12 @@ def collect(
             ))
         return _annotate(StoreScanResult(
             store=STORE,
-            ok=True,
+            ok=not rate_limited,
             offers=final,
-            error=",".join(errors) if errors else None,
+            error="RATE_LIMITED" if rate_limited else (",".join(errors) if errors else None),
+            error_code="RATE_LIMITED" if rate_limited else None,
             duration_seconds=time.perf_counter() - started,
+            collection_mode="http",
         ))
     except Exception as exc:  # noqa: BLE001
         logger.warning("Advice collect failed: %s", type(exc).__name__)

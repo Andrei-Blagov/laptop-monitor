@@ -338,10 +338,20 @@ def collect(
                 page += 1
         codes = [str(c) for c in (target_codes or []) if c]
         missing = [code for code in codes if not _catalog_has_code(discovered, [code])]
-        from thailand.discovery import LINE_QUERY_BUDGET, LINE_SEARCH_QUERIES
+        from thailand.discovery import QUERY_BUDGET, rotating_line_queries
 
-        # Line queries are extra catalog lookups, not a brand allow-list.
-        suggest_terms = list(LINE_SEARCH_QUERIES[:LINE_QUERY_BUDGET])
+        # GPU catalog already ran. Line queries rotate; codes stay ahead of them.
+        suggest_terms: list[str] = []
+        for code in missing:
+            if len(suggest_terms) >= QUERY_BUDGET:
+                break
+            if code not in suggest_terms:
+                suggest_terms.append(code)
+        for line in rotating_line_queries():
+            if len(suggest_terms) >= QUERY_BUDGET:
+                break
+            if line not in suggest_terms:
+                suggest_terms.append(line)
         for code in missing:
             if code not in suggest_terms:
                 suggest_terms.append(code)
@@ -368,7 +378,7 @@ def collect(
                 result.unverified_candidates = [
                     o for o in discovered if not is_verified_for_ranking(o)
                 ]
-                result.ok = bool(result.offers)
+                result.ok = False
                 result.targeted_codes = codes
                 result.codes_checked = list(checked_codes)
                 result.discovery_queries = list(COLLECTIONS) + list(suggest_terms)
@@ -418,7 +428,7 @@ def collect(
         result.discovery_mode = "mixed"
         result.discovery_limitations = [
             "GPU collection catalog",
-            f"line suggests capped at {LINE_QUERY_BUDGET}",
+            "line suggests rotate inside the request budget",
             "regional codes are extra suggest keys",
         ]
         result.queries_completed = len(COLLECTIONS) + len(completed_lines) + len(

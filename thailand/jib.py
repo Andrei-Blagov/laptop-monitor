@@ -442,13 +442,13 @@ def collect(
     discovered: list[ThailandOffer] = []
     try:
         now = datetime.now(timezone.utc)
-        from thailand.discovery import search_queries
+        from thailand.discovery import context_gpu, search_queries
 
         queries = search_queries(extra_codes=target_codes)
         completed: list[str] = []
         rate_limited = False
         for query in queries:
-            gpu = "RTX 5080" if "5080" in query else "RTX 5070 Ti"
+            gpu = context_gpu(query) or ""
             try:
                 resp = client.get(
                     SUGGEST_URL,
@@ -528,14 +528,16 @@ def collect(
             "suggestion search",
             f"detail verification capped at {max_detail_fetches}",
         ]
+        wanted = [str(code) for code in (target_codes or []) if code]
+        checked_codes = [query for query in completed if query in wanted]
         if rate_limited:
             limitations.append("stopped_on_429")
         result = StoreScanResult(
             store=STORE,
-            ok=True,
+            ok=not rate_limited,
             offers=verified,
             unverified_candidates=unverified,
-            error_code="NO_RESULTS" if not candidates else None,
+            error_code="RATE_LIMITED" if rate_limited else ("NO_RESULTS" if not candidates else None),
             duration_seconds=time.perf_counter() - started,
             collection_mode="http",
             discovered_count=len(candidates),
@@ -546,7 +548,8 @@ def collect(
         result.discovery_limitations = limitations
         result.discovery_rate_limited = rate_limited
         result.queries_completed = len(completed)
-        result.targeted_codes = [str(code) for code in (target_codes or []) if code]
+        result.targeted_codes = wanted
+        result.codes_checked = checked_codes
         return result
     except Exception as exc:  # noqa: BLE001
         logger.warning("JIB collect failed: %s", type(exc).__name__)

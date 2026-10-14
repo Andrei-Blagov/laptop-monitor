@@ -148,11 +148,13 @@ class SpeedComCodeBudgetTests(unittest.TestCase):
         result = collect(client=client, target_codes=["A2XWHG-814XRU", "G615LR-S5348", "16AFR10H"])
         suggests = [url for url in seen if "suggest.json" in url]
         self.assertEqual(result.error_code, RATE_LIMITED)
+        self.assertFalse(result.ok)
         self.assertEqual(len(suggests), 2)
-        self.assertIn("ROG", suggests[0])
+        self.assertIn("A2XWHG-814XRU", suggests[0])
         self.assertTrue(result.discovery_rate_limited)
-        self.assertFalse(any(code in "".join(suggests) for code in ("A2XWHG-814XRU", "G615LR-S5348", "16AFR10H")))
-        self.assertEqual(result.codes_checked, [])
+        self.assertFalse(any("16AFR10H" in url for url in seen))
+        self.assertEqual(result.codes_checked, ["A2XWHG-814XRU"])
+        self.assertNotIn("G615LR-S5348", result.codes_checked)
 
 
 class CoverageTextTests(unittest.TestCase):

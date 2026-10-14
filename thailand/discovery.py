@@ -8,13 +8,16 @@ requires the shared hardware and price gate.
 from __future__ import annotations
 
 from collections import Counter
+from datetime import datetime, timezone
 from typing import Any
 
 from laptop_eligibility import evaluate_purchase
 from thailand.fx import thb_to_rub
 from thailand.models import StoreScanResult, ThailandOffer
+from thailand.verification import is_verified_for_ranking
 
 # Primary net: any notebook with the target GPU, in English and Thai.
+# "RTX 5070" without Ti is a different GPU and is not used as a substitute.
 GPU_SEARCH_QUERIES: tuple[str, ...] = (
     "notebook rtx 5070 ti",
     "notebook rtx 5080",
@@ -24,39 +27,68 @@ GPU_SEARCH_QUERIES: tuple[str, ...] = (
 
 # Extra keys. They do not limit discovery to these lines.
 LINE_SEARCH_QUERIES: tuple[str, ...] = (
-    "ROG Strix RTX 5070",
-    "TUF Gaming RTX 5080",
-    "Legion RTX 5070",
-    "Predator RTX 5070",
-    "Omen RTX 5070",
+    "ROG Strix RTX 5070 Ti",
+    "TUF Gaming RTX 5070 Ti",
+    "Legion RTX 5070 Ti",
+    "Predator RTX 5070 Ti",
+    "Omen RTX 5070 Ti",
     "AORUS RTX 5080",
-    "Raider RTX 5070",
-    "Stealth RTX 5070",
+    "Raider RTX 5070 Ti",
+    "Stealth RTX 5070 Ti",
 )
 
-# How many line queries a keyword store adds on top of the GPU queries.
-LINE_QUERY_BUDGET = 4
+# One store pass: every GPU query, then supplied codes, then as many
+# rotating line queries as still fit.
+QUERY_BUDGET = 12
+
+
+def context_gpu(query: str) -> str | None:
+    """Return a target GPU only when the query names it. RTX 5070 is not Ti."""
+    folded = "".join(str(query or "").lower().split())
+    if "5080" in folded:
+        return "RTX 5080"
+    if "5070ti" in folded:
+        return "RTX 5070 Ti"
+    return None
+
+
+def rotating_line_queries(now: datetime | None = None) -> list[str]:
+    """Every line is used over time. A single pass still has a request budget."""
+    lines = LINE_SEARCH_QUERIES
+    if not lines:
+        return []
+    moment = now or datetime.now(timezone.utc)
+    start = moment.toordinal() % len(lines)
+    return list(lines[start:] + lines[:start])
 
 
 def search_queries(
     *,
     extra_codes: list[str] | None = None,
-    line_limit: int = LINE_QUERY_BUDGET,
+    now: datetime | None = None,
+    budget: int = QUERY_BUDGET,
 ) -> list[str]:
-    """GPU queries, then a capped set of line queries, then supplied codes."""
+    """GPU queries first, then regional codes, then rotating line queries."""
     found: list[str] = []
+    limit = max(len(GPU_SEARCH_QUERIES), int(budget))
 
-    def add(value: object) -> None:
+    def add(value: object) -> bool:
         text = str(value or "").strip()
-        if text and text not in found:
-            found.append(text)
+        if not text or text in found:
+            return True
+        if len(found) >= limit:
+            return False
+        found.append(text)
+        return True
 
     for query in GPU_SEARCH_QUERIES:
         add(query)
-    for query in LINE_SEARCH_QUERIES[: max(0, int(line_limit))]:
-        add(query)
     for code in extra_codes or []:
-        add(code)
+        if not add(code):
+            break
+    for query in rotating_line_queries(now):
+        if not add(query):
+            break
     return found
 
 
@@ -81,7 +113,8 @@ def coverage_for_offers(
     reasons: Counter[str] = Counter()
     details: Counter[str] = Counter()
     spec_checked = 0
-    meets = 0
+    hardware_and_price = 0
+    purchasable = 0
     for offer in offers:
         if _spec_complete(offer):
             spec_checked += 1
@@ -94,19 +127,38 @@ def coverage_for_offers(
             screen_resolution=offer.screen_resolution,
         )
         if verdict.eligible:
-            meets += 1
+            hardware_and_price += 1
+            if is_verified_for_ranking(offer):
+                purchasable += 1
             continue
         reasons[verdict.reason or "unknown"] += 1
         for item in verdict.details:
             details[str(item)] += 1
+    planned = list(queries or [])
+    completed = (
+        len(planned)
+        if queries_completed is None
+        else max(0, min(len(planned), int(queries_completed)))
+    )
+    skipped = planned[completed:]
+    skip_reason = None
+    if skipped and rate_limited:
+        skip_reason = "stopped_on_429"
+    elif skipped:
+        skip_reason = "request_budget"
     return {
         "discovered": len(offers),
         "spec_checked": spec_checked,
-        "meets_requirements": meets,
+        "specs_confirmed": spec_checked,
+        "hardware_and_price": hardware_and_price,
+        "meets_requirements": hardware_and_price,
+        "purchasable": purchasable,
         "exclusion_reasons": dict(reasons),
         "exclusion_details": dict(details),
-        "queries": list(queries or []),
-        "queries_completed": queries_completed if queries_completed is not None else len(queries or []),
+        "queries": planned,
+        "queries_completed": completed,
+        "queries_not_completed": skipped,
+        "query_skip_reason": skip_reason,
         "search_mode": search_mode or "catalog",
         "limitations": list(limitations or []),
         "rate_limited": bool(rate_limited),

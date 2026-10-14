@@ -272,19 +272,25 @@ def collect(
         }
         now = datetime.now(timezone.utc)
         queries = list(QUERIES)
-        from thailand.discovery import LINE_QUERY_BUDGET, LINE_SEARCH_QUERIES
+        from thailand.discovery import QUERY_BUDGET, rotating_line_queries
 
-        for line in LINE_SEARCH_QUERIES[:LINE_QUERY_BUDGET]:
-            if line not in queries:
-                queries.append(line)
         target_list: list[str] = []
         for code in list(target_codes or []):
             text = str(code or "").strip()
             if not text:
                 continue
+            if len(queries) >= QUERY_BUDGET:
+                break
             target_list.append(text)
             if text not in queries:
                 queries.append(text)
+        room = QUERY_BUDGET - len(queries)
+        for line in rotating_line_queries():
+            if room <= 0:
+                break
+            if line not in queries:
+                queries.append(line)
+                room -= 1
         requests = 1  # storefront page that publishes the search config
         checked_codes: list[str] = []
         completed_queries: list[str] = []
@@ -355,7 +361,7 @@ def collect(
         result.discovery_mode = "gpu_search"
         result.discovery_limitations = [
             "Algolia queries",
-            f"manufacturer lines capped at {LINE_QUERY_BUDGET}",
+            "manufacturer lines rotate inside the request budget",
             "up to 3 pages per query",
         ]
         result.queries_completed = len(completed_queries)

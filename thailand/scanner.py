@@ -151,15 +151,18 @@ def _collect_store(adapter, timeout: float, target_codes: list[str] | None = Non
     try:
         result = adapter.collect(**kwargs)
         result.targeted_codes = sent
-        finished = (
-            bool(result.ok)
-            and result.error_code != "RATE_LIMITED"
-            and result.collection_mode not in {"rate_limited", "skipped", "failed", "disabled"}
+        incomplete = (
+            not result.ok
+            or result.error_code == "RATE_LIMITED"
+            or result.discovery_rate_limited
+            or result.collection_mode in {"rate_limited", "skipped", "failed", "disabled"}
         )
-        if result.codes_checked is None and finished:
-            result.codes_checked = list(sent)
-        elif result.codes_checked is None:
-            result.codes_checked = []
+        if result.codes_checked is None:
+            # A finished search may treat every sent code as queried.
+            # A 429 or failure must not invent checks that did not happen.
+            result.codes_checked = [] if incomplete else list(sent)
+        else:
+            result.codes_checked = [code for code in result.codes_checked if not sent or code in sent]
         return result
     except Exception as exc:  # noqa: BLE001
         logger.warning("Thailand store %s failed: %s", adapter.slug, type(exc).__name__)
@@ -200,8 +203,6 @@ def build_search_coverage(
         elif sent and not blocked:
             mode = "targeted"
             checked = True
-            if not checked_codes:
-                checked_codes = list(sent)
         elif not sent and not blocked:
             mode = "catalog"
             checked = True
@@ -215,6 +216,7 @@ def build_search_coverage(
                 "checked": checked,
                 "mode": mode,
                 "codes": checked_codes,
+                "codes_not_checked": [code for code in sent if code not in checked_codes],
                 "reason": row.error_code or row.collection_mode,
             }
         )
