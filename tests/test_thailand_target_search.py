@@ -71,6 +71,7 @@ def _deal(**kwargs) -> RankedDeal:
         ram_gb=16,
         ssd_gb=1024,
         screen_inch=16.0,
+        screen_resolution="2560x1600",
         cpu="AMD Ryzen 9 8940HX",
         confidence=90,
         historical_min=220000,
@@ -379,7 +380,7 @@ class TargetMatchTests(unittest.TestCase):
 
 class BuyTargetJobTests(unittest.TestCase):
     def test_one_buy_job_carries_target_and_scan_once(self) -> None:
-        deal = _deal()
+        deal = _deal(ram_gb=32, )
         captured = {}
 
         def _enqueue(job, root=None):

@@ -68,7 +68,7 @@ class DeliveryTests(unittest.TestCase):
                     store=store,
                     external_id=external_id,
                     url=url or f"https://example.test/{store}/{external_id}",
-                    name=name,
+                    name=name + " Core Ultra 9 275HX, RTX 5070 Ti, 32GB DDR5, 1TB SSD, 16\" 2560x1600",
                     sku=sku,
                     price=price,
                     available=True,
@@ -95,7 +95,7 @@ class DeliveryTests(unittest.TestCase):
         metadata: dict | None = None,
     ) -> dict:
         if product_id is None:
-            product_id = self._add_product()
+            product_id = self._add_product(price=new_price)
         with open_db(self.db_path) as conn:
             init_db(conn)
             event = save_alert_event(
@@ -303,7 +303,8 @@ class DeliveryTests(unittest.TestCase):
     def test_separate_events_separate_deliveries(self) -> None:
         pid = self._add_product()
         self._add_event(product_id=pid, dedupe="e1")
-        self._add_event(product_id=pid, dedupe="e2", new_price=221_000)
+        pid2 = self._add_product(external_id="2", sku="SKU-2", price=221_000)
+        self._add_event(product_id=pid2, dedupe="e2", new_price=221_000)
         sender = FakeTelegramSender()
         result = deliver_alert_events(
             self.db_path, sender=sender, destination=config.TELEGRAM_DESTINATION
@@ -621,21 +622,13 @@ class DeliveryTests(unittest.TestCase):
         self.assertEqual(len(groups), 2)
 
     def test_standalone_cross_store_not_lost(self) -> None:
-        self._add_event(
-            event_type=EVENT_CROSS_STORE,
-            dedupe="cross-only",
-            new_price=100,
-            metadata={
-                "name": "Solo",
-                "normalized_sku": "SOLO-1",
-                "cheapest_store": "andpro",
-                "cheapest_price": 100,
-                "other_store": "regard",
-                "other_price": 120,
-                "difference": 20,
-                "cheapest_url": "https://andpro/solo",
-            },
-        )
+        _, _, cross = self._matched_pair_events()
+        # Isolate a real, fully confirmed cross-store event from the two drops.
+        run_baseline(self.db_path)
+        with open_db(self.db_path) as conn:
+            save_alert_event(conn, event_type=EVENT_CROSS_STORE,
+                             product_id=cross["product_id"], dedupe_key="cross-only",
+                             old_price=285_290, new_price=262_512, metadata=cross["metadata"])
         dry = deliver_alert_events(
             self.db_path, dry_run=True, destination=config.TELEGRAM_DESTINATION
         )
@@ -756,7 +749,7 @@ class DeliveryTests(unittest.TestCase):
         created = run_baseline(self.db_path)
         self.assertEqual(created, 2)
         # new unsent event
-        self._add_event(dedupe="new1", product_id=self._product_id(), new_price=2)
+        self._add_event(dedupe="new1", product_id=self._product_id(), new_price=220_000)
         with open_db(self.db_path) as conn:
             skipped_before = conn.execute(
                 "SELECT COUNT(*) AS cnt FROM notification_deliveries WHERE status='skipped'"

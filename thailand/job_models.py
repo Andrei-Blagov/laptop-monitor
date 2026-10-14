@@ -7,7 +7,7 @@ from datetime import datetime, timezone
 from typing import Any, Mapping, Sequence
 
 from buy_opportunity import BuySignal
-from deal_ranking import RankedDeal
+from deal_ranking import RankedDeal, score_offer
 
 JOB_SCHEMA_VERSION = 1
 
@@ -54,6 +54,11 @@ def deal_to_russian_context(deal: RankedDeal) -> dict[str, Any]:
         "screen_inch": deal.screen_inch,
         "screen_resolution": deal.screen_resolution,
         "score": deal.score,
+        "score_breakdown": dict(deal.score_breakdown),
+        "saving_vs_next": deal.saving_vs_next,
+        "next_store": deal.next_store,
+        "next_price": deal.next_price,
+        "saving_verified": deal.saving_verified,
         "confidence": deal.confidence,
         "historical_min": deal.historical_min,
         "history_started_at": deal.history_started_at,
@@ -70,8 +75,22 @@ def signal_to_dict(signal: BuySignal) -> dict[str, Any]:
 
 
 def russian_context_to_deal(ctx: Mapping[str, Any]) -> RankedDeal:
+    # Old jobs carry only the total score and cannot prove a savings component.
+    score = float(ctx.get("score") or 0.0)
+    if "score_breakdown" not in ctx:
+        score = score_offer(
+            price=ctx.get("price"), gpu=ctx.get("gpu"), cpu=ctx.get("cpu"),
+            ram_gb=ctx.get("ram_gb"), ssd_gb=ctx.get("ssd_gb"),
+            screen_inch=ctx.get("screen_inch"), screen_resolution=ctx.get("screen_resolution"),
+            historical_min=ctx.get("historical_min"),
+        ).score
     return RankedDeal(
-        score=float(ctx.get("score") or 0.0),
+        score=score,
+        score_breakdown=dict(ctx.get("score_breakdown") or {}),
+        saving_vs_next=ctx.get("saving_vs_next"),
+        next_store=ctx.get("next_store"),
+        next_price=ctx.get("next_price"),
+        saving_verified=ctx.get("saving_verified") is True,
         reasons=[],
         offer={
             "store": ctx.get("store"),

@@ -144,6 +144,7 @@ class PipelineIsolationTests(unittest.TestCase):
             ram_gb=32,
             ssd_gb=1024,
             screen_inch=17.0,
+                screen_resolution="2560x1600",
             url="https://example/1",
             history_started_at="2020-01-01T00:00:00+00:00",
         )

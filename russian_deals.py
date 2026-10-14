@@ -5,9 +5,12 @@ from __future__ import annotations
 import re
 from pathlib import Path
 from typing import Any, Mapping, Sequence
+from types import SimpleNamespace
 
 import config
-from comparison import Offer, ProductMatch, match_products, normalize_sku
+from comparison import (
+    Offer, ProductMatch, match_products, normalize_sku, offer_identity, CROSS_STORE_CONFIG_FIELDS,
+)
 from deal_ranking import (
     RankedDeal,
     canonical_gpu,
@@ -16,7 +19,7 @@ from deal_ranking import (
     history_starts_from_rows,
     rank_clusters,
 )
-from product_identity import normalize_identifier
+from product_identity import normalize_identifier, find_config_conflicts, identity_from_collected_product
 from identity_sync import identity_from_cache, load_specs_cache
 from store_freshness import get_fresh_store_slugs
 from storage import (
@@ -173,59 +176,43 @@ def _norm_gpu(value: Any) -> str | None:
     return text or None
 
 
+def _spec_identity(specs: Mapping[str, Any]):
+    """Adapter to the existing normalizers and six-field configuration checker."""
+    return identity_from_collected_product(SimpleNamespace(
+        store="", external_id="", name="", sku=None, price=None, available=False, url=None,
+        metadata=dict(specs),
+    ))
+
+
 def _spec_values(specs: Mapping[str, Any]) -> dict[str, Any]:
+    identity = _spec_identity(specs)
     return {
-        "cpu": _norm_cpu(specs.get("cpu")),
-        "gpu": _norm_gpu(specs.get("gpu")),
-        "ram_gb": _norm_int(specs.get("ram_gb")),
-        "ssd_gb": _norm_int(specs.get("ssd_gb")),
-        "screen_inch": _norm_inch(specs.get("screen_inch")),
-        "screen_resolution": _norm_resolution(specs.get("screen_resolution")),
+        "cpu": identity.cpu, "gpu": identity.gpu,
+        "ram_gb": identity.ram_gb, "ssd_gb": identity.ssd_gb,
+        "screen_inch": identity.screen_size_inch,
+        "screen_resolution": identity.screen_resolution,
     }
 
 
-def _hardware_key(specs: Mapping[str, Any]) -> tuple[Any, ...] | None:
-    """Complete configuration. Any missing critical field means identity is unproven."""
-    values = _spec_values(specs)
-    if any(values[field] is None for field in _CRITICAL_SPECS):
-        return None
-    return tuple(values[field] for field in _CRITICAL_SPECS)
-
-
 def _explicit_differences(left: Mapping[str, Any], right: Mapping[str, Any]) -> list[str]:
-    a = _spec_values(left)
-    b = _spec_values(right)
-    return [
-        field
-        for field in _CRITICAL_SPECS
-        if a[field] is not None and b[field] is not None and a[field] != b[field]
-    ]
+    differences = find_config_conflicts(_spec_identity(left), _spec_identity(right))
+    return ["screen_inch" if field == "screen_size_inch" else field for field in differences]
 
 
 def _missing_fields(specs: Mapping[str, Any]) -> list[str]:
-    values = _spec_values(specs)
-    return [field for field in _CRITICAL_SPECS if values[field] is None]
+    identity = _spec_identity(specs)
+    missing = find_config_conflicts(identity, identity, required_fields=CROSS_STORE_CONFIG_FIELDS)
+    return ["screen_inch" if field == "screen_size_inch" else field for field in missing]
 
 
 def _offer_specs(offer: Offer, specs_by_key: Mapping[tuple[str, str], Any] | None) -> dict[str, Any]:
-    from stores.common import extract_specs_from_name
-
-    out: dict[str, Any] = {}
-    spec = (specs_by_key or {}).get((offer.store, str(offer.external_id)))
-    if spec is not None:
-        out["gpu"] = getattr(spec, "gpu", None) or getattr(spec, "normalized_gpu", None)
-        out["ram_gb"] = getattr(spec, "ram_gb", None)
-        out["ssd_gb"] = getattr(spec, "ssd_gb", None)
-        out["screen_inch"] = getattr(spec, "screen_inch", None) or getattr(
-            spec, "screen_size_inch", None
-        )
-        out["cpu"] = getattr(spec, "cpu", None)
-        out["screen_resolution"] = getattr(spec, "screen_resolution", None)
-    inferred = extract_specs_from_name(" ".join(x for x in (offer.name, offer.url) if x))
-    for field in _CRITICAL_SPECS:
-        if out.get(field) is None:
-            out[field] = inferred.get(field)
-    return out
+    identity = offer_identity(offer, specs_by_key or {})
+    return {
+        "cpu": identity.cpu, "gpu": identity.gpu,
+        "ram_gb": identity.ram_gb, "ssd_gb": identity.ssd_gb,
+        "screen_inch": identity.screen_size_inch,
+        "screen_resolution": identity.screen_resolution,
+    }
 
 
 def _match_from_offers(source: ProductMatch, offers: Sequence[Offer]) -> ProductMatch:
@@ -334,9 +321,10 @@ def fold_proven_duplicates(
             shared = identifiers[i] & identifiers[j]
             if not shared:
                 continue
-            left_key = _hardware_key(specs[i])
-            right_key = _hardware_key(specs[j])
-            if left_key is not None and left_key == right_key:
+            if not find_config_conflicts(
+                _spec_identity(specs[i]), _spec_identity(specs[j]),
+                required_fields=CROSS_STORE_CONFIG_FIELDS,
+            ):
                 union(i, j)
                 continue
             if ambiguous is not None:

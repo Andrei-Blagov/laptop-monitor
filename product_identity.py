@@ -379,17 +379,31 @@ CONFIG_CONFLICT_FIELDS = (
 def find_config_conflicts(
     left: ProductIdentity,
     right: ProductIdentity,
+    *,
+    required_fields: Sequence[str] = (),
 ) -> dict[str, dict[str, Any]]:
     """
     Явные противоречия конфигурации.
 
-    Missing field на одной стороне НЕ считается конфликтом.
+    Missing fields are conflicts only when explicitly required.
+    Required fields use the existing catalog normalizers; no SKU bypass.
     """
+    normalizers = dict((field, normalizer) for field, _keys, normalizer in _META_SPEC_KEYS)
     different: dict[str, dict[str, Any]] = {}
     for field_name in CONFIG_CONFLICT_FIELDS:
         lv = getattr(left, field_name)
         rv = getattr(right, field_name)
+        if field_name in required_fields:
+            normalizer = normalizers.get(field_name, lambda v: v)
+            lv, rv = normalizer(lv), normalizer(rv)
+            if field_name == "cpu":
+                # A family label such as "Core Ultra 9" is not a confirmed CPU model.
+                model_pattern = r"\b(?:\d{3,5}[A-Z]{1,4}|(?:HX|HS)\s+\d{3})\b"
+                lv = lv if lv and re.search(model_pattern, lv) else None
+                rv = rv if rv and re.search(model_pattern, rv) else None
         if lv is None or rv is None:
+            if field_name in required_fields:
+                different[field_name] = {"left": lv, "right": rv}
             continue
         if lv != rv:
             different[field_name] = {"left": lv, "right": rv}

@@ -14,7 +14,7 @@ from pathlib import Path
 from typing import Any, Iterator, Sequence
 
 import config
-from deal_ranking import RankedDeal, canonical_gpu, target_price_for_gpu
+from deal_ranking import RankedDeal, canonical_gpu, target_price_for_gpu, effective_deal_score
 
 logger = logging.getLogger(__name__)
 
@@ -70,7 +70,7 @@ def fingerprint_for_deal(deal: RankedDeal, level: str) -> str:
             model_key_for_deal(deal),
             str(deal.price),
             level,
-            f"{deal.score:g}",
+            f"{effective_deal_score(deal):g}",
             str(deal.confidence),
         ]
     )
@@ -82,10 +82,14 @@ def evaluate_buy_rules(deal: RankedDeal) -> BuySignal | None:
 
     No automatic signal without historical_min.
     """
+    from laptop_eligibility import deal_is_eligible
+
+    if not deal_is_eligible(deal):
+        return None
     price = deal.price
     hist = deal.historical_min
     conf = int(deal.confidence or 0)
-    score = float(deal.score or 0.0)
+    score = effective_deal_score(deal)
     if price is None or price <= 0:
         return None
     if hist is None or hist <= 0:

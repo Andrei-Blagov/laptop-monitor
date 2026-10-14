@@ -141,6 +141,15 @@ def select_best_and_alts(
                 "price_rub": r.get("price_rub"),
                 "url": r.get("url"),
                 "seller_trust_tier": r.get("seller_trust_tier"),
+                # Keep the evidence required to revalidate cached alternatives.
+                "gpu": r.get("gpu"),
+                "ram_gb": r.get("ram_gb"),
+                "ssd_gb": r.get("ssd_gb"),
+                "screen_resolution": r.get("screen_resolution"),
+                "availability_confirmed": r.get("availability_confirmed"),
+                "verification_status": r.get("verification_status"),
+                "purchase_eligible": r.get("purchase_eligible"),
+                "price_verified_for_variant": r.get("price_verified_for_variant"),
             }
         )
         if len(alts) >= max_alts:

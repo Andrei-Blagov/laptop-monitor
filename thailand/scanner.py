@@ -384,6 +384,7 @@ def _offer_to_top_row(
         "price_rub": price_rub,
         "price_source": o.price_source,
         "availability_status": o.availability_status,
+        "availability_confirmed": bool(o.availability_confirmed),
         "availability_source": o.availability_source,
         "verification_status": o.verification_status,
         "warranty": o.warranty,
@@ -403,6 +404,8 @@ def _offer_to_top_row(
         "mall": bool(o.mall),
         "in_tracking_scope": True,
         "excluded_reason": None,
+        "purchase_eligible": True,
+        "price_verified_for_variant": bool(o.price_verified_for_variant),
     }
 
 
@@ -582,6 +585,8 @@ def run_thailand_scan(
                                 "но цена выше установленного лимита "
                                 f"{max_tracked_price_rub():,} ₽.".replace(",", " ")
                             )
+                        continue
+                    if not offer_user_facing_eligible(m.thai_offer, fx=fx)[0]:
                         continue
                     best_match = m
                     break

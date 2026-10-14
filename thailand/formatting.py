@@ -311,8 +311,14 @@ def format_target_model_message(
             lines.append(f"Точная модель найдена, но цена выше вашего лимита {_cap_label()} ₽.")
         else:
             lines.append("в наличии")
+        from laptop_eligibility import row_hardware_eligible
+        from thailand.eligibility import search_row_user_facing_eligible
+
+        purchase_ok = search_row_user_facing_eligible(primary)
+        if not purchase_ok:
+            lines.append("Не рекомендовано: характеристики, цена или наличие не подтверждены либо не соответствуют требованиям.")
         ru = target.get("price")
-        if rub is not None and ru is not None and not primary.get("out_of_stock"):
+        if purchase_ok and row_hardware_eligible(target, price_key="price") and rub is not None and ru is not None:
             delta = int(ru) - int(rub)
             lines.append("")
             lines.append("Разница:")
@@ -414,6 +420,9 @@ def format_thailand_alternatives_message(
     price_cap: dict[str, Any] | None = None,
     fx_usable: bool | None = None,
 ) -> str:
+    from thailand.eligibility import search_row_user_facing_eligible
+
+    top = [row for row in top if search_row_user_facing_eligible(row)]
     cap = price_cap or {}
     if fx_usable is False or (
         fx_usable is None and cap.get("fx_usable") is False
@@ -457,7 +466,7 @@ def format_thailand_alternatives_message(
             lines.append(f"Confidence: {row['international_confidence']}%")
         if row.get("url"):
             lines.append(str(row["url"]))
-        alts = row.get("alt_channels") or []
+        alts = [alt for alt in row.get("alt_channels") or [] if search_row_user_facing_eligible(alt)]
         if alts:
             lines.append("Другие магазины:")
             for alt in alts[:2]:

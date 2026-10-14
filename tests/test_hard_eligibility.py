@@ -27,7 +27,7 @@ from models import Product
 from stores.common import extract_specs_from_name
 from storage import create_pipeline_run, init_db, insert_store_run, open_db, save_products
 
-SPECS = ' RTX 5080, 32GB DDR5, 17" 2560x1600'
+SPECS = ' RTX 5080, 32GB DDR5, 1TB SSD, 17" 2560x1600'
 FULL = ' Intel Core Ultra 9 275HX, RTX 5080, 32GB DDR5, 1TB SSD, 17" 2560x1600'
 
 
@@ -185,6 +185,7 @@ class ExclusionRecordTests(unittest.TestCase):
             price=309_900,
             gpu="RTX 5080",
             ram_gb=32,
+            ssd_gb=1024,
             screen_inch=17.0,
             screen_resolution="2560x1600",
         ).score
@@ -363,7 +364,7 @@ class ConsistencyTests(unittest.TestCase):
             confidence=100,
             historical_min=220_000,
         )
-        self.assertIsNotNone(evaluate_buy_rules(small))
+        self.assertIsNone(evaluate_buy_rules(small))
         with patch("identity_sync.SPECS_CACHE_PATH", self.specs):
             names = [d.cluster_name for d in load_russian_ranked_deals(self.db, specs_path=self.specs, limit=0)]
         self.assertFalse(any(n.startswith("Small One") for n in names))
@@ -407,7 +408,15 @@ class ConsistencyTests(unittest.TestCase):
             url="u",
             gpu="RTX 5080 LAPTOP",
         )
-        with patch("identity_sync.enrich_regard_product", return_value=enriched) as enrich:
+        def enrich_only_requested(row, **kwargs):
+            if row["external_id"] == "nospec":
+                return enriched
+            return ProductIdentity(
+                store=row["store"], external_id=row["external_id"], sku=row["sku"],
+                name=row["name"], price=row["price"], available=bool(row["available"]), url=row["url"],
+            )
+
+        with patch("identity_sync.httpx.Client", return_value=httpx.Client(trust_env=False)), patch("identity_sync.enrich_regard_product", side_effect=enrich_only_requested) as enrich:
             sync_product_identifiers(self.db, enrich=True, specs_path=self.specs)
         self.assertTrue(any(c.args[0]["external_id"] == "nospec" for c in enrich.call_args_list))
         exclusions: list[dict] = []
@@ -583,9 +592,9 @@ class SingleStoreRankingTests(unittest.TestCase):
         base = "MSI Raider 16 HX AI A2XWHG-814XRU"
         deals, exclusions = self._deals(
             [
-                _product("regard", "r1", name=base + SPECS, sku="9S7-15M361-814", price=261_090),
-                _product("kns", "k1", name=base + SPECS, sku="9S7-15M361-814", price=258_800),
-                _product("kns", "k2", name=base + "-wpro" + SPECS, sku="A2XWHG-814XRU-WPRO", price=274_580),
+                _product("regard", "r1", name=base + FULL, sku="9S7-15M361-814", price=261_090),
+                _product("kns", "k1", name=base + FULL, sku="9S7-15M361-814", price=258_800),
+                _product("kns", "k2", name=base + "-wpro" + FULL, sku="A2XWHG-814XRU-WPRO", price=274_580),
             ]
         )
         self.assertEqual(sorted(d.price for d in deals), [258_800, 274_580])
@@ -597,12 +606,12 @@ class SingleStoreRankingTests(unittest.TestCase):
         self.assertFalse(any(e["reason"] == "DUPLICATE_MODEL" for e in exclusions))
 
     def test_partial_sku_does_not_replace_cluster(self) -> None:
-        name = "ASUS ROG Strix G18 G815LR-TT344 90NR0LT1-M00H30" + SPECS
+        name = "ASUS ROG Strix G18 G815LR-TT344 90NR0LT1-M00H30" + FULL
         deals, _ = self._deals(
             [
                 _product("kns", "k1", name=name, sku="90NR0LT1-M00H30", price=322_178),
                 _product("citilink", "c1", name=name, sku="90NR0LT1-M00H30", price=324_055),
-                _product("regard", "r1", name="ASUS G815LR (TT344)" + SPECS, sku="90NR0LT1-M00H30-R", price=320_400),
+                _product("regard", "r1", name="ASUS G815LR (TT344)" + FULL, sku="90NR0LT1-M00H30-R", price=320_400),
             ]
         )
         by_price = {d.price: d for d in deals}
@@ -618,9 +627,9 @@ class SingleStoreRankingTests(unittest.TestCase):
         base = "ASUS G614PR 90NR0NJ7-M001J0"
         deals, _ = self._deals(
             [
-                _product("regard", "r1", name=base + ' RTX 5070 Ti, 32GB DDR5, 16" 2560x1600', sku="90NR0NJ7-M001J0", price=262_990),
-                _product("citilink", "c1", name=base + ' RTX 5070 Ti, 32GB DDR5, 16" 2560x1600', sku="90NR0NJ7-M001J0", price=265_000),
-                _product("kns", "k1", name=base + '_64 RTX 5070 Ti, 64GB DDR5, 16" 2560x1600', sku="90NR0NJ7-M001J0_64", price=290_000),
+                _product("regard", "r1", name=base + ' RTX 5070 Ti, 32GB DDR5, 1TB SSD, 16" 2560x1600', sku="90NR0NJ7-M001J0", price=262_990),
+                _product("citilink", "c1", name=base + ' RTX 5070 Ti, 32GB DDR5, 1TB SSD, 16" 2560x1600', sku="90NR0NJ7-M001J0", price=265_000),
+                _product("kns", "k1", name=base + '_64 RTX 5070 Ti, 64GB DDR5, 1TB SSD, 16" 2560x1600', sku="90NR0NJ7-M001J0_64", price=290_000),
             ]
         )
         self.assertEqual(sorted(d.ram_gb for d in deals), [32, 64])
@@ -789,10 +798,11 @@ class ProvenIdentityMergeTests(SingleStoreRankingTests):
         )
         self.assertEqual(merges, [])
         self.assertEqual(len(deals), 2)
-        cluster = next(d for d in deals if d.saving_vs_next is not None)
-        self.assertEqual(cluster.price, 258_800)
-        self.assertEqual(cluster.next_store, "regard")
-        self.assertEqual(cluster.next_price, 261_090)
+        cluster = next(d for d in deals if d.store == "regard")
+        self.assertEqual(cluster.price, 261_090)
+        self.assertIsNone(cluster.saving_vs_next)
+        self.assertIsNone(cluster.next_store)
+        self.assertIsNone(cluster.next_price)
         lone = next(d for d in deals if d.store == "citilink")
         self.assertEqual(lone.price, 270_000)
         self.assertIsNone(lone.saving_vs_next)
@@ -814,7 +824,7 @@ class ProvenIdentityMergeTests(SingleStoreRankingTests):
         self.assertEqual(ambiguous[0]["status"], "AMBIGUOUS")
         self.assertIn("A2XWIG-063XRU", ambiguous[0]["shared_identifiers"])
         self.assertIn("cpu", ambiguous[0]["missing"]["left"])
-        self.assertIn("ssd_gb", ambiguous[0]["missing"]["left"])
+        self.assertNotIn("ssd_gb", ambiguous[0]["missing"]["left"])
 
     def test_single_store_model_stays_one_offer(self) -> None:
         merges: list[dict] = []

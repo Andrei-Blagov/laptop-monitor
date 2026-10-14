@@ -5,8 +5,12 @@ from pathlib import Path
 from typing import Any, Mapping, Sequence
 
 import config
-from comparison import match_products
+from comparison import (
+    match_products,
+    comparable_offer_groups as _comparable_offer_groups,
+)
 from identity_sync import identity_from_cache, load_specs_cache
+from laptop_eligibility import product_is_eligible
 from product_identity import ProductIdentity
 from storage import (
     DEFAULT_DB_PATH,
@@ -129,7 +133,11 @@ def price_drop_applies(
 def evaluate_price_drop(
     conn,
     product: Mapping[str, Any],
+    *,
+    identity: ProductIdentity | None = None,
 ) -> dict | None:
+    if not product_is_eligible(product, identity):
+        return None
     product_id = int(product["id"])
     new_price = product.get("price")
     old_price = get_previous_price(conn, product_id)
@@ -179,7 +187,11 @@ def evaluate_price_drop(
 def evaluate_historical_low(
     conn,
     product: Mapping[str, Any],
+    *,
+    identity: ProductIdentity | None = None,
 ) -> dict | None:
+    if not product_is_eligible(product, identity):
+        return None
     product_id = int(product["id"])
     new_price = product.get("price")
     if new_price is None:
@@ -220,8 +232,10 @@ def evaluate_target_price(
     conn,
     product: Mapping[str, Any],
     gpu: str | None,
+    *,
+    identity: ProductIdentity | None = None,
 ) -> dict | None:
-    if not product.get("available"):
+    if not product_is_eligible(product, identity):
         return None
     price = product.get("price")
     if price is None or gpu is None:
@@ -265,11 +279,13 @@ def evaluate_target_price(
     )
 
 
+
 def evaluate_cross_store(
     conn,
     matches: Sequence[Any],
     *,
     fresh_stores: set[str] | None = None,
+    specs_by_key: Mapping[tuple[str, str], ProductIdentity] | None = None,
 ) -> list[dict]:
     """
     CROSS_STORE только между fresh stores текущего run.
@@ -279,20 +295,17 @@ def evaluate_cross_store(
     created: list[dict] = []
     threshold = int(config.CROSS_STORE_DIFFERENCE_RUB)
 
-    for match in matches:
-        available = [
-            o
-            for o in match.offers
-            if o.available
-            and o.price is not None
-            and config.is_price_in_tracking_scope(o.price)
-            and (fresh_stores is None or o.store in fresh_stores)
-        ]
+    for match, available in (
+        (match, group) for match in matches
+        for group in _comparable_offer_groups(match, specs_by_key or {}, fresh_stores)
+    ):
         if len(available) < 2:
             continue
         ordered = sorted(available, key=lambda o: (o.price or 0, o.store))
         cheapest = ordered[0]
-        other = ordered[1]
+        other = next((o for o in ordered[1:] if o.store != cheapest.store), None)
+        if other is None:
+            continue
         difference = int(other.price) - int(cheapest.price)
         if difference < threshold:
             continue
@@ -324,6 +337,8 @@ def evaluate_cross_store(
                 "match_method": match.match_method,
                 "matched_identifier": match.matched_identifier,
                 "cheapest_store": cheapest.store,
+                "cheapest_external_id": cheapest.external_id,
+                "other_external_id": other.external_id,
                 "cheapest_price": int(cheapest.price),
                 "cheapest_url": cheapest.url,
                 "cheapest_sku": cheapest.sku,
@@ -383,16 +398,17 @@ def run_monitor(
     with open_db(db_path) as conn:
         init_db(conn)
         for product in products:
+            identity = specs.get((str(product["store"]), str(product["external_id"])))
             gpu = _product_gpu(product, specs)
-            drop_event = evaluate_price_drop(conn, product)
+            drop_event = evaluate_price_drop(conn, product, identity=identity)
             if drop_event is not None:
                 created.append(drop_event)
             elif not price_drop_applies(conn, product):
-                hist_event = evaluate_historical_low(conn, product)
+                hist_event = evaluate_historical_low(conn, product, identity=identity)
                 if hist_event is not None:
                     created.append(hist_event)
 
-            target_event = evaluate_target_price(conn, product, gpu)
+            target_event = evaluate_target_price(conn, product, gpu, identity=identity)
             if target_event is not None:
                 created.append(target_event)
 
@@ -402,7 +418,7 @@ def run_monitor(
             cross_events: list[dict] = []
         else:
             cross_events = evaluate_cross_store(
-                conn, comparison.matches, fresh_stores=cross_fresh
+                conn, comparison.matches, fresh_stores=cross_fresh, specs_by_key=specs
             )
         created.extend(cross_events)
 
@@ -439,6 +455,9 @@ def get_current_deals(
     }
 
     for product in products:
+        identity = specs.get((str(product["store"]), str(product["external_id"])))
+        if not product_is_eligible(product, identity):
+            continue
         if not product.get("available"):
             continue
         price = product.get("price")
@@ -474,19 +493,17 @@ def get_current_deals(
 
     cross_deals: list[dict] = []
     threshold_diff = int(config.CROSS_STORE_DIFFERENCE_RUB)
-    for match in comparison.matches:
-        available = [
-            o
-            for o in match.offers
-            if o.available
-            and o.price is not None
-            and config.is_price_in_tracking_scope(o.price)
-        ]
+    for match, available in (
+        (match, group) for match in comparison.matches
+        for group in _comparable_offer_groups(match, specs)
+    ):
         if len(available) < 2:
             continue
         ordered = sorted(available, key=lambda o: (o.price or 0, o.store))
         cheapest = ordered[0]
-        other = ordered[1]
+        other = next((o for o in ordered[1:] if o.store != cheapest.store), None)
+        if other is None:
+            continue
         difference = int(other.price) - int(cheapest.price)
         if difference < threshold_diff:
             continue
@@ -497,6 +514,8 @@ def get_current_deals(
                 "match_method": match.match_method,
                 "matched_identifier": match.matched_identifier,
                 "cheapest_store": cheapest.store,
+                "cheapest_external_id": cheapest.external_id,
+                "other_external_id": other.external_id,
                 "cheapest_price": int(cheapest.price),
                 "cheapest_url": cheapest.url,
                 "other_store": other.store,
