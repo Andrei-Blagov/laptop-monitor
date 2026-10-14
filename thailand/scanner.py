@@ -145,7 +145,12 @@ def collector_search_codes(
     return found
 
 
-def _collect_store(adapter, timeout: float, target_codes: list[str] | None = None) -> StoreScanResult:
+def _collect_store(
+    adapter,
+    timeout: float,
+    target_codes: list[str] | None = None,
+    fx: Any = None,
+) -> StoreScanResult:
     kwargs: dict[str, Any] = {"timeout": timeout}
     sent: list[str] = []
     try:
@@ -153,6 +158,8 @@ def _collect_store(adapter, timeout: float, target_codes: list[str] | None = Non
         if "target_codes" in params and target_codes:
             sent = list(target_codes)
             kwargs["target_codes"] = sent
+        if "fx" in params:
+            kwargs["fx"] = fx
     except (TypeError, ValueError):
         pass
     try:
@@ -236,6 +243,7 @@ def collect_thailand_offers(
     per_store_timeout: float | None = None,
     parallel: bool = True,
     target_codes: list[str] | None = None,
+    fx: Any = None,
 ) -> tuple[list[StoreScanResult], list[ThailandOffer], list[ThailandOffer], float]:
     overall_timeout = float(
         overall_timeout
@@ -275,7 +283,7 @@ def collect_thailand_offers(
     if parallel and len(http_adapters) > 1:
         with ThreadPoolExecutor(max_workers=len(http_adapters)) as pool:
             futs = {
-                pool.submit(_collect_store, a, per_store_timeout, target_codes): a
+                pool.submit(_collect_store, a, per_store_timeout, target_codes, fx): a
                 for a in http_adapters
             }
             try:
@@ -310,7 +318,7 @@ def collect_thailand_offers(
                     )
                 )
                 continue
-            results.append(_collect_store(a, per_store_timeout, target_codes))
+            results.append(_collect_store(a, per_store_timeout, target_codes, fx))
 
     for a in browser_adapters:
         if time.perf_counter() - started > overall_timeout:
@@ -325,7 +333,7 @@ def collect_thailand_offers(
                 )
             )
             continue
-        results.append(_collect_store(a, per_store_timeout, target_codes))
+        results.append(_collect_store(a, per_store_timeout, target_codes, fx))
 
     for result in results:
         if result.policy_disabled or result.collection_mode in {"skipped", "rate_limited"}:
@@ -541,7 +549,8 @@ def run_thailand_scan(
         fx_runtime = time.perf_counter() - t0
         codes = collector_search_codes(target_model, personal_targets)
         store_results, offers, unverified, collect_runtime = collect_thailand_offers(
-            target_codes=codes or None
+            target_codes=codes or None,
+            fx=fx,
         )
         search_coverage = build_search_coverage(codes, store_results)
         match_t0 = time.perf_counter()

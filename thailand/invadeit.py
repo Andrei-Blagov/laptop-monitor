@@ -323,16 +323,24 @@ def _get_json(http: httpx.Client, url: str) -> tuple[dict[str, Any] | None, str 
     return payload, None, None
 
 
+def _spec_query(product_id: str) -> str:
+    return f"specifications:{product_id}"
+
+
 def _pack_result(
     started: float,
     discovered: list[ThailandOffer],
     skipped: int,
     *,
     rate_limited: bool,
-    unchecked_ids: list[str],
+    catalog_complete: bool,
+    spec_ids: list[str],
+    finished_spec_ids: list[str],
 ) -> StoreScanResult:
     verified = [offer for offer in discovered if is_verified_for_ranking(offer)]
     unverified = [offer for offer in discovered if not is_verified_for_ranking(offer)]
+    finished_specs = [spec_id for spec_id in finished_spec_ids if spec_id in spec_ids]
+    unchecked_ids = [spec_id for spec_id in spec_ids if spec_id not in finished_specs]
     limitations = [
         "notebook category catalog",
         f"at most {_MAX_PAGES} pages",
@@ -360,10 +368,13 @@ def _pack_result(
         verified_count=len(verified),
     )
     result.discovery_mode = "catalog"
-    result.discovery_queries = [CATEGORY]
+    result.discovery_queries = [CATEGORY] + [_spec_query(spec_id) for spec_id in spec_ids]
+    result.queries_finished = (
+        [CATEGORY] if catalog_complete else []
+    ) + [_spec_query(spec_id) for spec_id in finished_specs]
+    result.queries_completed = len(result.queries_finished)
     result.discovery_limitations = limitations
     result.discovery_rate_limited = rate_limited
-    result.queries_completed = 0 if rate_limited else 1
     return result
 
 
@@ -391,11 +402,13 @@ def collect(
                     discovered,
                     skipped,
                     rate_limited=True,
-                    unchecked_ids=[
-                        offer.product_id
+                    catalog_complete=False,
+                    spec_ids=[
+                        str(offer.product_id)
                         for offer in discovered
                         if offer.product_id and not offer.screen_resolution
                     ],
+                    finished_spec_ids=[],
                 )
             if payload is None:
                 return _failure(started, code or PARSE_ERROR, detail or "request_failed")
@@ -412,11 +425,12 @@ def collect(
             if not payload.get("hasNextPage"):
                 break
         candidates = _detail_order(discovered, fx)
-        pending = list(candidates)
+        spec_ids = [str(offer.product_id) for offer in candidates if offer.product_id]
+        finished_spec_ids: list[str] = []
         fetches = 0
         rate_limited = False
         for offer in candidates:
-            if fetches >= _MAX_DETAIL or rate_limited:
+            if fetches >= _MAX_DETAIL or rate_limited or not offer.product_id:
                 break
             payload, code, _detail = _read_json(
                 http, f"{BASE}/api/products/{offer.product_id}/specifications"
@@ -425,8 +439,7 @@ def collect(
             if code == RATE_LIMITED:
                 rate_limited = True
                 break
-            if offer in pending:
-                pending.remove(offer)
+            finished_spec_ids.append(str(offer.product_id))
             if isinstance(payload, (dict, list)):
                 enrich_offer_from_specifications(
                     offer, payload, fetched_at=datetime.now(timezone.utc)
@@ -436,7 +449,9 @@ def collect(
             discovered,
             skipped,
             rate_limited=rate_limited,
-            unchecked_ids=[str(offer.product_id) for offer in pending if offer.product_id],
+            catalog_complete=True,
+            spec_ids=spec_ids,
+            finished_spec_ids=finished_spec_ids,
         )
     finally:
         if own:

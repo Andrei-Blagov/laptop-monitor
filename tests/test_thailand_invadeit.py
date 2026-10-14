@@ -311,6 +311,16 @@ class SpecificationFetchTests(unittest.TestCase):
         self.assertEqual({offer.product_id for offer in kept}, {"79530", "79542"})
         self.assertIn("stopped_on_429", result.discovery_limitations or [])
         self.assertTrue(all(offer.screen_resolution is None for offer in kept))
+        from thailand.discovery import coverage_for_result
+
+        report = coverage_for_result(result)
+        self.assertIn("notebooks-laptops", report["queries_finished"])
+        self.assertNotIn("notebooks-laptops", report["queries_not_completed"])
+        self.assertEqual(
+            report["queries_not_completed"],
+            ["specifications:79530", "specifications:79542"],
+        )
+        self.assertEqual(report["query_skip_reason"], "stopped_on_429")
 
     def test_catalog_429_keeps_cards_from_earlier_pages(self) -> None:
         from thailand.invadeit import collect
@@ -338,6 +348,62 @@ class SpecificationFetchTests(unittest.TestCase):
         self.assertEqual([offer.product_id for offer in result.offers + result.unverified_candidates], ["81682"])
         self.assertFalse(any("specifications" in url for url in seen))
         self.assertIn("stopped_on_429", result.discovery_limitations or [])
+        from thailand.discovery import coverage_for_result
+
+        report = coverage_for_result(result)
+        self.assertNotIn("notebooks-laptops", report["queries_finished"])
+        self.assertIn("notebooks-laptops", report["queries_not_completed"])
+
+    def test_scan_passes_fx_and_requests_priority_laptops_first(self) -> None:
+        from thailand.discovery import coverage_for_result
+        from thailand.invadeit import collect as real_collect
+        from thailand.registry import ThailandStoreAdapter
+        from thailand.scanner import run_thailand_scan
+
+        items = [_catalog_item(index, ram="16GB") for index in (1, 2)]
+        items.extend(_catalog_item(100 + index) for index in range(16))
+        seen: list[str] = []
+        received: dict = {}
+
+        def get(url):
+            seen.append(url)
+            response = mock.Mock()
+            response.status_code = 200
+            response.headers = {"content-type": "application/json"}
+            if "specifications" in url:
+                response.json.return_value = [{"name": "Display", "value": '16" (2560 x 1600)'}]
+                return response
+            response.json.return_value = {"items": items, "hasNextPage": False}
+            return response
+
+        mock_http = mock.Mock()
+        mock_http.get.side_effect = get
+        fx = _fx()
+        fx.rub_per_thb = 2.5
+
+        def collect(*, timeout: float = 90.0, client=None, fx=None):
+            received["fx"] = fx
+            received["result"] = real_collect(timeout=timeout, client=mock_http, fx=fx)
+            return received["result"]
+
+        adapter = ThailandStoreAdapter(
+            slug="invadeit",
+            display_name="InvadeIT",
+            enabled=True,
+            collect=collect,
+        )
+        with mock.patch("thailand.scanner.get_thailand_adapters", return_value=[adapter]), mock.patch(
+            "thailand.scanner.record_observation"
+        ), mock.patch("thailand.scanner.fetch_cbr_thb_rate", return_value=fx):
+            run_thailand_scan(trigger_type="manual", write_snapshot=False)
+        self.assertIs(received["fx"], fx)
+        spec_ids = [url.rsplit("/", 2)[-2] for url in seen if "specifications" in url]
+        self.assertEqual(spec_ids, [str(100 + index) for index in range(15)])
+        report = coverage_for_result(received["result"])
+        self.assertIn("notebooks-laptops", report["queries_finished"])
+        self.assertIn("specifications:115", report["queries_not_completed"])
+        self.assertIn("specifications:1", report["queries_not_completed"])
+        self.assertNotIn("specifications:100", report["queries_not_completed"])
 
 
 if __name__ == "__main__":
