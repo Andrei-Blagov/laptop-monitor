@@ -1,0 +1,164 @@
+[
+  {
+    "name": "Specifications",
+    "nameThai": "Specifications",
+    "items": [
+      {
+        "name": "CPU",
+        "nameThai": "CPU",
+        "value": "AMD Ryzen 9 8940HX Processor\n2.4GHz (80MB Cache, up to 5.3GHz, 16 cores, 32 Threads)",
+        "valueThai": ""
+      },
+      {
+        "name": "Chipset",
+        "nameThai": "Chipset",
+        "value": "N/A",
+        "valueThai": ""
+      },
+      {
+        "name": "RAM",
+        "nameThai": "RAM",
+        "value": "16GB DDR5-5200 SO-DIMM The memory speed of the systems vary by CPU SPEC\n2 x DDR5 SO-DIMM slots",
+        "valueThai": ""
+      },
+      {
+        "name": "Graphics",
+        "nameThai": "Graphics",
+        "value": "NVIDIA® GeForce RTX 5070 Ti Laptop GPU 12GB GDDR7 ROG Boost: 1565MHz* at 140W (1515MHz Boost Clock+50MHz OC, 115W+25W Dynamic Boost)",
+        "valueThai": ""
+      },
+      {
+        "name": "Integrated speakers",
+        "nameThai": "Integrated speakers",
+        "value": "2-speaker system with Smart Amplifier Technology",
+        "valueThai": ""
+      },
+      {
+        "name": "Hard Drive",
+        "nameThai": "Hard Drive",
+        "value": "1TB PCIe® 4.0 NVMe M.2 SSD\n2 x M.2 PCIe",
+        "valueThai": ""
+      },
+      {
+        "name": "Optical Drive",
+        "nameThai": "Optical Drive",
+        "value": "No",
+        "valueThai": ""
+      },
+      {
+        "name": "Display",
+        "nameThai": "Display",
+        "value": "16\"//500nits//2.5K (2560 x 1600, WQXGA) 16:10 aspect ratio//300Hz//Anti-glare(AG) display//DCI-P3 : 100%",
+        "valueThai": ""
+      },
+      {
+        "name": "Communication",
+        "nameThai": "Communication",
+        "value": "Wi-Fi 6E(802.11ax) (Triple band) 2*2\nBluetooth® 5.3 Wireless Card (*Bluetooth® version may change with OS version different.)\n10/100/1000 Mbps",
+        "valueThai": ""
+      },
+      {
+        "name": "Webcam",
+        "nameThai": "Webcam",
+        "value": "1080P FHD camera",
+        "valueThai": ""
+      },
+      {
+        "name": "Other port",
+        "nameThai": "Other port",
+        "value": "1 x 3.5mm Combo Audio Jack\n1 x HDMI 2.1 FRL\n2 x USB 3.2 Gen 2 Type-A\n1 x Type-C USB 4 with support for DisplayPort™ / power delivery / G-SYNC (data speed up to 40Gbps)\n1 x Type-C USB 4 with support for DisplayPort™ / G-SYNC (data speed up to 40Gbps)",
+        "valueThai": ""
+      },
+      {
+        "name": "Cooling",
+        "nameThai": "Cooling",
+        "value": "Tri-Fan Technology",
+        "valueThai": ""
+      },
+      {
+        "name": "Keyboard",
+        "nameThai": "Keyboard",
+        "value": "Thai / English\nBacklit Chiclet Keyboard 4-Zone RGB",
+        "valueThai": ""
+      },
+      {
+        "name": "OS",
+        "nameThai": "OS",
+        "value": "Windows 11 Home",
+        "valueThai": ""
+      },
+      {
+        "name": "Battery",
+        "nameThai": "Battery",
+        "value": "90WHrs, 4S1P, 4-cell Li-ion",
+        "valueThai": ""
+      },
+      {
+        "name": "Fingerprint",
+        "nameThai": "Fingerprint",
+        "value": "N/A",
+        "valueThai": ""
+      },
+      {
+        "name": "Sensor",
+        "nameThai": "Sensor",
+        "value": "N/A",
+        "valueThai": ""
+      },
+      {
+        "name": "Card Reader",
+        "nameThai": "Card Reader",
+        "value": "N/A",
+        "valueThai": ""
+      },
+      {
+        "name": "Supplied Accessories",
+        "nameThai": "Supplied Accessories",
+        "value": "Backpack\nXbox Game Pass for PC_3 months",
+        "valueThai": ""
+      },
+      {
+        "name": "Sound",
+        "nameThai": "Sound",
+        "value": "Smart Amp Technology\nHi-Res certification (for headphone)\nDolby Atmos\nAI noise-canceling technology",
+        "valueThai": ""
+      },
+      {
+        "name": "Adapter/Cable Bundled",
+        "nameThai": "Adapter/Cable Bundled",
+        "value": "ø6.0, 280W AC Adapter, Output: 20V DC, 14A, 280W, Input: 100~240C AC 50/60Hz universal",
+        "valueThai": ""
+      },
+      {
+        "name": "Key Features",
+        "nameThai": "Key Features",
+        "value": "Aura Sync Light Bar",
+        "valueThai": ""
+      }
+    ]
+  },
+  {
+    "name": "Dimensions",
+    "nameThai": "Dimensions",
+    "items": [
+      {
+        "name": "Weight",
+        "nameThai": "Weight",
+        "value": " 2.50 Kg",
+        "valueThai": ""
+      }
+    ]
+  },
+  {
+    "name": "Warranty",
+    "nameThai": "Warranty",
+    "items": [
+      {
+        "name": "Warranty",
+        "nameThai": "Warranty",
+        "value": "3 Years onsite by Asus",
+        "valueThai": ""
+      }
+    ]
+  }
+]

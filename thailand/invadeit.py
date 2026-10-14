@@ -11,9 +11,12 @@ from urllib.parse import quote
 
 import httpx
 
+import config
 from deal_ranking import canonical_gpu
-from thailand.errors import NO_RESULTS, PARSE_ERROR, classify_store_failure, html_block_code
-from thailand.models import StoreScanResult, ThailandOffer
+from thailand.eligibility import price_within_cap
+from thailand.errors import NO_RESULTS, PARSE_ERROR, RATE_LIMITED, classify_store_failure, html_block_code
+from thailand.fx import fx_usable_for_verdict, thb_to_rub
+from thailand.models import FxRate, StoreScanResult, ThailandOffer
 from thailand.specs_parse import extract_brand, extract_mpn_candidates, gpu_from_explicit_text, specs_from_text
 from thailand.verification import (
     AVAIL_SOURCE_PRODUCT_DETAIL,
@@ -21,6 +24,7 @@ from thailand.verification import (
     GPU_SOURCE_STRUCTURED_API,
     PRICE_SOURCE_STRUCTURED_API,
     compute_verification,
+    is_purchasable_confirmed,
     is_verified_for_ranking,
 )
 
@@ -159,23 +163,50 @@ def parse_invadeit_item(
     return compute_verification(offer)
 
 
-def specifications_to_text(payload: object) -> str:
-    rows: list[str] = []
-    if isinstance(payload, dict):
-        payload = payload.get("specifications") or payload.get("items") or [payload]
+def _spec_pairs(payload: object) -> list[tuple[str, str]]:
+    """Leaf name/value rows, including items nested inside a specification group."""
+    pairs: list[tuple[str, str]] = []
     if isinstance(payload, list):
         for row in payload:
-            if isinstance(row, dict):
-                label = row.get("name") or row.get("label") or row.get("key") or ""
-                value = row.get("value") or row.get("text") or row.get("displayValue") or ""
-                rows.append(f"{label}: {value}")
-            elif row:
-                rows.append(str(row))
-    return "\n".join(rows)
+            pairs.extend(_spec_pairs(row))
+        return pairs
+    if not isinstance(payload, dict):
+        if payload:
+            pairs.append(("", str(payload)))
+        return pairs
+    items = payload.get("items")
+    if isinstance(items, list):
+        pairs.extend(_spec_pairs(items))
+    elif isinstance(payload.get("specifications"), list):
+        pairs.extend(_spec_pairs(payload.get("specifications")))
+    value = payload.get("value")
+    if value in (None, ""):
+        value = payload.get("text") or payload.get("displayValue") or ""
+    if value:
+        label = str(payload.get("name") or payload.get("label") or payload.get("key") or "")
+        pairs.append((label, str(value)))
+    return pairs
 
 
-def enrich_offer_from_specifications(offer: ThailandOffer, payload: object) -> ThailandOffer:
-    """Fill missing specs from a product-detail payload. Does not invent a GPU."""
+def specifications_to_text(payload: object) -> str:
+    return "\n".join(f"{label}: {value}" if label else value for label, value in _spec_pairs(payload))
+
+
+def display_field_value(payload: object) -> str | None:
+    """Built-in panel text. HDMI, webcam, and external-monitor rows are ignored."""
+    for label, value in _spec_pairs(payload):
+        if label.strip().casefold() == "display":
+            return value
+    return None
+
+
+def enrich_offer_from_specifications(
+    offer: ThailandOffer,
+    payload: object,
+    *,
+    fetched_at: datetime | None = None,
+) -> ThailandOffer:
+    """Fill missing specs from a product-detail payload. Does not invent a GPU or a resolution."""
     text = specifications_to_text(payload)
     if not text.strip():
         return offer
@@ -188,8 +219,20 @@ def enrich_offer_from_specifications(offer: ThailandOffer, payload: object) -> T
         offer.ssd_gb = specs["ssd_gb"]
     if offer.screen_size_inch is None and specs.get("screen_inch"):
         offer.screen_size_inch = specs["screen_inch"]
-    if offer.screen_resolution is None and specs.get("screen_resolution"):
-        offer.screen_resolution = specs["screen_resolution"]
+    display = display_field_value(payload)
+    resolution = None
+    if display:
+        resolution = specs_from_text(display).get("screen_resolution")
+    if offer.screen_resolution is None and resolution:
+        offer.screen_resolution = str(resolution)
+        offer.metadata = dict(offer.metadata or {})
+        offer.metadata["screen_resolution_evidence"] = {
+            "product_id": offer.product_id,
+            "display_value": display,
+            "screen_resolution": str(resolution),
+            "source": "/specifications",
+            "fetched_at": (fetched_at or datetime.now(timezone.utc)).isoformat(),
+        }
     if offer.gpu is None:
         gpu = canonical_gpu(gpu_from_explicit_text(text))
         if gpu in {"RTX 5070 Ti", "RTX 5080"}:
@@ -199,6 +242,38 @@ def enrich_offer_from_specifications(offer: ThailandOffer, payload: object) -> T
     offer.metadata = dict(offer.metadata or {})
     offer.metadata["detail_enriched"] = True
     return compute_verification(offer)
+
+
+def _needs_specification(offer: ThailandOffer) -> bool:
+    return bool(offer.product_id) and (
+        offer.cpu is None or offer.ram_gb is None or not offer.screen_resolution
+    )
+
+
+def _priority_screen_candidate(offer: ThailandOffer, fx: FxRate | None) -> bool:
+    """Purchase-shaped card that only lacks a numeric built-in resolution."""
+    if offer.screen_resolution or offer.gpu not in {"RTX 5070 Ti", "RTX 5080"}:
+        return False
+    if offer.ram_gb is None or offer.ram_gb < int(config.MIN_INSTALLED_RAM_GB):
+        return False
+    if offer.ssd_gb is None or offer.ssd_gb < int(config.MIN_SSD_GB):
+        return False
+    if not is_purchasable_confirmed(offer):
+        return False
+    if not fx_usable_for_verdict(fx):
+        return False
+    return price_within_cap(thb_to_rub(offer.price_thb, fx))
+
+
+def _detail_order(offers: list[ThailandOffer], fx: FxRate | None) -> list[ThailandOffer]:
+    needed = [offer for offer in offers if _needs_specification(offer)]
+    needed.sort(
+        key=lambda offer: (
+            0 if _priority_screen_candidate(offer, fx) else 1,
+            str(offer.product_id or ""),
+        )
+    )
+    return needed
 
 
 def _failure(started: float, code: str, detail: str) -> StoreScanResult:
@@ -213,7 +288,8 @@ def _failure(started: float, code: str, detail: str) -> StoreScanResult:
     )
 
 
-def _get_json(http: httpx.Client, url: str) -> tuple[dict[str, Any] | None, str | None, str | None]:
+def _read_json(http: httpx.Client, url: str) -> tuple[Any, str | None, str | None]:
+    """HTTP JSON of any shape. Catalog callers still require an object."""
     try:
         resp = http.get(url)
     except httpx.TimeoutException:
@@ -221,6 +297,8 @@ def _get_json(http: httpx.Client, url: str) -> tuple[dict[str, Any] | None, str 
     except httpx.HTTPError as exc:
         code, detail = classify_store_failure(type(exc).__name__)
         return None, code, detail
+    if resp.status_code == 429:
+        return None, RATE_LIMITED, "HTTP_429"
     if resp.status_code >= 400:
         code, detail = classify_store_failure(status_code=resp.status_code)
         return None, code, detail
@@ -230,18 +308,70 @@ def _get_json(http: httpx.Client, url: str) -> tuple[dict[str, Any] | None, str 
             return None, blocked, blocked
         return None, PARSE_ERROR, "not_json"
     try:
-        payload = resp.json()
+        return resp.json(), None, None
     except ValueError:
         return None, PARSE_ERROR, "invalid_json"
+
+
+def _get_json(http: httpx.Client, url: str) -> tuple[dict[str, Any] | None, str | None, str | None]:
+    """Catalog responses must be JSON objects. A list is not a category page."""
+    payload, code, detail = _read_json(http, url)
+    if code or payload is None:
+        return None, code, detail
     if not isinstance(payload, dict):
         return None, PARSE_ERROR, "payload_type"
     return payload, None, None
+
+
+def _pack_result(
+    started: float,
+    discovered: list[ThailandOffer],
+    skipped: int,
+    *,
+    rate_limited: bool,
+    unchecked_ids: list[str],
+) -> StoreScanResult:
+    verified = [offer for offer in discovered if is_verified_for_ranking(offer)]
+    unverified = [offer for offer in discovered if not is_verified_for_ranking(offer)]
+    limitations = [
+        "notebook category catalog",
+        f"at most {_MAX_PAGES} pages",
+        f"detail fetches capped at {_MAX_DETAIL}",
+        "non-target GPU rows are not stored",
+        f"rows skipped outside the target GPU: {skipped}",
+        "built-in resolution comes only from the Display field",
+    ]
+    if unchecked_ids:
+        limitations.append("not_checked specifications: " + ",".join(unchecked_ids))
+    if rate_limited:
+        limitations.append("stopped_on_429")
+    result = StoreScanResult(
+        store=STORE,
+        ok=not rate_limited,
+        offers=verified,
+        unverified_candidates=unverified,
+        error="RATE_LIMITED" if rate_limited else None,
+        error_code=(
+            RATE_LIMITED if rate_limited else (NO_RESULTS if not discovered else None)
+        ),
+        duration_seconds=time.perf_counter() - started,
+        collection_mode="http",
+        discovered_count=len(discovered),
+        verified_count=len(verified),
+    )
+    result.discovery_mode = "catalog"
+    result.discovery_queries = [CATEGORY]
+    result.discovery_limitations = limitations
+    result.discovery_rate_limited = rate_limited
+    result.queries_completed = 0 if rate_limited else 1
+    return result
 
 
 def collect(
     *,
     timeout: float = 90.0,
     client: httpx.Client | None = None,
+    fx: FxRate | None = None,
 ) -> StoreScanResult:
     started = time.perf_counter()
     own = client is None
@@ -255,6 +385,18 @@ def collect(
                 f"?page={page}&pageSize={_PAGE_SIZE}&includeChildren=true"
             )
             payload, code, detail = _get_json(http, url)
+            if code == RATE_LIMITED:
+                return _pack_result(
+                    started,
+                    discovered,
+                    skipped,
+                    rate_limited=True,
+                    unchecked_ids=[
+                        offer.product_id
+                        for offer in discovered
+                        if offer.product_id and not offer.screen_resolution
+                    ],
+                )
             if payload is None:
                 return _failure(started, code or PARSE_ERROR, detail or "request_failed")
             items = payload.get("items")
@@ -269,44 +411,33 @@ def collect(
                 discovered.append(offer)
             if not payload.get("hasNextPage"):
                 break
-        details = 0
-        for offer in discovered:
-            if details >= _MAX_DETAIL:
+        candidates = _detail_order(discovered, fx)
+        pending = list(candidates)
+        fetches = 0
+        rate_limited = False
+        for offer in candidates:
+            if fetches >= _MAX_DETAIL or rate_limited:
                 break
-            if offer.ram_gb is not None and offer.cpu is not None:
-                continue
-            if not offer.product_id:
-                continue
-            payload, _code, _detail = _get_json(
+            payload, code, _detail = _read_json(
                 http, f"{BASE}/api/products/{offer.product_id}/specifications"
             )
-            details += 1
-            if payload is not None:
-                enrich_offer_from_specifications(offer, payload)
-        verified = [o for o in discovered if is_verified_for_ranking(o)]
-        unverified = [o for o in discovered if not is_verified_for_ranking(o)]
-        result = StoreScanResult(
-            store=STORE,
-            ok=True,
-            offers=verified,
-            unverified_candidates=unverified,
-            error_code=NO_RESULTS if not discovered else None,
-            duration_seconds=time.perf_counter() - started,
-            collection_mode="http",
-            discovered_count=len(discovered),
-            verified_count=len(verified),
+            fetches += 1
+            if code == RATE_LIMITED:
+                rate_limited = True
+                break
+            if offer in pending:
+                pending.remove(offer)
+            if isinstance(payload, (dict, list)):
+                enrich_offer_from_specifications(
+                    offer, payload, fetched_at=datetime.now(timezone.utc)
+                )
+        return _pack_result(
+            started,
+            discovered,
+            skipped,
+            rate_limited=rate_limited,
+            unchecked_ids=[str(offer.product_id) for offer in pending if offer.product_id],
         )
-        result.discovery_mode = "catalog"
-        result.discovery_queries = [CATEGORY]
-        result.discovery_limitations = [
-            "notebook category catalog",
-            f"at most {_MAX_PAGES} pages",
-            f"detail fetches capped at {_MAX_DETAIL}",
-            "non-target GPU rows are not stored",
-            f"rows skipped outside the target GPU: {skipped}",
-        ]
-        result.queries_completed = 1
-        return result
     finally:
         if own:
             http.close()

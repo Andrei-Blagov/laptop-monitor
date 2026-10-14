@@ -1,0 +1,158 @@
+[
+  {
+    "name": "Specifications",
+    "nameThai": "Specifications",
+    "items": [
+      {
+        "name": "CPU",
+        "nameThai": "CPU",
+        "value": "Intel® Core Ultra 9 processor 285HX with Intel® AI Boost (NPU)<br>\r\n24 cores (8 P-cores + 16 E-cores), 24 thread, 40MB cache, Max Turbo Frequency 5.5 GHz",
+        "valueThai": "Intel® Core Ultra 9 processor 285HX with Intel® AI Boost (NPU)<br>\r\n24 cores (8 P-cores + 16 E-cores), 24 thread, 40MB cache, Max Turbo Frequency 5.5 GHz"
+      },
+      {
+        "name": "Chipset",
+        "nameThai": "Chipset",
+        "value": "Intel® HM870",
+        "valueThai": "Intel® HM870"
+      },
+      {
+        "name": "RAM",
+        "nameThai": "RAM",
+        "value": "32GB*2 DDR5-6400<br>\r\nUp to DDR5-6400, 2 Slots, Max 96GB",
+        "valueThai": "32GB*2 DDR5-6400<br>\r\nUp to DDR5-6400, 2 Slots, Max 96GB"
+      },
+      {
+        "name": "Graphics",
+        "nameThai": "Graphics",
+        "value": "NVIDIA® GeForce RTX 5080 Laptop GPU 16GB GDDR7 powers advanced AI with 1334 AI TOPS\r\nBoost Clock 175W Maximum Graphics Power with Dynamic Boost. *May vary by scenario",
+        "valueThai": "NVIDIA® GeForce RTX 5080 Laptop GPU 16GB GDDR7 powers advanced AI with 1334 AI TOPS\r\nBoost Clock 175W Maximum Graphics Power with Dynamic Boost. *May vary by scenario"
+      },
+      {
+        "name": "Integrated speakers",
+        "nameThai": "Integrated speakers",
+        "value": "4 x 2W Audio Speaker<br>\r\n2 x 2W Audio Woofer",
+        "valueThai": "4 x 2W Audio Speaker<br>\r\n2 x 2W Audio Woofer"
+      },
+      {
+        "name": "Hard Drive",
+        "nameThai": "Hard Drive",
+        "value": "2TB*1 NVMe SSD PCIe Gen5<br>\r\n2TB*2 NVMe SSD PCIe Gen4",
+        "valueThai": "2TB*1 NVMe SSD PCIe Gen5<br>\r\n2TB*2 NVMe SSD PCIe Gen4"
+      },
+      {
+        "name": "Optical Drive",
+        "nameThai": "Optical Drive",
+        "value": "No",
+        "valueThai": "No"
+      },
+      {
+        "name": "Display",
+        "nameThai": "Display",
+        "value": "18\" 16:10 UHD+ (3840x2400), MiniLED, 120Hz, 100% DCI-P3 (Typ.), IPS-Level panel",
+        "valueThai": "18\" 16:10 UHD+ (3840x2400), MiniLED, 120Hz, 100% DCI-P3 (Typ.), IPS-Level panel"
+      },
+      {
+        "name": "Communication",
+        "nameThai": "Communication",
+        "value": "Intel® Killer Wi-Fi 7 BE1750<br>\r\nBluetooth v5.4<br>\r\n2.5 Gigabit Ethernet",
+        "valueThai": "Intel® Killer Wi-Fi 7 BE1750<br>\r\nBluetooth v5.4<br>\r\n2.5 Gigabit Ethernet"
+      },
+      {
+        "name": "Webcam",
+        "nameThai": "Webcam",
+        "value": "IR FHD type (30fps@1080p) with HDR<br>\r\n3D Noise Reduction+ (3DNR+)",
+        "valueThai": "IR FHD type (30fps@1080p) with HDR<br>\r\n3D Noise Reduction+ (3DNR+)"
+      },
+      {
+        "name": "Other port",
+        "nameThai": "Other port",
+        "value": "3 x Type-A USB3.2 Gen2<br>\r\n2 x Thunderbolt 5 (DisplayPort/ Power Delivery 3.1)<br>\r\n1 x HDMI 2.1 (8K @ 60Hz / 4K @ 120Hz)<br>\r\n1 x Mic-in/Headphone-out Combo Jack",
+        "valueThai": "3 x Type-A USB3.2 Gen2<br>\r\n2 x Thunderbolt 5 (DisplayPort/ Power Delivery 3.1)<br>\r\n1 x HDMI 2.1 (8K @ 60Hz / 4K @ 120Hz)<br>\r\n1 x Mic-in/Headphone-out Combo Jack"
+      },
+      {
+        "name": "Cooling",
+        "nameThai": "Cooling",
+        "value": "3D Cooling Stands",
+        "valueThai": "3D Cooling Stands"
+      },
+      {
+        "name": "Keyboard",
+        "nameThai": "Keyboard",
+        "value": "Thai / English<br>\r\nCherry Mechanical Per-Key RGB Gaming Keyboard by SteelSeries with Copilot Key",
+        "valueThai": "Thai / English<br>\r\nCherry Mechanical Per-Key RGB Gaming Keyboard by SteelSeries with Copilot Key"
+      },
+      {
+        "name": "OS",
+        "nameThai": "OS",
+        "value": "Windows 11 Home<br>\r\nMicrosoft Office Home and Student 2024",
+        "valueThai": "Windows 11 Home<br>\r\nMicrosoft Office Home and Student 2024"
+      },
+      {
+        "name": "Battery",
+        "nameThai": "Battery",
+        "value": "4-Cell, 99.9 Whrs",
+        "valueThai": "4-Cell, 99.9 Whrs"
+      },
+      {
+        "name": "Fingerprint",
+        "nameThai": "Fingerprint",
+        "value": "N/A",
+        "valueThai": "N/A"
+      },
+      {
+        "name": "Card Reader",
+        "nameThai": "Card Reader",
+        "value": "SD Card Reader",
+        "valueThai": "SD Card Reader"
+      },
+      {
+        "name": "Supplied Accessories",
+        "nameThai": "Supplied Accessories",
+        "value": "Titan Gaming Backpack<br>\r\nMSI Gaming Mouse<br>\r\nMSI Mouse Pad_Dragon Edition + MSI Keychain",
+        "valueThai": "Titan Gaming Backpack<br>\r\nMSI Gaming Mouse<br>\r\nMSI Mouse Pad_Dragon Edition + MSI Keychain"
+      },
+      {
+        "name": "Sound",
+        "nameThai": "Sound",
+        "value": "Sound by Dynaudio, Nahimic 3 Audio Enhancer, Hi-Res Audio Ready\r\nArray Microphone",
+        "valueThai": "Sound by Dynaudio, Nahimic 3 Audio Enhancer, Hi-Res Audio Ready\r\nArray Microphone"
+      },
+      {
+        "name": "Adapter/Cable Bundled",
+        "nameThai": "Adapter/Cable Bundled",
+        "value": "400W Adaptor",
+        "valueThai": "400W Adaptor"
+      },
+      {
+        "name": "Key Features",
+        "nameThai": "Key Features",
+        "value": "Intel AI Boost",
+        "valueThai": "Intel AI Boost"
+      }
+    ]
+  },
+  {
+    "name": "Dimensions",
+    "nameThai": "Dimensions",
+    "items": [
+      {
+        "name": "Weight",
+        "nameThai": "Weight",
+        "value": "3.6 Kg",
+        "valueThai": "3.6 Kg"
+      }
+    ]
+  },
+  {
+    "name": "Warranty",
+    "nameThai": "Warranty",
+    "items": [
+      {
+        "name": "Warranty",
+        "nameThai": "Warranty",
+        "value": "3 Years by MSI",
+        "valueThai": "3 Years by MSI"
+      }
+    ]
+  }
+]
