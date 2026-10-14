@@ -2,13 +2,13 @@
 
 Мониторинг цен на игровые ноутбуки (RTX 5070 Ti / RTX 5080 Laptop) с multi-store adapter architecture, матчингом моделей, ranking v2, Telegram alerts / control, Price History charts и n8n OPS layer.
 
-**Version:** читается из файла `VERSION` (сейчас `0.10.1`) — единственный source of truth.  
+**Version:** читается из файла `VERSION` (сейчас `0.10.2`) — единственный source of truth.  
 **Production target:** Linux VPS через **clean release bundle** + Docker + systemd  
 **Windows:** только development / testing
 
 ---
 
-## Что умеет (v0.10.1)
+## Что умеет (v0.10.2)
 
 | Область | Описание |
 |---------|----------|
@@ -26,7 +26,7 @@
 | **Specs coverage** | Collected metadata → `product_specs.json` для всех stores; safe title parse; Regard/ANDPRO re-enrich on cache miss; non-destructive merge / `SPEC_CONFLICT` |
 | **Ranking v2** | Explainable score **0..100** + **confidence**; GPU / price-value / CPU / RAM / SSD / screen / historical opportunity / cross-store saving (**weights unchanged**) |
 | **Buy Opportunity** | Explainable BUY / STRONG_BUY + cooldown; при новом signal — enqueue Thailand job |
-| **Thailand markets** | Async worker: **JIB**, **SpeedCom**, **InvadeIT**, **IT City**; targeted compare for a BUY or a model picked from the Russian TOP; **BaNANA** / **Lazada** off by default; rate-limit pause; TOP ≤330k ₽, price ASC |
+| **Thailand markets** | Async worker: **JIB**, **SpeedCom**, **InvadeIT**, **IT City**. Discovery starts with RTX 5070 Ti / 5080, then regional codes and rotating lines. InvadeIT reads a numeric resolution only from the Display field. A store HTTP 429 makes the scan partial. **BaNANA** / **Lazada** stay off; TOP ≤330k ₽ |
 | **Price History** | Telegram: карточка истории (v1) + PNG-графики 30 / 90 / all-time (v2), read-only |
 | **Control bot** | Long polling; Run / TOP / История / **🌍 Рынки** / Status / Version; admin allowlist |
 | **Scheduler** | Primary: **systemd timer** → `run_pipeline.py`. Thailand: **systemd.path** → async worker |
