@@ -590,7 +590,9 @@
           },
           "price_rub": 230000,
           "availability_status": "in_stock",
-          "verified": true
+          "verified": true,
+          "manufacturer_family": "ASUS G615LR",
+          "manufacturer_generation": "synthetic-G615LR-generation"
         }
       ],
       "th_offers": [
@@ -608,7 +610,9 @@
           },
           "price_thb": 80000,
           "availability_status": "in_stock",
-          "verified": true
+          "verified": true,
+          "manufacturer_family": "ASUS G615LR",
+          "manufacturer_generation": "synthetic-G615LR-generation"
         }
       ],
       "manufacturer_family": "ASUS G615LR",
@@ -845,7 +849,8 @@
         "broad_store_http_calls": 0,
         "detail_store_http_calls": 0,
         "one_catalogue_id_for_events": true
-      }
+      },
+      "discovery_checked_at": "2026-10-14T03:00:00Z"
     },
     {
       "id": "F4_NO_OLD_OFFER_REVIVAL",
@@ -856,8 +861,10 @@
       "availability_checked_at": "2026-10-13T05:00:00Z",
       "expected": {
         "current_purchase_eligible": false,
-        "old_observation_keeps_original_time": true
-      }
+        "old_observation_keeps_original_time": true,
+        "broad_discovery_required": true
+      },
+      "discovery_checked_at": "2026-10-13T05:00:00Z"
     },
     {
       "id": "F2_REFRESH_OLDER_QUOTE",
@@ -869,7 +876,8 @@
       "expected": {
         "broad_discovery_required": false,
         "bounded_offer_refresh_required": true
-      }
+      },
+      "discovery_checked_at": "2026-10-13T16:00:00Z"
     },
     {
       "id": "FX1_STALE",
@@ -890,17 +898,23 @@
         {
           "event_id": "event-daily",
           "trigger": "daily",
-          "recipient": "owner"
+          "recipients": [
+            "synthetic-recipient-1"
+          ]
         },
         {
           "event_id": "event-buy",
           "trigger": "buy",
-          "recipient": "owner"
+          "recipients": [
+            "synthetic-recipient-2"
+          ]
         },
         {
           "event_id": "event-manual",
           "trigger": "manual",
-          "recipient": "owner"
+          "recipients": [
+            "synthetic-recipient-3"
+          ]
         }
       ],
       "discovery_scope_hash": "scope-a",
@@ -928,5 +942,37 @@
         "not_completed_is_not_no_results": true
       }
     }
-  ]
+  ],
+  "fixture_format": "simplified_policy_examples_not_runtime_snapshots",
+  "assumptions": {
+    "verified": "synthetic offer evidence premise, not a runtime provenance payload",
+    "current_pair_examples": "unless explicit time/stock/FX conflict is supplied, quotes, FX and compatible discovery are fresh",
+    "manufactured_identifiers": "synthetic test strings, never live manufacturer evidence"
+  },
+  "policy": {
+    "core_fields": [
+      "gpu",
+      "cpu",
+      "ram_gb",
+      "ssd_gb",
+      "screen_size_inch",
+      "screen_resolution"
+    ],
+    "ru_offer_fresh_minutes": 180,
+    "catalog_fresh_hours": 26,
+    "quote_fresh_hours": 6,
+    "daily_min_broad_hours": 18,
+    "fx_fresh_hours": 36,
+    "fx_published_max_days": 4,
+    "max_price_rub": "330000",
+    "unmatched_score_min": 75,
+    "gpu_target_rub": {
+      "RTX 5070 Ti Laptop": "230000",
+      "RTX 5080 Laptop": "300000"
+    },
+    "country_band_percent": {
+      "slight": "5",
+      "clear": "10"
+    }
+  }
 }

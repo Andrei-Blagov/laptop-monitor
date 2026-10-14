@@ -1,5 +1,7 @@
 # Laptop Monitor — технический план этапа 2.2
 
+> Архив исходного анализа. После согласования действуют [STAGE22_DECISIONS.md](STAGE22_DECISIONS.md) и [STAGE22_CONTRACTS.md](STAGE22_CONTRACTS.md), включая распределение Work A/D и Cursor B/C/E/F, время широкого discovery и уточнённые current gates. Предложения ниже не переопределяют согласованные решения.
+
 Статус: предложение для согласования. Дата: 14 октября 2026.
 Репозиторий: Andrei-Blagov/laptop-monitor.
 База: v0.10.2, commit ff4d79889dbf78f78623fdac69734412c4bc42af.
