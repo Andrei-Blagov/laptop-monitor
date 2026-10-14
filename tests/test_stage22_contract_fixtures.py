@@ -63,7 +63,7 @@ class Stage22ContractsFixtureTests(unittest.TestCase):
         costs = Decimal(case["known_costs_rub"])
         saving = rub - (thb * fx + costs)
         saving_pct = saving / rub * 100
-        self.assertEqual(str(saving), case["expected"]["saving_rub"])
+        self.assertEqual(saving, Decimal(case["expected"]["saving_rub"]))
         self.assertAlmostEqual(float(saving_pct), float(case["expected"]["saving_pct_approx"]), places=7)
 
     def test_no_fake_savings_from_incomplete_or_conflicting_pairs(self) -> None:
