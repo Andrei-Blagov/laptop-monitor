@@ -44,12 +44,23 @@ from thailand.storage import write_scan_snapshot
 logger = logging.getLogger(__name__)
 
 
+def _store_rate_limited(result: StoreScanResult) -> bool:
+    return (
+        result.error_code == "RATE_LIMITED"
+        or result.collection_mode == "rate_limited"
+        or bool(result.discovery_rate_limited)
+    )
+
+
 def derive_scan_status(store_results: Sequence[StoreScanResult]) -> str:
     """
-    PARTIAL only when an enabled, attempted source failed.
+    ok only when every enabled source was actually checked.
 
-    Policy-disabled stores and an open circuit breaker are not failures.
-    NO_RESULTS is a successful empty read (ok=True).
+    A 429 during the pass, or a store skipped because a 429 window is still
+    open, makes the scan partial. Policy-disabled stores and an open circuit
+    breaker are not failures and do not by themselves make the scan partial.
+    NO_RESULTS is a successful empty read. A transport failure of every
+    enabled source is failed.
     """
     relevant = [
         r
@@ -58,16 +69,12 @@ def derive_scan_status(store_results: Sequence[StoreScanResult]) -> str:
     ]
     if not relevant:
         return "failed"
-    failures = [
-        r
-        for r in relevant
-        if not r.ok and r.error_code != "RATE_LIMITED" and r.collection_mode != "rate_limited"
-    ]
-    if not failures:
-        return "ok"
-    if len(failures) == len(relevant):
+    hard_failures = [r for r in relevant if not r.ok and not _store_rate_limited(r)]
+    if hard_failures and len(hard_failures) == len(relevant):
         return "failed"
-    return "partial"
+    if hard_failures or any(_store_rate_limited(r) for r in relevant):
+        return "partial"
+    return "ok"
 
 
 def _disabled_result(adapter: ThailandStoreAdapter) -> StoreScanResult:
