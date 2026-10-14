@@ -247,6 +247,7 @@ def collect(
     own = client is None
     http = client or httpx.Client(headers=_headers(), follow_redirects=True, timeout=timeout)
     discovered: list[ThailandOffer] = []
+    skipped = 0
     try:
         for page in range(1, _MAX_PAGES + 1):
             url = (
@@ -262,8 +263,10 @@ def collect(
             now = datetime.now(timezone.utc)
             for item in items:
                 offer = parse_invadeit_item(item, collected_at=now)
-                if offer is not None:
-                    discovered.append(offer)
+                if offer is None:
+                    skipped += 1
+                    continue
+                discovered.append(offer)
             if not payload.get("hasNextPage"):
                 break
         details = 0
@@ -282,7 +285,7 @@ def collect(
                 enrich_offer_from_specifications(offer, payload)
         verified = [o for o in discovered if is_verified_for_ranking(o)]
         unverified = [o for o in discovered if not is_verified_for_ranking(o)]
-        return StoreScanResult(
+        result = StoreScanResult(
             store=STORE,
             ok=True,
             offers=verified,
@@ -293,6 +296,17 @@ def collect(
             discovered_count=len(discovered),
             verified_count=len(verified),
         )
+        result.discovery_mode = "catalog"
+        result.discovery_queries = [CATEGORY]
+        result.discovery_limitations = [
+            "notebook category catalog",
+            f"at most {_MAX_PAGES} pages",
+            f"detail fetches capped at {_MAX_DETAIL}",
+            "non-target GPU rows are not stored",
+            f"rows skipped outside the target GPU: {skipped}",
+        ]
+        result.queries_completed = 1
+        return result
     finally:
         if own:
             http.close()

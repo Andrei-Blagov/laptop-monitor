@@ -2,6 +2,12 @@
 
 ## Unreleased
 
+Thailand discovery searches by GPU and manufacturer line, not only by a known SKU.
+
+- JIB, Advice, and IT City query the target GPUs in English and Thai, plus a capped set of manufacturer lines. A supplied regional code is an extra key. One HTTP 429 ends that store's extra lookups
+- SpeedCom still walks its GPU collections and can add a few line lookups. InvadeIT still walks the notebook category. Incomplete offers stay out of the purchase TOP
+- BaNANA and Lazada stay disabled
+
 ## 0.10.1 — 2026-10-14
 
 One purchase filter for Russian and Thai recommendations, and a confirmed cross-store saving.

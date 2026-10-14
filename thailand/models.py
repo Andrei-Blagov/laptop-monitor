@@ -87,6 +87,11 @@ class StoreScanResult:
     targeted_codes: list[str] | None = None
     # Subset of targeted_codes whose lookup finished. None means the adapter did not say.
     codes_checked: list[str] | None = None
+    discovery_queries: list[str] | None = None
+    discovery_mode: str | None = None  # gpu_search | catalog | mixed
+    discovery_limitations: list[str] | None = None
+    discovery_rate_limited: bool = False
+    queries_completed: int | None = None
 
     @property
     def count(self) -> int:

@@ -106,7 +106,7 @@ class CollectorCodeTests(unittest.TestCase):
 
 
 class AdapterSupportTests(unittest.TestCase):
-    def test_only_speedcom_and_itcity_take_target_codes(self) -> None:
+    def test_keyword_stores_accept_target_codes(self) -> None:
         import inspect
 
         from thailand.registry import get_thailand_adapters
@@ -116,7 +116,7 @@ class AdapterSupportTests(unittest.TestCase):
             for adapter in get_thailand_adapters()
             if "target_codes" in inspect.signature(adapter.collect).parameters
         )
-        self.assertEqual(accepting, ["itcity", "speedcom"])
+        self.assertEqual(accepting, ["advice", "itcity", "jib", "speedcom"])
 
 
 class SpeedComCodeBudgetTests(unittest.TestCase):
@@ -149,10 +149,10 @@ class SpeedComCodeBudgetTests(unittest.TestCase):
         suggests = [url for url in seen if "suggest.json" in url]
         self.assertEqual(result.error_code, RATE_LIMITED)
         self.assertEqual(len(suggests), 2)
-        self.assertIn("A2XWHG-814XRU", suggests[0])
-        self.assertIn("G615LR-S5348", suggests[1])
-        self.assertFalse(any("16AFR10H" in url for url in seen))
-        self.assertEqual(result.codes_checked, ["A2XWHG-814XRU"])
+        self.assertIn("ROG", suggests[0])
+        self.assertTrue(result.discovery_rate_limited)
+        self.assertFalse(any(code in "".join(suggests) for code in ("A2XWHG-814XRU", "G615LR-S5348", "16AFR10H")))
+        self.assertEqual(result.codes_checked, [])
 
 
 class CoverageTextTests(unittest.TestCase):

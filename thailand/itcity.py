@@ -272,6 +272,11 @@ def collect(
         }
         now = datetime.now(timezone.utc)
         queries = list(QUERIES)
+        from thailand.discovery import LINE_QUERY_BUDGET, LINE_SEARCH_QUERIES
+
+        for line in LINE_SEARCH_QUERIES[:LINE_QUERY_BUDGET]:
+            if line not in queries:
+                queries.append(line)
         target_list: list[str] = []
         for code in list(target_codes or []):
             text = str(code or "").strip()
@@ -282,6 +287,7 @@ def collect(
                 queries.append(text)
         requests = 1  # storefront page that publishes the search config
         checked_codes: list[str] = []
+        completed_queries: list[str] = []
         for query in queries:
             for page_no in range(3):
                 try:
@@ -301,6 +307,11 @@ def collect(
                     result.request_count = requests
                     result.targeted_codes = list(target_list)
                     result.codes_checked = list(checked_codes)
+                    result.discovery_queries = list(queries)
+                    result.discovery_mode = "gpu_search"
+                    result.discovery_rate_limited = True
+                    result.discovery_limitations = ["stopped_on_429"]
+                    result.queries_completed = len(completed_queries)
                     return result
                 if resp.status_code >= 400:
                     code, detail = classify_store_failure(status_code=resp.status_code)
@@ -323,6 +334,7 @@ def collect(
                     break
             if str(query) in target_list and str(query) not in checked_codes:
                 checked_codes.append(str(query))
+            completed_queries.append(str(query))
         verified = [o for o in discovered if is_verified_for_ranking(o)]
         unverified = [o for o in discovered if not is_verified_for_ranking(o)]
         result = StoreScanResult(
@@ -339,6 +351,14 @@ def collect(
         )
         result.targeted_codes = list(target_list)
         result.codes_checked = list(target_list)
+        result.discovery_queries = list(queries)
+        result.discovery_mode = "gpu_search"
+        result.discovery_limitations = [
+            "Algolia queries",
+            f"manufacturer lines capped at {LINE_QUERY_BUDGET}",
+            "up to 3 pages per query",
+        ]
+        result.queries_completed = len(completed_queries)
         return result
     finally:
         if own:

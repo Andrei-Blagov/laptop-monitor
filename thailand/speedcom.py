@@ -338,8 +338,16 @@ def collect(
                 page += 1
         codes = [str(c) for c in (target_codes or []) if c]
         missing = [code for code in codes if not _catalog_has_code(discovered, [code])]
-        checked_codes = [code for code in codes if code not in missing]
+        from thailand.discovery import LINE_QUERY_BUDGET, LINE_SEARCH_QUERIES
+
+        # Line queries are extra catalog lookups, not a brand allow-list.
+        suggest_terms = list(LINE_SEARCH_QUERIES[:LINE_QUERY_BUDGET])
         for code in missing:
+            if code not in suggest_terms:
+                suggest_terms.append(code)
+        checked_codes = [code for code in codes if code not in missing]
+        completed_lines: list[str] = []
+        for code in suggest_terms:
             from urllib.parse import quote
 
             url = (
@@ -363,8 +371,16 @@ def collect(
                 result.ok = bool(result.offers)
                 result.targeted_codes = codes
                 result.codes_checked = list(checked_codes)
+                result.discovery_queries = list(COLLECTIONS) + list(suggest_terms)
+                result.discovery_mode = "mixed"
+                result.discovery_rate_limited = True
+                result.discovery_limitations = ["stopped_on_429"]
+                result.queries_completed = len(COLLECTIONS) + len(completed_lines)
                 return result
-            checked_codes.append(code)
+            if code in codes:
+                checked_codes.append(code)
+            else:
+                completed_lines.append(code)
             if resp.status_code < 400 and "json" in (
                 resp.headers.get("content-type") or ""
             ).lower():
@@ -398,6 +414,16 @@ def collect(
         )
         result.targeted_codes = codes
         result.codes_checked = list(checked_codes)
+        result.discovery_queries = list(COLLECTIONS) + list(suggest_terms)
+        result.discovery_mode = "mixed"
+        result.discovery_limitations = [
+            "GPU collection catalog",
+            f"line suggests capped at {LINE_QUERY_BUDGET}",
+            "regional codes are extra suggest keys",
+        ]
+        result.queries_completed = len(COLLECTIONS) + len(completed_lines) + len(
+            [code for code in checked_codes if code in missing]
+        )
         return result
     finally:
         if own:

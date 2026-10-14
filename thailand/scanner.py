@@ -632,6 +632,7 @@ def run_thailand_scan(
         match_runtime = time.perf_counter() - match_t0
 
         status = derive_scan_status(store_results)
+        from thailand.discovery import coverage_for_result
         from thailand.target_model import search_collected_offers
 
         skipped = [
@@ -695,6 +696,7 @@ def run_thailand_scan(
                         "circuit_breaker_status": r.circuit_breaker_status,
                         "policy_disabled": r.policy_disabled,
                         "request_count": r.request_count,
+                        "discovery": coverage_for_result(r, fx),
                     }
                     for r in store_results
                 ],
