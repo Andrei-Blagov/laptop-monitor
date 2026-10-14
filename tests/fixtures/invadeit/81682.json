@@ -1,0 +1,158 @@
+[
+  {
+    "name": "Specifications",
+    "nameThai": "Specifications",
+    "items": [
+      {
+        "name": "CPU",
+        "nameThai": "CPU",
+        "value": "Intel® Core Ultra 9 275HX<br>(2.7GHz up to 5.4GHz, 24C(8P+16E)/24T, 36MB Cache)",
+        "valueThai": ""
+      },
+      {
+        "name": "Chipset",
+        "nameThai": "Chipset",
+        "value": "N/A",
+        "valueThai": ""
+      },
+      {
+        "name": "RAM",
+        "nameThai": "RAM",
+        "value": "RAM 16GB DDR5 (1x16GB SO-DIMM)",
+        "valueThai": ""
+      },
+      {
+        "name": "Graphics",
+        "nameThai": "Graphics",
+        "value": "NVIDIA® GeForce RTX 5070 Ti 12GB GDDR7 laptop GPU, Boost Clock 1807MHz, TGP 115W",
+        "valueThai": ""
+      },
+      {
+        "name": "Integrated speakers",
+        "nameThai": "Integrated speakers",
+        "value": "Yes",
+        "valueThai": ""
+      },
+      {
+        "name": "Hard Drive",
+        "nameThai": "Hard Drive",
+        "value": "1TB M.2 PCIe Gen 4 NVMe SSD",
+        "valueThai": ""
+      },
+      {
+        "name": "Optical Drive",
+        "nameThai": "Optical Drive",
+        "value": "No",
+        "valueThai": ""
+      },
+      {
+        "name": "Display",
+        "nameThai": "Display",
+        "value": "18.0 inch IPS WQXGA (2560x1600) 250Hz DCI-P3 100%, Mini LED technology",
+        "valueThai": ""
+      },
+      {
+        "name": "Communication",
+        "nameThai": "Communication",
+        "value": "Killer Wireless Wi-Fi 6E 1675i with 2x2 MU-MIMO<br>\nSupports Bluetooth® 5.4 or above<br>\nKiller Ethernet E3100G",
+        "valueThai": ""
+      },
+      {
+        "name": "Webcam",
+        "nameThai": "Webcam",
+        "value": "FHD IR webcam with PurifiedView 2.0",
+        "valueThai": ""
+      },
+      {
+        "name": "Other port",
+        "nameThai": "Other port",
+        "value": "• 1 x USB Type-C port supporting:<br>\n- USB 3.2 Gen 2 (up to 10 Gbps)<br>\n- DisplayPort over USB-C via iGPU<br>\n- Thunderbolt 4<br>\n- USB charging 5 V; 3 A<br>\n- DC-in port 20 V; 90 or 100 W<br>\n• 1 x USB Type-C port, supporting:<br>\n- USB 3.2 Gen 2 (up to 10 Gbps)<br>\n- DisplayPort over USB-C via dGPU<br>\n- USB charging 5 V; 3 A<br>\n- DC-in port 20 V; 90 or 100 W<br>\n• 2 x USB 3.2 Gen 2 ports featuring power-off USB charging<br>\n• 1 x USB 3.2 Gen 1 port<br>\n• HDMI® 2.1 port with HDCP support<br>\n• Ethernet (RJ-45) port<br>\n• 3.5 mm headphone/speaker jack, supporting headsets with built-in microphone<br>\n• DC-in jack for AC adapter",
+        "valueThai": ""
+      },
+      {
+        "name": "Cooling",
+        "nameThai": "Cooling",
+        "value": "5th Gen AeroBlade 3D fan & Liquid metal thermal grease",
+        "valueThai": ""
+      },
+      {
+        "name": "Keyboard",
+        "nameThai": "Keyboard",
+        "value": "Thai / English<br>\n4-zone RGB Backlit",
+        "valueThai": ""
+      },
+      {
+        "name": "OS",
+        "nameThai": "OS",
+        "value": "Windows 11 Home<br>\nPC Game Pass (3 Months)",
+        "valueThai": ""
+      },
+      {
+        "name": "Battery",
+        "nameThai": "Battery",
+        "value": "90 Wh 4-cell Li-ion battery",
+        "valueThai": ""
+      },
+      {
+        "name": "Fingerprint",
+        "nameThai": "Fingerprint",
+        "value": "N/A",
+        "valueThai": ""
+      },
+      {
+        "name": "Card Reader",
+        "nameThai": "Card Reader",
+        "value": "microSD card (SDXC compatible)",
+        "valueThai": ""
+      },
+      {
+        "name": "Supplied Accessories",
+        "nameThai": "Supplied Accessories",
+        "value": "Backpack",
+        "valueThai": ""
+      },
+      {
+        "name": "Sound",
+        "nameThai": "Sound",
+        "value": "N/A",
+        "valueThai": ""
+      },
+      {
+        "name": "Adapter/Cable Bundled",
+        "nameThai": "Adapter/Cable Bundled",
+        "value": "3-pin 330 W 5.5 PHY PCR 50% AC adapter",
+        "valueThai": ""
+      },
+      {
+        "name": "Key Features",
+        "nameThai": "Key Features",
+        "value": "Intel AI Boost",
+        "valueThai": ""
+      }
+    ]
+  },
+  {
+    "name": "Dimensions",
+    "nameThai": "Dimensions",
+    "items": [
+      {
+        "name": "Weight",
+        "nameThai": "Weight",
+        "value": "2.3 Kg (5.07 lbs.) with 4-cell battery pack",
+        "valueThai": ""
+      }
+    ]
+  },
+  {
+    "name": "Warranty",
+    "nameThai": "Warranty",
+    "items": [
+      {
+        "name": "Warranty",
+        "nameThai": "Warranty",
+        "value": "3 Years onsite by Acer",
+        "valueThai": ""
+      }
+    ]
+  }
+]

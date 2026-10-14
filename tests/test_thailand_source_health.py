@@ -95,6 +95,67 @@ class SourceHealthTests(unittest.TestCase):
         )
         self.assertEqual(status, "ok")
 
+    def test_successful_store_plus_429_is_partial(self) -> None:
+        kept = StoreScanResult(store="jib", ok=True, discovered_count=2)
+        limited = StoreScanResult(
+            store="speedcom",
+            ok=False,
+            error_code="RATE_LIMITED",
+            collection_mode="http",
+            discovery_rate_limited=True,
+            discovered_count=1,
+        )
+        status = derive_scan_status([kept, limited])
+        self.assertEqual(status, "partial")
+        self.assertEqual(kept.discovered_count, 2)
+        self.assertEqual(limited.discovered_count, 1)
+
+    def test_active_429_skip_is_not_full_coverage(self) -> None:
+        status = derive_scan_status(
+            [
+                StoreScanResult(store="jib", ok=True),
+                StoreScanResult(
+                    store="speedcom",
+                    ok=True,
+                    error_code="RATE_LIMITED",
+                    collection_mode="rate_limited",
+                ),
+                StoreScanResult(store="banana", ok=True, policy_disabled=True),
+                StoreScanResult(store="lazada", ok=True, circuit_breaker_status="open"),
+            ]
+        )
+        self.assertEqual(status, "partial")
+
+    def test_checked_sources_stay_ok_when_disabled_or_open(self) -> None:
+        status = derive_scan_status(
+            [
+                StoreScanResult(store="jib", ok=True),
+                StoreScanResult(store="advice", ok=True, error_code="NO_RESULTS"),
+                StoreScanResult(store="banana", ok=True, policy_disabled=True),
+                StoreScanResult(store="lazada", ok=True, circuit_breaker_status="open"),
+            ]
+        )
+        self.assertEqual(status, "ok")
+
+    def test_every_enabled_source_failing_is_failed(self) -> None:
+        status = derive_scan_status(
+            [
+                StoreScanResult(store="jib", ok=False, error_code="TIMEOUT"),
+                StoreScanResult(store="advice", ok=False, error_code="HTTP_ERROR"),
+                StoreScanResult(store="banana", ok=True, policy_disabled=True),
+            ]
+        )
+        self.assertEqual(status, "failed")
+
+    def test_one_transport_failure_among_successes_is_partial(self) -> None:
+        status = derive_scan_status(
+            [
+                StoreScanResult(store="jib", ok=True),
+                StoreScanResult(store="advice", ok=False, error_code="TIMEOUT"),
+            ]
+        )
+        self.assertEqual(status, "partial")
+
     def test_no_results_not_circuit_failure(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
             path = Path(tmp) / "health.json"

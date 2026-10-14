@@ -421,6 +421,7 @@ def collect(
     timeout: float | None = None,
     verify_details: bool = True,
     max_detail_fetches: int = 24,
+    target_codes: list[str] | None = None,
 ) -> StoreScanResult:
     """
     Discover via search_suggestion, optionally verify via readProduct.
@@ -441,7 +442,13 @@ def collect(
     discovered: list[ThailandOffer] = []
     try:
         now = datetime.now(timezone.utc)
-        for query, gpu in TARGET_QUERIES:
+        from thailand.discovery import context_gpu, search_queries
+
+        queries = search_queries(extra_codes=target_codes)
+        completed: list[str] = []
+        rate_limited = False
+        for query in queries:
+            gpu = context_gpu(query) or ""
             try:
                 resp = client.get(
                     SUGGEST_URL,
@@ -451,9 +458,13 @@ def collect(
             except Exception as exc:  # noqa: BLE001
                 logger.warning("JIB query failed %s: %s", query, type(exc).__name__)
                 continue
+            if resp.status_code == 429:
+                rate_limited = True
+                break
             if resp.status_code >= 400:
                 logger.warning("JIB HTTP %s for %s", resp.status_code, query)
                 continue
+            completed.append(query)
             try:
                 payload = resp.json()
             except ValueError:
@@ -481,7 +492,7 @@ def collect(
                 prev.candidate_gpu = o.candidate_gpu
 
         candidates = list(by_id.values())
-        if verify_details and candidates:
+        if verify_details and candidates and not rate_limited:
             for i, offer in enumerate(candidates):
                 if i >= max_detail_fetches:
                     break
@@ -491,6 +502,9 @@ def collect(
                     timeout=min(timeout, 20.0),
                     fallback_name=offer.name,
                 )
+                if str(detail.get("error") or "") == "HTTP_429":
+                    rate_limited = True
+                    break
                 if detail.get("error"):
                     offer.metadata["detail_error"] = detail["error"]
                     compute_verification(offer)
@@ -510,26 +524,34 @@ def collect(
             else:
                 unverified.append(o)
 
-        if not candidates:
-            return StoreScanResult(
-                store=STORE,
-                ok=True,
-                offers=[],
-                unverified_candidates=[],
-                error_code="NO_RESULTS",
-                duration_seconds=time.perf_counter() - started,
-                collection_mode="http",
-                discovered_count=0,
-                verified_count=0,
-            )
-        # Store OK if discovery worked even when zero verified (partial market view).
-        return StoreScanResult(
+        limitations = [
+            "suggestion search",
+            f"detail verification capped at {max_detail_fetches}",
+        ]
+        wanted = [str(code) for code in (target_codes or []) if code]
+        checked_codes = [query for query in completed if query in wanted]
+        if rate_limited:
+            limitations.append("stopped_on_429")
+        result = StoreScanResult(
             store=STORE,
-            ok=True,
+            ok=not rate_limited,
             offers=verified,
             unverified_candidates=unverified,
+            error_code="RATE_LIMITED" if rate_limited else ("NO_RESULTS" if not candidates else None),
             duration_seconds=time.perf_counter() - started,
+            collection_mode="http",
+            discovered_count=len(candidates),
+            verified_count=len(verified),
         )
+        result.discovery_queries = queries
+        result.discovery_mode = "gpu_search"
+        result.discovery_limitations = limitations
+        result.discovery_rate_limited = rate_limited
+        result.queries_finished = list(completed)
+        result.queries_completed = len(completed)
+        result.targeted_codes = wanted
+        result.codes_checked = checked_codes
+        return result
     except Exception as exc:  # noqa: BLE001
         logger.warning("JIB collect failed: %s", type(exc).__name__)
         return StoreScanResult(

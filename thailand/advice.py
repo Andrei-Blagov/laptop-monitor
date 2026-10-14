@@ -266,6 +266,7 @@ def collect(
     *,
     client: httpx.Client | None = None,
     timeout: float | None = None,
+    target_codes: list[str] | None = None,
 ) -> StoreScanResult:
     timeout = float(
         timeout
@@ -281,18 +282,28 @@ def collect(
         now = datetime.now(timezone.utc)
         offers: list[ThailandOffer] = []
         errors: list[str] = []
-        for url, gpu in (
-            (SEARCH_URLS[0], "RTX 5070 Ti"),
-            (SEARCH_URLS[1], "RTX 5080"),
-        ):
+        from thailand.discovery import context_gpu, search_queries
+        from urllib.parse import quote_plus
+
+        queries = search_queries(extra_codes=target_codes)
+        completed: list[str] = []
+        rate_limited = False
+        for query in queries:
+            gpu = context_gpu(query)
+            url = f"{BASE}/search?keyword={quote_plus(query)}"
             try:
                 resp = client.get(url, timeout=timeout)
             except Exception as exc:  # noqa: BLE001
                 errors.append(type(exc).__name__)
                 continue
+            if resp.status_code == 429:
+                rate_limited = True
+                errors.append("HTTP_429")
+                break
             if resp.status_code >= 400:
                 errors.append(f"HTTP_{resp.status_code}")
                 continue
+            completed.append(query)
             ct = (resp.headers.get("content-type") or "").lower()
             if "json" in ct:
                 try:
@@ -314,9 +325,29 @@ def collect(
         for o in offers:
             by_id.setdefault(o.external_id, o)
         final = list(by_id.values())
-        if not final:
+        limitations = ["keyword search", "no brand filter"]
+        if rate_limited:
+            limitations.append("stopped_on_429")
+        wanted = [str(code) for code in (target_codes or []) if code]
+
+        def _annotate(result: StoreScanResult) -> StoreScanResult:
+            result.discovery_queries = queries
+            result.discovery_mode = "gpu_search"
+            result.discovery_limitations = limitations
+            result.discovery_rate_limited = rate_limited
+            result.queries_finished = list(completed)
+            result.queries_completed = len(completed)
+            result.targeted_codes = wanted
+            result.codes_checked = [query for query in completed if query in wanted]
+            result.discovered_count = len(final)
+            if rate_limited:
+                result.ok = False
+                result.error_code = "RATE_LIMITED"
+            return result
+
+        if not final and not rate_limited:
             if not errors:
-                return StoreScanResult(
+                return _annotate(StoreScanResult(
                     store=STORE,
                     ok=True,
                     offers=[],
@@ -325,11 +356,11 @@ def collect(
                     collection_mode="http",
                     discovered_count=0,
                     verified_count=0,
-                )
+                ))
             from thailand.errors import classify_store_failure
 
             code, detail = classify_store_failure(",".join(errors))
-            return StoreScanResult(
+            return _annotate(StoreScanResult(
                 store=STORE,
                 ok=False,
                 offers=[],
@@ -338,14 +369,16 @@ def collect(
                 technical_detail=detail,
                 duration_seconds=time.perf_counter() - started,
                 collection_mode="failed",
-            )
-        return StoreScanResult(
+            ))
+        return _annotate(StoreScanResult(
             store=STORE,
-            ok=True,
+            ok=not rate_limited,
             offers=final,
-            error=",".join(errors) if errors else None,
+            error="RATE_LIMITED" if rate_limited else (",".join(errors) if errors else None),
+            error_code="RATE_LIMITED" if rate_limited else None,
             duration_seconds=time.perf_counter() - started,
-        )
+            collection_mode="http",
+        ))
     except Exception as exc:  # noqa: BLE001
         logger.warning("Advice collect failed: %s", type(exc).__name__)
         return StoreScanResult(

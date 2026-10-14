@@ -44,12 +44,23 @@ from thailand.storage import write_scan_snapshot
 logger = logging.getLogger(__name__)
 
 
+def _store_rate_limited(result: StoreScanResult) -> bool:
+    return (
+        result.error_code == "RATE_LIMITED"
+        or result.collection_mode == "rate_limited"
+        or bool(result.discovery_rate_limited)
+    )
+
+
 def derive_scan_status(store_results: Sequence[StoreScanResult]) -> str:
     """
-    PARTIAL only when an enabled, attempted source failed.
+    ok only when every enabled source was actually checked.
 
-    Policy-disabled stores and an open circuit breaker are not failures.
-    NO_RESULTS is a successful empty read (ok=True).
+    A 429 during the pass, or a store skipped because a 429 window is still
+    open, makes the scan partial. Policy-disabled stores and an open circuit
+    breaker are not failures and do not by themselves make the scan partial.
+    NO_RESULTS is a successful empty read. A transport failure of every
+    enabled source is failed.
     """
     relevant = [
         r
@@ -58,16 +69,12 @@ def derive_scan_status(store_results: Sequence[StoreScanResult]) -> str:
     ]
     if not relevant:
         return "failed"
-    failures = [
-        r
-        for r in relevant
-        if not r.ok and r.error_code != "RATE_LIMITED" and r.collection_mode != "rate_limited"
-    ]
-    if not failures:
-        return "ok"
-    if len(failures) == len(relevant):
+    hard_failures = [r for r in relevant if not r.ok and not _store_rate_limited(r)]
+    if hard_failures and len(hard_failures) == len(relevant):
         return "failed"
-    return "partial"
+    if hard_failures or any(_store_rate_limited(r) for r in relevant):
+        return "partial"
+    return "ok"
 
 
 def _disabled_result(adapter: ThailandStoreAdapter) -> StoreScanResult:
@@ -138,7 +145,12 @@ def collector_search_codes(
     return found
 
 
-def _collect_store(adapter, timeout: float, target_codes: list[str] | None = None) -> StoreScanResult:
+def _collect_store(
+    adapter,
+    timeout: float,
+    target_codes: list[str] | None = None,
+    fx: Any = None,
+) -> StoreScanResult:
     kwargs: dict[str, Any] = {"timeout": timeout}
     sent: list[str] = []
     try:
@@ -146,20 +158,25 @@ def _collect_store(adapter, timeout: float, target_codes: list[str] | None = Non
         if "target_codes" in params and target_codes:
             sent = list(target_codes)
             kwargs["target_codes"] = sent
+        if "fx" in params:
+            kwargs["fx"] = fx
     except (TypeError, ValueError):
         pass
     try:
         result = adapter.collect(**kwargs)
         result.targeted_codes = sent
-        finished = (
-            bool(result.ok)
-            and result.error_code != "RATE_LIMITED"
-            and result.collection_mode not in {"rate_limited", "skipped", "failed", "disabled"}
+        incomplete = (
+            not result.ok
+            or result.error_code == "RATE_LIMITED"
+            or result.discovery_rate_limited
+            or result.collection_mode in {"rate_limited", "skipped", "failed", "disabled"}
         )
-        if result.codes_checked is None and finished:
-            result.codes_checked = list(sent)
-        elif result.codes_checked is None:
-            result.codes_checked = []
+        if result.codes_checked is None:
+            # A finished search may treat every sent code as queried.
+            # A 429 or failure must not invent checks that did not happen.
+            result.codes_checked = [] if incomplete else list(sent)
+        else:
+            result.codes_checked = [code for code in result.codes_checked if not sent or code in sent]
         return result
     except Exception as exc:  # noqa: BLE001
         logger.warning("Thailand store %s failed: %s", adapter.slug, type(exc).__name__)
@@ -200,8 +217,6 @@ def build_search_coverage(
         elif sent and not blocked:
             mode = "targeted"
             checked = True
-            if not checked_codes:
-                checked_codes = list(sent)
         elif not sent and not blocked:
             mode = "catalog"
             checked = True
@@ -215,6 +230,7 @@ def build_search_coverage(
                 "checked": checked,
                 "mode": mode,
                 "codes": checked_codes,
+                "codes_not_checked": [code for code in sent if code not in checked_codes],
                 "reason": row.error_code or row.collection_mode,
             }
         )
@@ -227,6 +243,7 @@ def collect_thailand_offers(
     per_store_timeout: float | None = None,
     parallel: bool = True,
     target_codes: list[str] | None = None,
+    fx: Any = None,
 ) -> tuple[list[StoreScanResult], list[ThailandOffer], list[ThailandOffer], float]:
     overall_timeout = float(
         overall_timeout
@@ -266,7 +283,7 @@ def collect_thailand_offers(
     if parallel and len(http_adapters) > 1:
         with ThreadPoolExecutor(max_workers=len(http_adapters)) as pool:
             futs = {
-                pool.submit(_collect_store, a, per_store_timeout, target_codes): a
+                pool.submit(_collect_store, a, per_store_timeout, target_codes, fx): a
                 for a in http_adapters
             }
             try:
@@ -301,7 +318,7 @@ def collect_thailand_offers(
                     )
                 )
                 continue
-            results.append(_collect_store(a, per_store_timeout, target_codes))
+            results.append(_collect_store(a, per_store_timeout, target_codes, fx))
 
     for a in browser_adapters:
         if time.perf_counter() - started > overall_timeout:
@@ -316,7 +333,7 @@ def collect_thailand_offers(
                 )
             )
             continue
-        results.append(_collect_store(a, per_store_timeout, target_codes))
+        results.append(_collect_store(a, per_store_timeout, target_codes, fx))
 
     for result in results:
         if result.policy_disabled or result.collection_mode in {"skipped", "rate_limited"}:
@@ -532,7 +549,8 @@ def run_thailand_scan(
         fx_runtime = time.perf_counter() - t0
         codes = collector_search_codes(target_model, personal_targets)
         store_results, offers, unverified, collect_runtime = collect_thailand_offers(
-            target_codes=codes or None
+            target_codes=codes or None,
+            fx=fx,
         )
         search_coverage = build_search_coverage(codes, store_results)
         match_t0 = time.perf_counter()
@@ -632,6 +650,7 @@ def run_thailand_scan(
         match_runtime = time.perf_counter() - match_t0
 
         status = derive_scan_status(store_results)
+        from thailand.discovery import coverage_for_result
         from thailand.target_model import search_collected_offers
 
         skipped = [
@@ -695,6 +714,7 @@ def run_thailand_scan(
                         "circuit_breaker_status": r.circuit_breaker_status,
                         "policy_disabled": r.policy_disabled,
                         "request_count": r.request_count,
+                        "discovery": coverage_for_result(r, fx),
                     }
                     for r in store_results
                 ],

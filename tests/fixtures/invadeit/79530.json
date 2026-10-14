@@ -1,0 +1,158 @@
+[
+  {
+    "name": "Specifications",
+    "nameThai": "Specifications",
+    "items": [
+      {
+        "name": "CPU",
+        "nameThai": "CPU",
+        "value": "Intel® Core Ultra 9 processor 275HX with Intel® AI Boost (NPU)<br>\r\n24 cores (8 P-cores + 16 E-cores), 24 thread, 40MB cache, Max Turbo Frequency 5.4 GHz",
+        "valueThai": "Intel® Core Ultra 9 processor 275HX with Intel® AI Boost (NPU)<br>\r\n24 cores (8 P-cores + 16 E-cores), 24 thread, 40MB cache, Max Turbo Frequency 5.4 GHz"
+      },
+      {
+        "name": "Chipset",
+        "nameThai": "Chipset",
+        "value": "Intel® HM870",
+        "valueThai": "Intel® HM870"
+      },
+      {
+        "name": "RAM",
+        "nameThai": "RAM",
+        "value": "DDR5 16GB*2<br>\r\nUp to DDR5-6400<br>\r\nMax 96GB",
+        "valueThai": "DDR5 16GB*2<br>\r\nUp to DDR5-6400<br>\r\nMax 96GB"
+      },
+      {
+        "name": "Graphics",
+        "nameThai": "Graphics",
+        "value": "NVIDIA® GeForce RTX 5070 Ti Laptop GPU 12GB GDDR7 powers advanced AI with 992 AI TOPS<br>\r\nUp to 2220MHz Boost Clock 140W Maximum Graphics Power with Dynamic Boost.<br>\r\n*May vary by scenario",
+        "valueThai": "NVIDIA® GeForce RTX 5070 Ti Laptop GPU 12GB GDDR7 powers advanced AI with 992 AI TOPS<br>\r\nUp to 2220MHz Boost Clock 140W Maximum Graphics Power with Dynamic Boost.<br>\r\n*May vary by scenario"
+      },
+      {
+        "name": "Integrated speakers",
+        "nameThai": "Integrated speakers",
+        "value": "2 x 2W Speaker",
+        "valueThai": "2 x 2W Speaker"
+      },
+      {
+        "name": "Hard Drive",
+        "nameThai": "Hard Drive",
+        "value": "1TB NVMe PCIe SSD Gen4x4 w/o DRAM",
+        "valueThai": "1TB NVMe PCIe SSD Gen4x4 w/o DRAM"
+      },
+      {
+        "name": "Optical Drive",
+        "nameThai": "Optical Drive",
+        "value": "No",
+        "valueThai": "No"
+      },
+      {
+        "name": "Display",
+        "nameThai": "Display",
+        "value": "17\" 16:10 QHD+(2560 x 1600), 240Hz, 100% DCI-P3, IPS-level panel",
+        "valueThai": "17\" 16:10 QHD+(2560 x 1600), 240Hz, 100% DCI-P3, IPS-level panel"
+      },
+      {
+        "name": "Communication",
+        "nameThai": "Communication",
+        "value": "Intel® Killer BE Wi-Fi 7 <br>\r\nBluetooth 5.4<br>\r\nGb LAN (Up to 2.5G)",
+        "valueThai": "Intel® Killer BE Wi-Fi 7 <br>\r\nBluetooth 5.4<br>\r\nGb LAN (Up to 2.5G)"
+      },
+      {
+        "name": "Webcam",
+        "nameThai": "Webcam",
+        "value": "IR FHD type (30fps@1080p) with HDR<br>\r\n3D Noise Reduction+ (3DNR+)",
+        "valueThai": "IR FHD type (30fps@1080p) with HDR<br>\r\n3D Noise Reduction+ (3DNR+)"
+      },
+      {
+        "name": "Other port",
+        "nameThai": "Other port",
+        "value": "2 x Thunderbolt 5 (DisplayPort/ Power Delivery 3.1)<br>\r\n2 x Type-A USB3.2 Gen2<br>\r\n1 x HDMI™ 2.1 (8K @ 60Hz / 4K @ 120Hz)<br>\r\n1 x Mic-in/Headphone-out Combo Jack",
+        "valueThai": "2 x Thunderbolt 5 (DisplayPort/ Power Delivery 3.1)<br>\r\n2 x Type-A USB3.2 Gen2<br>\r\n1 x HDMI™ 2.1 (8K @ 60Hz / 4K @ 120Hz)<br>\r\n1 x Mic-in/Headphone-out Combo Jack"
+      },
+      {
+        "name": "Cooling",
+        "nameThai": "Cooling",
+        "value": "Cooler Boost 5",
+        "valueThai": "Cooler Boost 5"
+      },
+      {
+        "name": "Keyboard",
+        "nameThai": "Keyboard",
+        "value": "Thai / English<br>\r\n24-Zone RGB Gaming Keyboard with Copilot Key",
+        "valueThai": "Thai / English<br>\r\n24-Zone RGB Gaming Keyboard with Copilot Key"
+      },
+      {
+        "name": "OS",
+        "nameThai": "OS",
+        "value": "Windows 11 Home<br>\r\nMicrosoft Office Home and Student 2024",
+        "valueThai": "Windows 11 Home<br>\r\nMicrosoft Office Home and Student 2024"
+      },
+      {
+        "name": "Battery",
+        "nameThai": "Battery",
+        "value": "4-Cell, 90 Battery (Whr)",
+        "valueThai": "4-Cell, 90 Battery (Whr)"
+      },
+      {
+        "name": "Card Reader",
+        "nameThai": "Card Reader",
+        "value": "SD Express Card Reader",
+        "valueThai": "SD Express Card Reader"
+      },
+      {
+        "name": "Fingerprint",
+        "nameThai": "Fingerprint",
+        "value": "N/A",
+        "valueThai": "N/A"
+      },
+      {
+        "name": "Supplied Accessories",
+        "nameThai": "Supplied Accessories",
+        "value": "Titan Gaming Backpack",
+        "valueThai": "Titan Gaming Backpack"
+      },
+      {
+        "name": "Sound",
+        "nameThai": "Sound",
+        "value": "N/A",
+        "valueThai": "N/A"
+      },
+      {
+        "name": "Adapter/Cable Bundled",
+        "nameThai": "Adapter/Cable Bundled",
+        "value": "280W Adapter",
+        "valueThai": "280W Adapter"
+      },
+      {
+        "name": "Key Features",
+        "nameThai": "Key Features",
+        "value": "Intel AI Boost",
+        "valueThai": "Intel AI Boost"
+      }
+    ]
+  },
+  {
+    "name": "Dimensions",
+    "nameThai": "Dimensions",
+    "items": [
+      {
+        "name": "Weight",
+        "nameThai": "Weight",
+        "value": "3 Kg",
+        "valueThai": "3 Kg"
+      }
+    ]
+  },
+  {
+    "name": "Warranty",
+    "nameThai": "Warranty",
+    "items": [
+      {
+        "name": "Warranty",
+        "nameThai": "Warranty",
+        "value": "3 Years by MSI",
+        "valueThai": "3 Years by MSI"
+      }
+    ]
+  }
+]

@@ -106,7 +106,7 @@ class CollectorCodeTests(unittest.TestCase):
 
 
 class AdapterSupportTests(unittest.TestCase):
-    def test_only_speedcom_and_itcity_take_target_codes(self) -> None:
+    def test_keyword_stores_accept_target_codes(self) -> None:
         import inspect
 
         from thailand.registry import get_thailand_adapters
@@ -116,7 +116,7 @@ class AdapterSupportTests(unittest.TestCase):
             for adapter in get_thailand_adapters()
             if "target_codes" in inspect.signature(adapter.collect).parameters
         )
-        self.assertEqual(accepting, ["itcity", "speedcom"])
+        self.assertEqual(accepting, ["advice", "itcity", "jib", "speedcom"])
 
 
 class SpeedComCodeBudgetTests(unittest.TestCase):
@@ -148,11 +148,127 @@ class SpeedComCodeBudgetTests(unittest.TestCase):
         result = collect(client=client, target_codes=["A2XWHG-814XRU", "G615LR-S5348", "16AFR10H"])
         suggests = [url for url in seen if "suggest.json" in url]
         self.assertEqual(result.error_code, RATE_LIMITED)
+        self.assertFalse(result.ok)
         self.assertEqual(len(suggests), 2)
         self.assertIn("A2XWHG-814XRU", suggests[0])
-        self.assertIn("G615LR-S5348", suggests[1])
+        self.assertTrue(result.discovery_rate_limited)
         self.assertFalse(any("16AFR10H" in url for url in seen))
         self.assertEqual(result.codes_checked, ["A2XWHG-814XRU"])
+        self.assertNotIn("G615LR-S5348", result.codes_checked)
+
+    def test_regional_codes_are_not_added_past_the_suggest_budget(self) -> None:
+        from thailand.discovery import QUERY_BUDGET
+        from thailand.speedcom import collect
+
+        seen: list[str] = []
+
+        def get(url):
+            seen.append(url)
+            response = mock.Mock()
+            response.headers = {"content-type": "application/json"}
+            response.status_code = 200
+            response.json.return_value = (
+                {"resources": {"results": {"products": []}}}
+                if "suggest.json" in url
+                else {"products": []}
+            )
+            return response
+
+        codes = [f"CODE{index:02d}" for index in range(30)]
+        client = mock.Mock()
+        client.get.side_effect = get
+        result = collect(client=client, target_codes=codes)
+        suggests = [url for url in seen if "suggest.json" in url]
+        self.assertLessEqual(len(suggests), QUERY_BUDGET)
+        self.assertEqual(len(suggests), len(set(suggests)))
+        self.assertEqual(result.codes_checked, codes[:QUERY_BUDGET])
+        self.assertNotIn("CODE29", result.codes_checked or [])
+        self.assertTrue(result.ok)
+
+    def test_first_collection_page_429_leaves_the_rest_unchecked(self) -> None:
+        from thailand.discovery import coverage_for_result
+        from thailand.scanner import derive_scan_status
+        from thailand.speedcom import COLLECTIONS, collect
+
+        seen: list[str] = []
+
+        def get(url):
+            seen.append(url)
+            response = mock.Mock()
+            response.status_code = 429
+            response.headers = {"content-type": "text/plain", "Retry-After": "60"}
+            return response
+
+        client = mock.Mock()
+        client.get.side_effect = get
+        result = collect(client=client, target_codes=["A2XWHG-814XRU"])
+        self.assertEqual(seen, [
+            "https://speedcom.co.th/collections/nvidia-rtx-50-series/products.json?limit=250&page=1"
+        ])
+        self.assertEqual(result.error_code, RATE_LIMITED)
+        self.assertFalse(result.ok)
+        self.assertEqual(result.error_code, RATE_LIMITED)
+        self.assertNotEqual(result.error_code, "NO_RESULTS")
+        self.assertEqual(result.offers, [])
+        self.assertEqual(
+            result.discovery_queries,
+            [f"{name}#page=1" for name in COLLECTIONS],
+        )
+        self.assertEqual(result.queries_finished, [])
+        self.assertIn("not_checked", result.discovery_limitations or [])
+        self.assertIn("stopped_on_429", result.discovery_limitations or [])
+        report = coverage_for_result(result)
+        self.assertEqual(report["queries_not_completed"], [f"{name}#page=1" for name in COLLECTIONS])
+        self.assertEqual(report["query_skip_reason"], "stopped_on_429")
+        self.assertEqual(
+            derive_scan_status(
+                [
+                    StoreScanResult(store="jib", ok=True),
+                    result,
+                ]
+            ),
+            "partial",
+        )
+
+    def test_429_on_the_next_collection_keeps_cards_already_read(self) -> None:
+        from thailand.speedcom import COLLECTIONS, collect
+
+        def get(url):
+            response = mock.Mock()
+            response.headers = {"content-type": "application/json"}
+            if "nvidia-rtx-50-series" in url:
+                response.status_code = 200
+                response.json.return_value = {
+                    "products": [{
+                        "id": 1,
+                        "title": "MSI Raider notebook RTX 5070 Ti",
+                        "handle": "raider",
+                        "product_type": "Notebook",
+                        "variants": [{
+                            "id": 9,
+                            "title": "Default Title",
+                            "price": "80000",
+                            "available": True,
+                            "sku": "A2XWHG-814XRU",
+                        }],
+                    }]
+                }
+                return response
+            response.status_code = 429
+            response.headers = {"content-type": "text/plain"}
+            return response
+
+        client = mock.Mock()
+        client.get.side_effect = get
+        result = collect(client=client)
+        self.assertEqual(client.get.call_count, 2)
+        self.assertEqual(result.error_code, RATE_LIMITED)
+        self.assertEqual(result.discovered_count, 1)
+        self.assertEqual(len(result.offers) + len(result.unverified_candidates), 1)
+        self.assertEqual(result.queries_finished, [f"{COLLECTIONS[0]}#page=1"])
+        self.assertIn(f"{COLLECTIONS[1]}#page=1", result.discovery_queries or [])
+        self.assertNotIn(f"{COLLECTIONS[1]}#page=1", result.queries_finished or [])
+        self.assertIn("not_checked", result.discovery_limitations or [])
 
 
 class CoverageTextTests(unittest.TestCase):

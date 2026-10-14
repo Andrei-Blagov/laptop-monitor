@@ -242,6 +242,61 @@ def parse_speedcom_product(
     return offers
 
 
+def _collection_page(collection: str, page: int) -> str:
+    return f"{collection}#page={page}"
+
+
+def _catalog_plan(finished: list[str], stopped: str | None) -> list[str]:
+    """Page 1 of every GPU collection, plus later pages we already reached."""
+    planned: list[str] = []
+    for collection in COLLECTIONS:
+        planned.append(_collection_page(collection, 1))
+        for page in range(2, 7):
+            key = _collection_page(collection, page)
+            if key in finished or key == stopped:
+                planned.append(key)
+    return planned
+
+
+def _catalog_rate_limited(
+    started: float,
+    *,
+    response: httpx.Response,
+    requests: int,
+    discovered: list[ThailandOffer],
+    finished_pages: list[str],
+    stopped_key: str,
+    codes: list[str],
+) -> StoreScanResult:
+    """Keep cards already read. Unfetched collections stay not_checked."""
+    verified = [offer for offer in discovered if is_verified_for_ranking(offer)]
+    unverified = [offer for offer in discovered if not is_verified_for_ranking(offer)]
+    result = StoreScanResult(
+        store=STORE,
+        ok=False,
+        offers=verified,
+        unverified_candidates=unverified,
+        error="RATE_LIMITED",
+        error_code="RATE_LIMITED",
+        technical_detail="HTTP_429",
+        duration_seconds=time.perf_counter() - started,
+        collection_mode="http",
+        discovered_count=len(discovered),
+        verified_count=len(verified),
+        request_count=requests,
+    )
+    result.retry_after_seconds = _retry_after_seconds(response)
+    result.targeted_codes = list(codes)
+    result.codes_checked = []
+    result.discovery_queries = _catalog_plan(finished_pages, stopped_key)
+    result.queries_finished = list(finished_pages)
+    result.queries_completed = len(finished_pages)
+    result.discovery_mode = "catalog"
+    result.discovery_rate_limited = True
+    result.discovery_limitations = ["stopped_on_429", "not_checked"]
+    return result
+
+
 def _failure(started: float, code: str, detail: str) -> StoreScanResult:
     return StoreScanResult(
         store=STORE,
@@ -290,10 +345,12 @@ def collect(
     discovered: list[ThailandOffer] = []
     seen: set[str] = set()
     requests = 0
+    finished_pages: list[str] = []
     try:
         for collection in COLLECTIONS:
             page = 1
             while page <= 6:
+                page_key = _collection_page(collection, page)
                 url = f"{BASE}/collections/{collection}/products.json?limit=250&page={page}"
                 try:
                     resp = http.get(url)
@@ -304,13 +361,16 @@ def collect(
                     code, detail = classify_store_failure(type(exc).__name__)
                     return _failure(started, code, detail)
                 if resp.status_code == 429:
-                    # One 429 ends the scan. Do not retry in the same job.
-                    result = _failure(started, "RATE_LIMITED", "HTTP_429")
-                    result.retry_after_seconds = _retry_after_seconds(resp)
-                    result.request_count = requests
-                    result.targeted_codes = [str(c) for c in (target_codes or []) if c]
-                    result.codes_checked = []
-                    return result
+                    # One 429 ends the scan. Do not retry or open the next page.
+                    return _catalog_rate_limited(
+                        started,
+                        response=resp,
+                        requests=requests,
+                        discovered=discovered,
+                        finished_pages=finished_pages,
+                        stopped_key=page_key,
+                        codes=[str(c) for c in (target_codes or []) if c],
+                    )
                 if resp.status_code >= 400:
                     code, detail = classify_store_failure(status_code=resp.status_code)
                     return _failure(started, code, detail)
@@ -333,13 +393,29 @@ def collect(
                             continue
                         seen.add(offer.external_id)
                         discovered.append(offer)
+                finished_pages.append(page_key)
                 if len(products) < 250:
                     break
                 page += 1
         codes = [str(c) for c in (target_codes or []) if c]
         missing = [code for code in codes if not _catalog_has_code(discovered, [code])]
-        checked_codes = [code for code in codes if code not in missing]
+        from thailand.discovery import QUERY_BUDGET, rotating_line_queries
+
+        # GPU catalog already ran. Line queries rotate; codes stay ahead of them.
+        suggest_terms: list[str] = []
         for code in missing:
+            if len(suggest_terms) >= QUERY_BUDGET:
+                break
+            if code not in suggest_terms:
+                suggest_terms.append(code)
+        for line in rotating_line_queries():
+            if len(suggest_terms) >= QUERY_BUDGET:
+                break
+            if line not in suggest_terms:
+                suggest_terms.append(line)
+        checked_codes = [code for code in codes if code not in missing]
+        completed_lines: list[str] = []
+        for code in suggest_terms:
             from urllib.parse import quote
 
             url = (
@@ -360,28 +436,40 @@ def collect(
                 result.unverified_candidates = [
                     o for o in discovered if not is_verified_for_ranking(o)
                 ]
-                result.ok = bool(result.offers)
+                result.ok = False
                 result.targeted_codes = codes
                 result.codes_checked = list(checked_codes)
+                result.discovery_queries = list(COLLECTIONS) + list(suggest_terms)
+                result.discovery_mode = "mixed"
+                result.discovery_rate_limited = True
+                result.discovery_limitations = ["stopped_on_429", "not_checked"]
+                result.queries_finished = list(COLLECTIONS) + list(completed_lines) + [
+                    item for item in checked_codes if item in missing
+                ]
+                result.queries_completed = len(result.queries_finished)
                 return result
-            checked_codes.append(code)
-            if resp.status_code < 400 and "json" in (
+            if resp.status_code >= 400 or "json" not in (
                 resp.headers.get("content-type") or ""
             ).lower():
-                try:
-                    payload = resp.json()
-                except ValueError:
-                    payload = {}
-                products = (
-                    (payload.get("resources") or {}).get("results") or {}
-                ).get("products") or []
-                now = datetime.now(timezone.utc)
-                for product in products:
-                    if isinstance(product, dict):
-                        for offer in parse_speedcom_product(product, collected_at=now):
-                            if offer.external_id not in seen:
-                                seen.add(offer.external_id)
-                                discovered.append(offer)
+                continue
+            if code in codes:
+                checked_codes.append(code)
+            else:
+                completed_lines.append(code)
+            try:
+                payload = resp.json()
+            except ValueError:
+                payload = {}
+            products = (
+                (payload.get("resources") or {}).get("results") or {}
+            ).get("products") or []
+            now = datetime.now(timezone.utc)
+            for product in products:
+                if isinstance(product, dict):
+                    for offer in parse_speedcom_product(product, collected_at=now):
+                        if offer.external_id not in seen:
+                            seen.add(offer.external_id)
+                            discovered.append(offer)
         verified = [o for o in discovered if is_verified_for_ranking(o)]
         unverified = [o for o in discovered if not is_verified_for_ranking(o)]
         result = StoreScanResult(
@@ -398,6 +486,17 @@ def collect(
         )
         result.targeted_codes = codes
         result.codes_checked = list(checked_codes)
+        result.discovery_queries = list(COLLECTIONS) + list(suggest_terms)
+        result.discovery_mode = "mixed"
+        result.discovery_limitations = [
+            "GPU collection catalog",
+            "line suggests rotate inside the request budget",
+            "regional codes are extra suggest keys",
+        ]
+        result.queries_finished = list(COLLECTIONS) + list(completed_lines) + [
+            code for code in checked_codes if code in missing
+        ]
+        result.queries_completed = len(result.queries_finished)
         return result
     finally:
         if own:
