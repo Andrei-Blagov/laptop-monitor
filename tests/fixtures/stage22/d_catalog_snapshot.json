@@ -1,0 +1,142 @@
+{
+  "all_data_synthetic": true,
+  "reference_now": "2026-10-14T12:00:00+00:00",
+  "catalog": {
+    "schema_version": 1,
+    "snapshot_id": "a6b2ec65-264e-4f79-8b7a-711118ca7fc6",
+    "instance_id": "test",
+    "created_at": "2026-10-14T12:00:00+00:00",
+    "finished_at": "2026-10-14T12:00:00+00:00",
+    "discovery_checked_at": "2026-10-14T11:50:00+00:00",
+    "discovery_scope_hash": "scope-target-gpu",
+    "offers": [
+      {
+        "offer_id": "synthetic-c-offer-1",
+        "external_id": "synthetic-c-offer-1",
+        "source": "jib",
+        "manufacturer_part_number": "G615LR-TEST17",
+        "sku_candidates": [
+          "G615LR-TEST17"
+        ],
+        "mpn_candidates": [],
+        "price_thb": 80000,
+        "price_checked_at": "2026-10-14T11:50:00+00:00",
+        "availability_checked_at": "2026-10-14T11:50:00+00:00",
+        "observed_at": "2026-10-14T11:50:00+00:00",
+        "availability_state": "in_stock",
+        "availability_confirmed": true,
+        "availability_evidence": {
+          "source": "jib",
+          "external_id": "synthetic-c-offer-1",
+          "captured_at": "2026-10-14T11:50:00+00:00",
+          "method": "store_listing",
+          "available": true
+        },
+        "seller_trust": "direct_retailer",
+        "price_verified_for_variant": true,
+        "specs": {
+          "cpu": {
+            "value": "Intel Core Ultra 9 275HX",
+            "evidence": {
+              "source": "jib",
+              "external_id": "synthetic-c-offer-1",
+              "captured_at": "2026-10-14T11:50:00+00:00",
+              "method": "structured_api"
+            }
+          },
+          "gpu": {
+            "value": "RTX 5070 Ti Laptop",
+            "evidence": {
+              "source": "jib",
+              "external_id": "synthetic-c-offer-1",
+              "captured_at": "2026-10-14T11:50:00+00:00",
+              "method": "structured_api"
+            }
+          },
+          "ram_gb": {
+            "value": 32,
+            "evidence": {
+              "source": "jib",
+              "external_id": "synthetic-c-offer-1",
+              "captured_at": "2026-10-14T11:50:00+00:00",
+              "method": "structured_api"
+            }
+          },
+          "ssd_gb": {
+            "value": 1024,
+            "evidence": {
+              "source": "jib",
+              "external_id": "synthetic-c-offer-1",
+              "captured_at": "2026-10-14T11:50:00+00:00",
+              "method": "structured_api"
+            }
+          },
+          "screen_inch": {
+            "value": 16,
+            "evidence": {
+              "source": "jib",
+              "external_id": "synthetic-c-offer-1",
+              "captured_at": "2026-10-14T11:50:00+00:00",
+              "method": "structured_api"
+            }
+          },
+          "screen_resolution": {
+            "value": "2560x1600",
+            "evidence": {
+              "source": "jib",
+              "external_id": "synthetic-c-offer-1",
+              "captured_at": "2026-10-14T11:50:00+00:00",
+              "method": "structured_api"
+            }
+          }
+        },
+        "identity_evidence": {
+          "brand": {
+            "value": "ASUS",
+            "evidence": {
+              "source": "jib",
+              "external_id": "synthetic-c-offer-1",
+              "captured_at": "2026-10-14T11:50:00+00:00",
+              "method": "structured_api"
+            }
+          }
+        },
+        "known_extras": {},
+        "name": "ASUS synthetic laptop",
+        "product_name": "ASUS synthetic laptop",
+        "variant_id": "synthetic-c-variant-1",
+        "source_url": "https://example.test/laptops/fixture-1"
+      }
+    ],
+    "source_coverage": [
+      {
+        "source": "jib",
+        "store": "jib",
+        "state": "ok",
+        "enabled": true,
+        "checked_at": "2026-10-14T11:50:00+00:00",
+        "latest_attempt_at": "2026-10-14T11:50:00+00:00"
+      }
+    ],
+    "top_model_ids": [],
+    "personal_profiles": [],
+    "variants": [
+      {
+        "variant_id": "synthetic-c-variant-1",
+        "member_offer_ids": [
+          "synthetic-c-offer-1"
+        ]
+      }
+    ]
+  },
+  "fx": {
+    "fx_id": "synthetic-cbr-1",
+    "source": "CBR",
+    "currency": "THB",
+    "nominal": 10,
+    "rub_per_thb": "2.5",
+    "fetched_at": "2026-10-14T11:50:00+00:00",
+    "published_date": "2026-10-14",
+    "error": null
+  }
+}
