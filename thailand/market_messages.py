@@ -41,39 +41,36 @@ def format_market_messages(
     return parts
 
 
-def iter_market_sends(result: Mapping[str, Any], event: Mapping[str, Any], now_fn) -> list[dict[str, Any]]:
-    """One entry per recipient and part. ``now_fn`` is called immediately before each one."""
-    recipients = [str(item) for item in (event.get("recipients") or []) if str(item)]
-    view = str(event.get("requested_view") or "general_top")
-    skeleton = _body_plan(result, view)
-    sends: list[dict[str, Any]] = []
+def iter_market_sends(result: Mapping[str, Any], event: Mapping[str, Any], now_fn):
+    """Yield one part at a time. ``now_fn`` runs immediately before that part is rendered."""
+    recipients = [str(item).strip() for item in (event.get("recipients") or []) if str(item).strip()]
+    skeleton = _body_plan(result, str(event.get("requested_view") or "general_top"))
+    keyboard = {"inline_keyboard": [[{"text": "Обновить Таиланд", "callback_data": "ctrl:ptop_go"}]]}
+    if not skeleton:
+        for recipient in recipients:
+            now_fn()
+            yield {
+                "recipient": recipient,
+                "part_id": f"{recipient}:empty#0",
+                "text": "По сохранённому результату показывать нечего. Каталог пуст или подходящих предложений нет.",
+                "reply_markup": keyboard,
+            }
+        return
     for recipient in recipients:
         for spec in skeleton:
             now = now_fn()
             if spec["kind"] == "body":
                 text = spec["text"]
-                part_id = spec["part_id"]
+                local_id = spec["part_id"]
             else:
                 state, text = spec["state"](now)
-                part_id = f"{spec['card_id']}#state:{state}"
-            sends.append({
+                local_id = f"{spec['card_id']}#state:{state}"
+            yield {
                 "recipient": recipient,
-                "part_id": f"{recipient}:{part_id}",
+                "part_id": f"{recipient}:{local_id}",
                 "text": text,
-                "reply_markup": None,
-            })
-    if not sends:
-        now_fn()
-        sends.append({
-            "recipient": "",
-            "part_id": "empty#0",
-            "text": "По сохранённому результату показывать нечего. Каталог пуст или подходящих предложений нет.",
-            "reply_markup": None,
-        })
-    sends[-1]["reply_markup"] = {
-        "inline_keyboard": [[{"text": "Обновить Таиланд", "callback_data": "ctrl:ptop_go"}]],
-    }
-    return sends
+                "reply_markup": keyboard,
+            }
 
 
 def _render_parts(result, event, now) -> list[dict[str, Any]]:

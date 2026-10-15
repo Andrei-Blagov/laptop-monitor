@@ -66,6 +66,19 @@ def sender_from_config():
     return TelegramSender(token, str(chat))
 
 
+def utc_now() -> datetime:
+    return datetime.now(timezone.utc)
+
+
+def stream_ready_view(result: Mapping[str, Any], *, chat_id: str | int, view: str, emit, now_fn=None) -> None:
+    """Show a stored result one part at a time. Does not enqueue or touch observation times."""
+    from thailand.market_messages import iter_market_sends
+
+    event = {"requested_view": view, "recipients": [str(chat_id)]}
+    for part in iter_market_sends(result, event, now_fn or utc_now):
+        emit(part["text"], part.get("reply_markup"), part["recipient"])
+
+
 def latest_result(jobs_dir: Path | str | None) -> dict[str, Any] | None:
     base = jobs_root(jobs_dir)
     folder = base / "results"
@@ -150,32 +163,19 @@ class MarketTextSender:
         del current, historical, info_current
         from thailand.market_messages import iter_market_sends
 
-        from thailand.market_messages import _body_plan
-
+        recipients = [str(item).strip() for item in (event.get("recipients") or []) if str(item).strip()]
+        if not recipients:
+            raise RuntimeError("no_recipient")
         done = _done_records(event.get("delivered_part_ids"))
-        recipients = [str(item) for item in (event.get("recipients") or []) if str(item)]
-        skeleton = _body_plan(result, str(event.get("requested_view") or "general_top"))
-        planned = [(recipient, spec) for recipient in recipients for spec in skeleton]
-        if not planned:
-            planned = [("", {"kind": "body", "part_id": "empty#0", "text": "По сохранённому результату показывать нечего. Каталог пуст или подходящих предложений нет.", "card_id": "empty"})]
-        keyboard = {"inline_keyboard": [[{"text": "Обновить Таиланд", "callback_data": "ctrl:ptop_go"}]]}
-        for index, (recipient, spec) in enumerate(planned):
-            now = self.now_fn()
-            if spec["kind"] == "body":
-                text = spec["text"]
-                local_id = spec["part_id"]
-            else:
-                state, text = spec["state"](now)
-                local_id = f"{spec['card_id']}#state:{state}"
-            part_id = f"{recipient}:{local_id}" if recipient else local_id
-            if _part_already_sent(part_id, text, done):
+        for part in iter_market_sends(result, event, self.now_fn):
+            if _part_already_sent(part["part_id"], part["text"], done):
                 continue
-            part = {"text": text, "reply_markup": keyboard}
+            historical = "#state:" in part["part_id"] and not part["part_id"].endswith("#state:current")
             self._send_one(
-                event, result, part, recipient=recipient, part_id=part_id,
-                historical=local_id.endswith("#state:current") is False and "#state:" in local_id,
+                event, result, part, recipient=part["recipient"], part_id=part["part_id"],
+                historical=historical,
             )
-            done.append({"id": part_id, "text": text})
+            done.append({"id": part["part_id"], "text": part["text"]})
             event["delivered_part_ids"] = done
             _persist_delivery(self.jobs_dir, event)
 

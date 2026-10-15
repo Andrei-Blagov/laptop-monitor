@@ -1083,19 +1083,18 @@ def handle_thailand_manual(
 def _stage22_thailand_action(client, token, chat_id, *, compare: bool) -> None:
     """Show a stored result, or enqueue one market event. Never calls collect."""
     from thailand.market_telegram import enqueue_view_refresh, latest_result
-    from thailand.market_messages import format_market_messages
 
     view = "general_top" if compare else "thai_top"
     stored = latest_result(config.THAILAND_JOBS_DIR)
     if stored is not None:
-        from datetime import datetime, timezone
+        from thailand.market_telegram import stream_ready_view
 
-        parts = format_market_messages(
-            stored, {"requested_view": view, "recipients": [str(chat_id)]},
-            now=datetime.now(timezone.utc),
+        stream_ready_view(
+            stored, chat_id=chat_id, view=view,
+            emit=lambda text, markup, recipient: send_message(
+                client, token, recipient, text, with_keyboard=False, reply_markup=markup,
+            ),
         )
-        for part in parts:
-            send_message(client, token, chat_id, part["text"], with_keyboard=False, reply_markup=part.get("reply_markup"))
         return
     enqueue_view_refresh(chat_id=chat_id, view=view, trigger="manual")
     send_message(

@@ -561,6 +561,145 @@ class MarketTelegramTests(unittest.TestCase):
         body = json.loads((self.jobs / "pending" / f"{stored['event_id']}.json").read_text(encoding="utf-8"))
         self.assertEqual(body["recipients"], ["555"])
 
+    def _empty_result(self, event_id: str, recipients: list[str]) -> None:
+        (self.jobs / "results").mkdir(parents=True, exist_ok=True)
+        (self.jobs / "delivery").mkdir(parents=True, exist_ok=True)
+        (self.jobs / "results" / f"{event_id}.json").write_text(json.dumps({
+            "result_id": event_id, "scan_id": event_id, "rankings": {}, "comparison": None, "coverage": [],
+        }), encoding="utf-8")
+        event = build_market_event(
+            instance_id=INSTANCE, trigger_type="manual", requested_view="general_top",
+            recipients=recipients, event_id=event_id, now=NOW,
+        )
+        event.update(subscription_scan_id=event_id, result_id=event_id)
+        (self.jobs / "delivery" / f"{event_id}.json").write_text(json.dumps(event), encoding="utf-8")
+
+    def test_empty_result_reaches_each_recipient(self) -> None:
+        import httpx
+
+        self._empty_result("empty-two", ["111", "222"])
+        calls: list[dict] = []
+
+        def handler(request: httpx.Request) -> httpx.Response:
+            calls.append(json.loads(request.content.decode("utf-8")))
+            return httpx.Response(200, json={"ok": True, "result": {"message_id": len(calls)}})
+
+        transport = httpx.MockTransport(handler)
+        real_client = httpx.Client
+        with patch.object(config, "TELEGRAM_MIN_SEND_INTERVAL_SECONDS", 0), patch.object(
+            config, "get_telegram_credentials", return_value=("123:ABC", "111")
+        ), patch(
+            "telegram_sender.httpx.Client",
+            side_effect=lambda *args, **kwargs: real_client(transport=transport, timeout=kwargs.get("timeout", 30)),
+        ):
+            outcome = process_one(
+                jobs_dir=self.jobs, catalog_root=self.catalog, health_path=self.health,
+                sender=None, clock=ManualClock(NOW), deliver=True, state_path=self.root / "state.json",
+            )
+            self.assertEqual([str(call["chat_id"]) for call in calls], ["111", "222"])
+            self.assertTrue(all("показывать нечего" in call["text"] for call in calls))
+            self.assertFalse(any(str(call["chat_id"]) == "" for call in calls))
+            sent = len(calls)
+            process_one(
+                jobs_dir=self.jobs, catalog_root=self.catalog, health_path=self.health,
+                sender=None, clock=ManualClock(NOW), deliver=True, state_path=self.root / "state.json",
+            )
+        self.assertEqual(len(calls), sent)
+        self.assertEqual(outcome["status"], "delivered")
+
+    def test_missing_recipient_does_not_ack_delivery(self) -> None:
+        import httpx
+
+        self._empty_result("empty-none", [])
+        calls: list[dict] = []
+
+        def handler(request: httpx.Request) -> httpx.Response:
+            calls.append(json.loads(request.content.decode("utf-8")))
+            return httpx.Response(200, json={"ok": True, "result": {"message_id": 1}})
+
+        transport = httpx.MockTransport(handler)
+        real_client = httpx.Client
+        with patch.object(config, "TELEGRAM_MIN_SEND_INTERVAL_SECONDS", 0), patch.object(
+            config, "get_telegram_credentials", return_value=("123:ABC", "111")
+        ), patch(
+            "telegram_sender.httpx.Client",
+            side_effect=lambda *args, **kwargs: real_client(transport=transport, timeout=kwargs.get("timeout", 30)),
+        ):
+            outcome = process_one(
+                jobs_dir=self.jobs, catalog_root=self.catalog, health_path=self.health,
+                sender=None, clock=ManualClock(NOW), deliver=True, state_path=self.root / "state.json",
+            )
+        self.assertEqual(calls, [])
+        self.assertEqual(outcome["status"], "delivery_failed")
+        self.assertFalse((self.jobs / "archive" / "empty-none.json").exists())
+        deferred = json.loads((self.jobs / "deferred" / "empty-none.json").read_text(encoding="utf-8"))
+        self.assertNotEqual(deferred.get("delivery_state"), "sent")
+
+    def test_menu_view_refreshes_each_part_and_does_not_enqueue(self) -> None:
+        import httpx
+
+        fresh = NOW.isoformat()
+        (self.jobs / "results").mkdir(parents=True)
+        (self.jobs / "results" / "ready.json").write_text(json.dumps({
+            "result_id": "ready", "scan_id": "ready", "fx": _fx(),
+            "rankings": {},
+            "comparison": {
+                "pairs": [{
+                    "pair_id": "ready-pair", "comparison_status": "confirmed", "match_class": "EXACT",
+                    "saving_rub": "50000", "saving_pct": "20",
+                    "ru_membership": {"in_general_top": True},
+                    "th_observation": {
+                        "name": "Ready", "price": "80000", "source": "jib", "url": "https://example.test/ready",
+                        "availability_state": "in_stock", "price_checked_at": fresh, "availability_checked_at": fresh,
+                        "specs": {"screen_resolution": {"value": "2560x1600"}},
+                    },
+                    "ru_observation": {
+                        "price": "250000", "source": "regard", "price_checked_at": fresh, "availability_checked_at": fresh,
+                    },
+                    "price_gap": {"thai_base_rub": "200000", "ru_price_rub": "250000"},
+                }],
+                "best_pairs_by_th_variant_id": {"v": "ready-pair"},
+            },
+        }), encoding="utf-8")
+        before = sorted(path.name for path in self.jobs.rglob("*.json"))
+
+        class Clock:
+            def __init__(self) -> None:
+                self.current = NOW
+
+            def __call__(self):
+                return self.current
+
+        clock = Clock()
+        calls: list[dict] = []
+        shifted = {"done": False}
+
+        def handler(request: httpx.Request) -> httpx.Response:
+            payload = json.loads(request.content.decode("utf-8"))
+            calls.append({"url": str(request.url), "json": payload})
+            if str(request.url).endswith("sendMessage") and not shifted["done"]:
+                shifted["done"] = True
+                clock.current = NOW + timedelta(hours=48)
+            return httpx.Response(200, json={"ok": True, "result": {"message_id": 1}})
+
+        client = httpx.Client(transport=httpx.MockTransport(handler))
+        with patch.object(config, "get_telegram_admin_chat_ids", return_value={"42"}), patch(
+            "thailand.market_telegram.utc_now", clock
+        ):
+            process_update(client, "token", {
+                "callback_query": {
+                    "id": "cb-view",
+                    "data": BTN_TH_COMPARE,
+                    "message": {"message_id": 3, "chat": {"id": 42}},
+                },
+            })
+        messages = [call["json"] for call in calls if call["url"].endswith("sendMessage")]
+        self.assertGreaterEqual(len(messages), 2)
+        self.assertNotIn("Таиланд дешевле", messages[1]["text"])
+        self.assertIn("не текущая", messages[1]["text"])
+        self.assertEqual(sorted(path.name for path in self.jobs.rglob("*.json")), before)
+        self.assertTrue(all("api.telegram.org" in call["url"] for call in calls))
+
     def test_old_unmatched_price_is_historical_without_blaming_the_missing_pair(self) -> None:
         fresh = NOW.isoformat()
         old = (NOW - timedelta(hours=48)).isoformat()
