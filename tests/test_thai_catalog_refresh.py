@@ -974,12 +974,18 @@ class CatalogRefreshTests(unittest.TestCase):
             root = Path(tmp)
             _publish(root, [_offer("th-old", "SKUOLD17", 80_000, stale)], observed=stale)
             decision = self._decision(root)
+            before = (root / "latest.json").read_bytes()
+            previous = load_thai_catalog(root, expected_instance_id="c22-test")["snapshot_id"]
             outcome = execute_catalog_plan(
                 decision, snapshot_root=root, now=NOW, instance_id="c22-test",
                 health_path=self.health_path,
                 transport=LiveCatalogTransport(client=client, request_budget=1),
                 clock=__import__("thailand.catalog_refresh", fromlist=["ManualClock"]).ManualClock(NOW),
             )
+            self.assertEqual((root / "latest.json").read_bytes(), before)
+            self.assertEqual(load_thai_catalog(root, expected_instance_id="c22-test")["snapshot_id"], previous)
+        self.assertEqual(outcome["status"], FAILED)
+        self.assertEqual(outcome["snapshot_id"], previous)
         self.assertEqual(outcome["http_calls"], 1)
         self.assertEqual(load_health(self.health_path)["stores"]["jib"]["last_error_code"], "ReadTimeout")
         client.close()
@@ -1124,6 +1130,232 @@ class CatalogRefreshTests(unittest.TestCase):
         self.assertFalse(banana["enabled"])
         self.assertTrue(banana["policy_disabled"])
         self.assertNotEqual(banana["state"], "ok")
+
+    def test_connect_error_fails_without_moving_latest(self) -> None:
+        import httpx
+        from thailand.catalog_refresh import ManualClock
+        from thailand.source_health import load_health
+
+        stale = NOW - timedelta(hours=9)
+
+        def handler(request: httpx.Request) -> httpx.Response:
+            raise httpx.ConnectError("down", request=request)
+
+        client = httpx.Client(transport=httpx.MockTransport(handler))
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            _publish(root, [_offer("th-old", "SKUOLD17", 80_000, stale)], observed=stale)
+            before = (root / "latest.json").read_bytes()
+            previous = load_thai_catalog(root, expected_instance_id="c22-test")["snapshot_id"]
+            decision = self._decision(root)
+            outcome = execute_catalog_plan(
+                decision, snapshot_root=root, now=NOW, instance_id="c22-test",
+                health_path=self.health_path,
+                transport=LiveCatalogTransport(client=client, request_budget=1),
+                clock=ManualClock(NOW),
+            )
+            self.assertEqual((root / "latest.json").read_bytes(), before)
+        self.assertEqual(outcome["status"], FAILED)
+        self.assertEqual(outcome["snapshot_id"], previous)
+        self.assertEqual(outcome["http_calls"], 1)
+        self.assertEqual(load_health(self.health_path)["stores"]["jib"]["last_error_code"], "ConnectError")
+        client.close()
+
+    def test_mixed_success_and_transport_error_stays_partial(self) -> None:
+        import httpx
+        from thailand.catalog_refresh import ManualClock
+
+        stale = NOW - timedelta(hours=9)
+        html = (
+            "<html><head><title>ASUS ROG Strix SKUAAA017</title></head><body>"
+            "<h1>ASUS ROG Strix SKUAAA017</h1> salePrice: 75000 qty = 2 "
+            + (" " * 40) + "</body></html>"
+        )
+        calls: list[str] = []
+
+        def handler(request: httpx.Request) -> httpx.Response:
+            calls.append(request.url.path)
+            if request.url.path.endswith("th-ok"):
+                return httpx.Response(200, text=html)
+            raise httpx.ConnectError("down", request=request)
+
+        client = httpx.Client(transport=httpx.MockTransport(handler))
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            ok = _offer("th-ok", "SKUAAA017", 80_000, stale)
+            bad = _offer("th-bad", "SKU-BAD017", 81_000, stale)
+            _publish(root, [ok, bad], observed=stale)
+            decision = self._decision(root)
+            outcome = execute_catalog_plan(
+                decision, snapshot_root=root, now=NOW, instance_id="c22-test",
+                health_path=self.health_path,
+                transport=LiveCatalogTransport(client=client),
+                clock=ManualClock(NOW),
+            )
+            saved = load_thai_catalog(root, expected_instance_id="c22-test")
+        updated = next(row for row in saved["offers"] if row["external_id"] == "th-ok")
+        untouched = next(row for row in saved["offers"] if row["external_id"] == "th-bad")
+        self.assertEqual(outcome["status"], PARTIAL)
+        self.assertEqual(updated["price_thb"], 75_000)
+        self.assertEqual(untouched["price_thb"], 81_000)
+        self.assertEqual(len(calls), 2)
+        client.close()
+
+    def test_itcity_post_is_guarded_and_parsed(self) -> None:
+        import httpx
+        import json
+        from thailand.catalog_refresh import ManualClock
+
+        stale = NOW - timedelta(hours=27)
+        homepage = (
+            '<html><script>algoliaAppId:"TESTAPP1";algoliaApiKey:"abc123";'
+            'algoliaProductIndexTh:"prod_th";</script></html>'
+        )
+        hit = {
+            "objectID": "PRD1",
+            "productId": "PRD1",
+            "productName": "ASUS ROG Strix notebook",
+            "shortDescription": "RTX 5070 Ti notebook 32GB DDR5 1TB SSD 2560x1600",
+            "price": 80000,
+            "stockAvailable": True,
+            "sku": ["SKUITC017"],
+            "brand": {"label": "ASUS"},
+            "categories": [{"lvl0": "NOTEBOOK"}],
+        }
+        posts: list[httpx.Request] = []
+        hosts: set[str] = set()
+
+        def handler(request: httpx.Request) -> httpx.Response:
+            host = request.url.host
+            hosts.add(host)
+            if request.method == "POST":
+                posts.append(request)
+                return httpx.Response(200, json={"hits": [hit], "nbPages": 1})
+            if "itcity" in host:
+                return httpx.Response(200, text=homepage)
+            if "jib" in host:
+                return httpx.Response(200, json={"rec": []})
+            if "advice" in host:
+                return httpx.Response(200, text="<html><body></body></html>")
+            if "speedcom" in host:
+                return httpx.Response(200, json={"products": []})
+            if "invadeit" in host:
+                return httpx.Response(200, json={"items": [], "hasNextPage": False})
+            return httpx.Response(404, text="missing")
+
+        client = httpx.Client(transport=httpx.MockTransport(handler))
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            _publish(root, [_offer("old", "SKU-OLD017", 90_000, stale)], observed=stale)
+            decision = self._decision(root)
+            decision["action"] = "DISCOVER"
+            decision["refresh_allowed"] = True
+            outcome = execute_catalog_plan(
+                decision, snapshot_root=root, now=NOW, instance_id="c22-test",
+                health_path=self.health_path,
+                transport=LiveCatalogTransport(client=client),
+                clock=ManualClock(NOW),
+            )
+            saved = load_thai_catalog(root, expected_instance_id="c22-test")
+        self.assertGreaterEqual(len(posts), 1)
+        self.assertTrue({"www.jib.co.th", "www.advice.co.th", "speedcom.co.th", "www.invadeit.co.th", "www.itcity.in.th"} <= hosts)
+        self.assertEqual(posts[0].headers["x-algolia-application-id"], "TESTAPP1")
+        self.assertEqual(posts[0].headers["x-algolia-api-key"], "abc123")
+        body = json.loads(posts[0].content.decode("utf-8"))
+        self.assertEqual(body["hitsPerPage"], 40)
+        self.assertIn("query", body)
+        self.assertTrue(any(row.get("external_id") == "PRD1" for row in saved["offers"]))
+        self.assertNotEqual(outcome["status"], FAILED)
+        client.close()
+
+    def test_post_stops_on_deadline(self) -> None:
+        import httpx
+        from thailand.catalog_refresh import ManualClock
+
+        stale = NOW - timedelta(hours=27)
+        homepage = (
+            '<html><script>algoliaAppId:"TESTAPP1";algoliaApiKey:"abc123";'
+            'algoliaProductIndexTh:"prod_th";</script></html>'
+        )
+        clock = ManualClock(NOW)
+        methods: list[str] = []
+
+        def handler(request: httpx.Request) -> httpx.Response:
+            methods.append(request.method)
+            if request.method == "GET":
+                clock.advance(timedelta(hours=2))
+                return httpx.Response(200, text=homepage)
+            raise AssertionError("POST ran after the deadline")
+
+        client = httpx.Client(transport=httpx.MockTransport(handler))
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            _publish(root, [_offer("old", "SKU-OLD017", 90_000, stale)], observed=stale)
+            decision = self._decision(root)
+            decision["action"] = "DISCOVER"
+            decision["refresh_allowed"] = True
+            decision["allowed_sources"] = ["itcity"]
+            execute_catalog_plan(
+                decision, snapshot_root=root, now=NOW, instance_id="c22-test",
+                health_path=self.health_path,
+                transport=LiveCatalogTransport(client=client),
+                clock=clock, overall_timeout_seconds=60,
+            )
+        self.assertEqual(methods, ["GET"])
+        client.close()
+
+    def test_post_budget_and_429_stop_further_calls(self) -> None:
+        import httpx
+        from thailand.catalog_refresh import ManualClock
+
+        stale = NOW - timedelta(hours=27)
+        homepage = (
+            '<html><script>algoliaAppId:"TESTAPP1";algoliaApiKey:"abc123";'
+            'algoliaProductIndexTh:"prod_th";</script></html>'
+        )
+
+        def run(handler, budget: int) -> list[str]:
+            methods: list[str] = []
+
+            def wrapped(request: httpx.Request) -> httpx.Response:
+                methods.append(request.method)
+                return handler(request, len(methods))
+
+            client = httpx.Client(transport=httpx.MockTransport(wrapped))
+            with tempfile.TemporaryDirectory() as tmp:
+                root = Path(tmp)
+                _publish(root, [_offer("old", "SKU-OLD017", 90_000, stale)], observed=stale)
+                decision = self._decision(root)
+                decision["action"] = "DISCOVER"
+                decision["refresh_allowed"] = True
+                decision["allowed_sources"] = ["itcity"]
+                execute_catalog_plan(
+                    decision, snapshot_root=root, now=NOW, instance_id="c22-test",
+                    health_path=self.health_path,
+                    transport=LiveCatalogTransport(client=client, request_budget=budget),
+                    clock=ManualClock(NOW),
+                )
+            client.close()
+            atomic_write_json(self.health_path, {"version": 1, "stores": {}})
+            return methods
+
+        def budget_handler(request: httpx.Request, _count: int) -> httpx.Response:
+            if request.method == "GET":
+                return httpx.Response(200, text=homepage)
+            return httpx.Response(200, json={"hits": [], "nbPages": 1})
+
+        budget_methods = run(budget_handler, 2)
+        self.assertEqual(budget_methods, ["GET", "POST"])
+
+        def limit_handler(request: httpx.Request, count: int) -> httpx.Response:
+            if request.method == "GET":
+                return httpx.Response(200, text=homepage)
+            if count == 2:
+                return httpx.Response(429, headers={"Retry-After": "20"}, json={"message": "slow"})
+            raise AssertionError("POST continued after 429")
+
+        limited = run(limit_handler, 8)
+        self.assertEqual(limited, ["GET", "POST"])
 
 
 if __name__ == "__main__":

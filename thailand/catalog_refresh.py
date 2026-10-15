@@ -80,6 +80,7 @@ class OfferRefresh:
     sku: str | None = None
     manufacturer_part_number: str | None = None
     variant_confirmed: bool = False
+    transport_failure: bool = False
 
 
 class ManualClock:
@@ -145,22 +146,34 @@ class GuardedClient:
         self.real_429 = False
         self.blocked_reason: str | None = None
         self.retry_after_seconds: int | None = None
+        self.last_transport_error: str | None = None
 
     def get(self, url, **kwargs):
+        return self.request("GET", url, **kwargs)
+
+    def post(self, url, **kwargs):
+        return self.request("POST", url, **kwargs)
+
+    def request(self, method, url, **kwargs):
         current = url
-        kwargs = dict(kwargs)
-        kwargs.pop("follow_redirects", None)
+        verb = str(method or "GET").upper()
+        payload = dict(kwargs)
+        payload.pop("follow_redirects", None)
         for _hop in range(5):
-            response = self._once(current, kwargs)
+            response = self._once(verb, current, payload)
             if response.status_code not in {301, 302, 303, 307, 308}:
                 return response
             location = response.headers.get("location") or response.headers.get("Location")
             if not location:
                 return response
             current = urljoin(str(current), location)
+            if response.status_code in {301, 302, 303}:
+                verb = "GET"
+                payload = {key: value for key, value in payload.items() if key not in {"content", "data", "files", "json"}}
         return response
 
-    def _once(self, url, kwargs):
+    def _once(self, method, url, kwargs):
+        self.last_transport_error = None
         reason = self._block_reason()
         if reason:
             self.blocked_reason = self.blocked_reason or reason
@@ -179,17 +192,23 @@ class GuardedClient:
             self._record(ok=False, error_code="TIMEOUT", now=now)
             return httpx.Response(429, headers={"X-Block-Reason": "deadline"})
         request = {key: value for key, value in kwargs.items() if key != "timeout"}
+        if method != "GET" and not callable(getattr(self.inner, method.lower(), None)):
+            raise AttributeError(method)
         try:
-            parameters = inspect.signature(self.inner.get).parameters
+            parameters = inspect.signature(self.inner.get if method == "GET" else getattr(self.inner, method.lower(), self.inner.request)).parameters
         except (TypeError, ValueError):
             parameters = {}
         accepts_any = any(getattr(item, "kind", None) == inspect.Parameter.VAR_KEYWORD for item in parameters.values())
         if accepts_any or "follow_redirects" in parameters:
             request["follow_redirects"] = False
         try:
-            response = self.inner.get(url, timeout=timeout, **request)
+            if method == "GET":
+                response = self.inner.get(url, timeout=timeout, **request)
+            else:
+                response = getattr(self.inner, method.lower())(url, timeout=timeout, **request)
         except (httpx.TimeoutException, httpx.TransportError) as exc:
-            self._record(ok=False, error_code=type(exc).__name__, now=self.timing.now())
+            self.last_transport_error = type(exc).__name__
+            self._record(ok=False, error_code=self.last_transport_error, now=self.timing.now())
             raise
         now = self.timing.now()
         if response.status_code == 429:
@@ -443,7 +462,8 @@ def _revalidate(previous, decision, root, timer: PassTiming, instance_id, health
     if previous is None:
         return _outcome(FAILED, action="REVALIDATE", errors=["catalog_missing"], pass_started_at=pass_started.isoformat())
     saved_id = previous.get("snapshot_id")
-    updated, skipped, errors, http_calls, next_at = [], [], [], 0, []
+    updated, skipped, checked, errors, http_calls, next_at = [], [], [], [], 0, []
+    transport_failures: list[str] = []
     stopped: set[str] = set()
     coverage_rows = {row.get("source"): row for row in previous.get("source_coverage") or []}
     del timeout
@@ -480,14 +500,27 @@ def _revalidate(previous, decision, root, timer: PassTiming, instance_id, health
         if refresh.status == "failed" and not refresh.http_calls:
             skipped.append(_skip(item, refresh.reason or "failed"))
             continue
+        if refresh.transport_failure:
+            transport_failures.append(refresh.reason or "transport_failure")
+            skipped.append(_skip(item, refresh.reason or "transport_failure"))
+            errors.append(refresh.reason or "transport_failure")
+            continue
         kind = _apply_refresh(previous, refresh)
         row = _row(refresh, kind)
         if kind == "updated":
             updated.append(row)
         else:
+            checked.append(row)
             skipped.append(row)
             if refresh.reason and kind != "conflict":
                 errors.append(refresh.reason)
+    if http_calls and not updated and not checked and transport_failures:
+        return _outcome(
+            FAILED, action="REVALIDATE", snapshot_id=saved_id,
+            updated_offers=[], skipped_offers=skipped, errors=errors,
+            http_calls=http_calls, next_allowed_at=_earliest(next_at),
+            pass_started_at=pass_started.isoformat(),
+        )
     if http_calls == 0 and not updated:
         rankings, comparison, views = _views(previous, fx, russian, timer.now())
         return _outcome(
@@ -495,13 +528,6 @@ def _revalidate(previous, decision, root, timer: PassTiming, instance_id, health
             updated_offers=updated, skipped_offers=skipped, errors=errors, http_calls=0,
             next_allowed_at=_earliest(next_at), rankings=rankings, comparison=comparison,
             views=views, coverage=list(previous.get("source_coverage") or []),
-            pass_started_at=pass_started.isoformat(),
-        )
-    if updated == [] and skipped and all(row.get("reason") in {"failed", "HTTP_ERROR"} or str(row.get("reason") or "").startswith("HTTP_") for row in skipped):
-        return _outcome(
-            FAILED, action="REVALIDATE", snapshot_id=saved_id,
-            updated_offers=[], skipped_offers=skipped, errors=errors or ["transport_failed"],
-            http_calls=http_calls, next_allowed_at=_earliest(next_at),
             pass_started_at=pass_started.isoformat(),
         )
     published_at = timer.now()
@@ -868,6 +894,13 @@ def _jib_point(item, *, client, timeout: float, clock: ManualClock | None) -> Of
         refresh.reason = "retry_after"
         refresh.observed_at = None
         return refresh
+    transport_error = getattr(http, "last_transport_error", None)
+    if transport_error:
+        refresh.status = "failed"
+        refresh.reason = transport_error
+        refresh.transport_failure = True
+        refresh.observed_at = None
+        return refresh
     if error:
         refresh.status = "failed"
         refresh.reason = error
@@ -919,6 +952,7 @@ def _bounded_request(item, *, client, timeout: float, clock: ManualClock | None)
         refresh = _base(item, coverage=coverage, http_calls=used)
         refresh.status = "failed"
         refresh.reason = type(exc).__name__
+        refresh.transport_failure = isinstance(exc, (httpx.TimeoutException, httpx.TransportError))
         return refresh
     finally:
         if owns:
