@@ -1357,6 +1357,115 @@ class CatalogRefreshTests(unittest.TestCase):
         limited = run(limit_handler, 8)
         self.assertEqual(limited, ["GET", "POST"])
 
+    def test_http_status_outcomes_keep_or_move_latest(self) -> None:
+        import httpx
+        from thailand.catalog_refresh import ManualClock
+
+        stale = NOW - timedelta(hours=9)
+        html = (
+            "<html><head><title>ASUS ROG Strix SKUAAA017</title></head><body>"
+            "<h1>ASUS ROG Strix SKUAAA017</h1> salePrice: 75000 qty = 2 "
+            + (" " * 40) + "</body></html>"
+        )
+        empty = "<html><head><title>ASUS ROG Strix SKUAAA017</title></head><body>" + (" " * 80) + "</body></html>"
+
+        def run(offers, responder):
+            calls = {"n": 0}
+
+            def handler(request: httpx.Request) -> httpx.Response:
+                calls["n"] += 1
+                outcome = responder(request)
+                if isinstance(outcome, BaseException):
+                    raise outcome
+                return outcome
+
+            client = httpx.Client(transport=httpx.MockTransport(handler))
+            with tempfile.TemporaryDirectory() as tmp:
+                root = Path(tmp)
+                _publish(root, offers, observed=stale)
+                before = (root / "latest.json").read_bytes()
+                previous = load_thai_catalog(root, expected_instance_id="c22-test")["snapshot_id"]
+                decision = self._decision(root)
+                outcome = execute_catalog_plan(
+                    decision, snapshot_root=root, now=NOW, instance_id="c22-test",
+                    health_path=self.health_path,
+                    transport=LiveCatalogTransport(client=client),
+                    clock=ManualClock(NOW),
+                )
+                after = (root / "latest.json").read_bytes()
+                current = load_thai_catalog(root, expected_instance_id="c22-test")
+            client.close()
+            atomic_write_json(self.health_path, {"version": 1, "stores": {}})
+            return outcome, before, after, previous, current, calls["n"]
+
+        only = [_offer("th-old", "SKUOLD17", 80_000, stale)]
+        for status in (500, 503):
+            outcome, before, after, previous, _current, calls = run(
+                only, lambda _request, status=status: httpx.Response(status, text="down"),
+            )
+            self.assertEqual(outcome["status"], FAILED, status)
+            self.assertEqual(outcome["http_calls"], 1, status)
+            self.assertEqual(calls, 1, status)
+            self.assertEqual(outcome["snapshot_id"], previous, status)
+            self.assertEqual(after, before, status)
+            self.assertEqual(outcome["skipped_offers"][0]["reason"], f"HTTP_{status}")
+
+        def mixed_down(request: httpx.Request) -> httpx.Response:
+            if request.url.path.endswith("th-a"):
+                return httpx.Response(503, text="down")
+            raise httpx.ReadTimeout("slow", request=request)
+
+        pair = [_offer("th-a", "SKU-AAA017", 80_000, stale), _offer("th-b", "SKU-BBB017", 81_000, stale)]
+        outcome, before, after, previous, _current, calls = run(pair, mixed_down)
+        self.assertEqual(outcome["status"], FAILED)
+        self.assertEqual(outcome["http_calls"], 2)
+        self.assertEqual(calls, 2)
+        self.assertEqual(outcome["snapshot_id"], previous)
+        self.assertEqual(after, before)
+        self.assertEqual(
+            {row["reason"] for row in outcome["skipped_offers"]},
+            {"HTTP_503", "ReadTimeout"},
+        )
+
+        def success_and_503(request: httpx.Request) -> httpx.Response:
+            if request.url.path.endswith("th-ok"):
+                return httpx.Response(200, text=html)
+            return httpx.Response(503, text="down")
+
+        ok = _offer("th-ok", "SKUAAA017", 80_000, stale)
+        bad = _offer("th-bad", "SKU-BAD017", 81_000, stale)
+        outcome, before, after, previous, current, calls = run([ok, bad], success_and_503)
+        self.assertEqual(outcome["status"], PARTIAL)
+        self.assertEqual(outcome["http_calls"], 2)
+        self.assertEqual(calls, 2)
+        self.assertNotEqual(outcome["snapshot_id"], previous)
+        self.assertNotEqual(after, before)
+        saved_ok = next(row for row in current["offers"] if row["external_id"] == "th-ok")
+        saved_bad = next(row for row in current["offers"] if row["external_id"] == "th-bad")
+        self.assertEqual(saved_ok["price_thb"], 75_000)
+        self.assertEqual(saved_bad["price_thb"], 81_000)
+        self.assertEqual(saved_bad["price_checked_at"], stale.isoformat())
+
+        outcome, before, after, previous, current, calls = run(
+            only, lambda _request: httpx.Response(404, text="gone"),
+        )
+        self.assertEqual(outcome["status"], PARTIAL)
+        self.assertEqual(outcome["http_calls"], 1)
+        self.assertNotEqual(after, before)
+        self.assertEqual(outcome["skipped_offers"][0]["reason"], "product_absent")
+        self.assertEqual(current["offers"][0]["price_checked_at"], stale.isoformat())
+
+        outcome, _before, after, previous, current, calls = run(
+            [_offer("th-old", "SKUAAA017", 80_000, stale)],
+            lambda _request: httpx.Response(200, text=empty),
+        )
+        self.assertEqual(outcome["status"], PARTIAL)
+        self.assertEqual(outcome["http_calls"], 1)
+        self.assertNotEqual(outcome["snapshot_id"], previous)
+        self.assertNotEqual(after, _before)
+        self.assertEqual(current["offers"][0]["price_thb"], 80_000)
+        self.assertEqual(outcome["skipped_offers"][0]["reason"], "price_and_availability_unconfirmed")
+
 
 if __name__ == "__main__":
     unittest.main()

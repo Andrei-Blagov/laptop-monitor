@@ -81,6 +81,7 @@ class OfferRefresh:
     manufacturer_part_number: str | None = None
     variant_confirmed: bool = False
     transport_failure: bool = False
+    store_unavailable: bool = False
 
 
 class ManualClock:
@@ -408,6 +409,15 @@ def execute_catalog_plan(
             owned_client.close()
 
 
+def _parsed_check(refresh: OfferRefresh, kind: str) -> bool:
+    """A parsed page or a confirmed absence. A 500/503 or a network error is not one."""
+    if refresh.transport_failure or refresh.store_unavailable:
+        return False
+    if kind == "conflict" or refresh.status in {"missing", "unverified", "conflict"}:
+        return True
+    return False
+
+
 def _reuse_or_defer(document, action, fx, russian_snapshot, now: datetime, pass_started: datetime | None = None) -> dict[str, Any]:
     if document is None:
         return _outcome(FAILED, action=action, errors=["catalog_missing"])
@@ -497,22 +507,26 @@ def _revalidate(previous, decision, root, timer: PassTiming, instance_id, health
             if when:
                 next_at.append(when)
             continue
-        if refresh.status == "failed" and not refresh.http_calls:
+        if refresh.status == "failed" and not refresh.http_calls and not refresh.store_unavailable:
             skipped.append(_skip(item, refresh.reason or "failed"))
             continue
-        if refresh.transport_failure:
-            transport_failures.append(refresh.reason or "transport_failure")
-            skipped.append(_skip(item, refresh.reason or "transport_failure"))
-            errors.append(refresh.reason or "transport_failure")
+        if refresh.transport_failure or refresh.store_unavailable:
+            transport_failures.append(refresh.reason or "unavailable")
+            skipped.append(_skip(item, refresh.reason or "unavailable"))
+            errors.append(refresh.reason or "unavailable")
             continue
         kind = _apply_refresh(previous, refresh)
         row = _row(refresh, kind)
         if kind == "updated":
             updated.append(row)
-        else:
+        elif _parsed_check(refresh, kind):
             checked.append(row)
             skipped.append(row)
             if refresh.reason and kind != "conflict":
+                errors.append(refresh.reason)
+        else:
+            skipped.append(row)
+            if refresh.reason:
                 errors.append(refresh.reason)
     if http_calls and not updated and not checked and transport_failures:
         return _outcome(
@@ -901,6 +915,16 @@ def _jib_point(item, *, client, timeout: float, clock: ManualClock | None) -> Of
         refresh.transport_failure = True
         refresh.observed_at = None
         return refresh
+    if error == "HTTP_404":
+        refresh.status = "missing"
+        refresh.reason = "product_absent"
+        return refresh
+    if error in {"HTTP_500", "HTTP_503"}:
+        refresh.status = "failed"
+        refresh.reason = error
+        refresh.store_unavailable = True
+        refresh.observed_at = None
+        return refresh
     if error:
         refresh.status = "failed"
         refresh.reason = error
@@ -969,6 +993,15 @@ def _bounded_request(item, *, client, timeout: float, clock: ManualClock | None)
     if response.status_code == 429 or getattr(http, "real_429", False):
         refresh.status = "rate_limited"
         refresh.reason = "retry_after"
+        return refresh
+    if response.status_code == 404:
+        refresh.status = "missing"
+        refresh.reason = "product_absent"
+        return refresh
+    if response.status_code in {500, 503}:
+        refresh.status = "failed"
+        refresh.reason = f"HTTP_{response.status_code}"
+        refresh.store_unavailable = True
         return refresh
     if response.status_code >= 400:
         refresh.status = "failed"
