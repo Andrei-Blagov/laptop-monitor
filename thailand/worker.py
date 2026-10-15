@@ -42,12 +42,42 @@ def process_one(
     deliver: bool = True,
     scan_fn=None,
     worker_state_path: Path | str | None = None,
+    catalog_root: Path | str | None = None,
+    health_path: Path | str | None = None,
+    fx: dict[str, Any] | None = None,
+    russian_snapshot: dict[str, Any] | None = None,
+    transport: Any = None,
+    sender: Any = None,
+    clock: Any = None,
 ) -> dict[str, Any] | None:
     ensure_queue_dirs(jobs_dir)
     recover_stale_processing(root=jobs_dir)
+    from thailand.market_events import run_market_queue
+
+    market = run_market_queue(
+        jobs_dir=jobs_dir,
+        catalog_root=catalog_root,
+        health_path=health_path,
+        fx=fx,
+        russian_snapshot=russian_snapshot,
+        transport=transport,
+        sender=sender,
+        clock=clock,
+        deliver=deliver,
+    )
+    if market is not None:
+        return market
     job = claim_next_job(root=jobs_dir)
     if job is None:
         return None
+    from thailand.market_events import remember_buy_delivery, v1_buy_already_sent
+
+    if v1_buy_already_sent(job, jobs_dir):
+        archived = dict(job)
+        archived["status"] = "archived"
+        archived["buy_delivery"] = "already_sent"
+        archive_job(archived, root=jobs_dir, failed=False)
+        return archived
 
     def _write_state(data: dict[str, Any]) -> None:
         write_worker_state(data, path=worker_state_path)
@@ -107,6 +137,8 @@ def process_one(
         )
         fatal = status == "failed" and not result.get("stores")
         path = archive_job(archived, root=jobs_dir, failed=fatal)
+        if not fatal and job.get("trigger_type") == "buy_signal":
+            remember_buy_delivery(job, jobs_dir)
         try:
             _write_state(
                 {
@@ -175,6 +207,13 @@ def drain(
     scan_fn=None,
     max_jobs: int | None = None,
     worker_state_path: Path | str | None = None,
+    catalog_root: Path | str | None = None,
+    health_path: Path | str | None = None,
+    fx: dict[str, Any] | None = None,
+    russian_snapshot: dict[str, Any] | None = None,
+    transport: Any = None,
+    sender: Any = None,
+    clock: Any = None,
 ) -> int:
     """Process pending jobs sequentially until empty. Returns processed count."""
     ensure_queue_dirs(jobs_dir)
@@ -190,6 +229,13 @@ def drain(
             deliver=deliver,
             scan_fn=scan_fn,
             worker_state_path=worker_state_path,
+            catalog_root=catalog_root,
+            health_path=health_path,
+            fx=fx,
+            russian_snapshot=russian_snapshot,
+            transport=transport,
+            sender=sender,
+            clock=clock,
         )
         if result is None:
             break

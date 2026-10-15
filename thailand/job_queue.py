@@ -215,6 +215,8 @@ def recover_stale_processing(*, root: Path | str | None = None) -> list[str]:
         age = (now - claimed).total_seconds()
         if age < threshold:
             continue
+        if int(job.get("schema_version") or 1) >= 2:
+            continue
         job_id = str(job.get("job_id") or path.stem)
         attempt = int(job.get("attempt") or 0)
         if attempt >= max_attempts:
