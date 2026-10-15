@@ -781,6 +781,16 @@ def handle_personal_refresh(
     token: str,
     chat_id: str | int,
 ) -> None:
+    if config.stage22_market_telegram_enabled():
+        from thailand.market_telegram import enqueue_view_refresh
+
+        enqueue_view_refresh(chat_id=chat_id, view="personal_top3", trigger="personal")
+        send_message(
+            client, token, chat_id,
+            "Обновление Таиланда поставлено в очередь. Сбор идёт общим проходом, без отдельного collect.",
+            with_keyboard=False,
+        )
+        return
     from personal_top import enqueue_personal_job, specs_for_products
     from storage import DEFAULT_DB_PATH, get_all_products_readonly, get_latest_store_runs_readonly
     from store_freshness import get_fresh_store_slugs
@@ -1032,6 +1042,9 @@ def handle_thailand_manual(
     compare: bool,
 ) -> None:
     """Admin-only: enqueue on-demand Thailand job (no network scan in bot process)."""
+    if config.stage22_market_telegram_enabled():
+        _stage22_thailand_action(client, token, chat_id, compare=compare)
+        return
     try:
         from buy_thailand_flow import enqueue_manual_thailand_job
 
@@ -1065,6 +1078,34 @@ def handle_thailand_manual(
             f"Ошибка проверки Таиланда: {type(exc).__name__}",
             with_keyboard=False,
         )
+
+
+def _stage22_thailand_action(client, token, chat_id, *, compare: bool) -> None:
+    """Show a stored result, or enqueue one market event. Never calls collect."""
+    from thailand.market_telegram import enqueue_view_refresh, latest_result
+    from thailand.market_messages import format_market_messages
+
+    view = "general_top" if compare else "thai_top"
+    stored = latest_result(config.THAILAND_JOBS_DIR)
+    if stored is not None:
+        from datetime import datetime, timezone
+        from thailand.market_events import _delivery_flags
+
+        fresh_view = view if view in {"all", "general_top", "personal_top3"} else "general_top"
+        purchase, info = _delivery_flags(stored, fresh_view, datetime.now(timezone.utc))
+        parts = format_market_messages(
+            stored, {"requested_view": view, "recipients": [str(chat_id)]},
+            purchase_current=purchase, info_current=info,
+        )
+        for part in parts:
+            send_message(client, token, chat_id, part["text"], with_keyboard=False, reply_markup=part.get("reply_markup"))
+        return
+    enqueue_view_refresh(chat_id=chat_id, view=view, trigger="manual")
+    send_message(
+        client, token, chat_id,
+        "Проверка Таиланда поставлена в очередь. Магазины из бота не вызываются.",
+        with_keyboard=False,
+    )
 
 
 def handle_run(client: httpx.Client, token: str, chat_id: str | int) -> None:

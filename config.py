@@ -222,6 +222,10 @@ THAILAND_JOB_STALE_PROCESSING_SECONDS: float = 600.0  # 10 minutes
 THAILAND_JOB_MAX_ATTEMPTS: int = 2
 THAILAND_JOBS_DIR = "data/thailand_jobs"
 THAILAND_WORKER_STATE_PATH = "data/thailand_worker_state.json"
+# Stage 2.2 Telegram path. Off keeps the current bot and v1 Thailand jobs.
+THAI_CATALOG_ROOT = "data/thai_catalog"
+RUSSIAN_MARKET_ROOT = "data/russian_market"
+FX_OBSERVATION_PATH = "data/fx_thb.json"
 # Country verdict bands on equivalent hardware (abs % price delta).
 COUNTRY_VERDICT_EQUAL_PCT: float = 0.03
 COUNTRY_VERDICT_SLIGHT_PCT: float = 0.08
@@ -297,6 +301,12 @@ def get_n8n_webhook_config() -> tuple[str | None, str | None, float]:
     except ValueError:
         timeout = float(N8N_WEBHOOK_TIMEOUT_SECONDS)
     return url, secret, timeout
+
+
+def stage22_market_telegram_enabled() -> bool:
+    """Explicit opt-in. Default off, so the current bot behavior stays."""
+    load_dotenv_if_present()
+    return (os.environ.get("STAGE22_MARKET_TELEGRAM") or "").strip().lower() in {"1", "true", "yes", "on"}
 
 
 def get_instance_id() -> str:

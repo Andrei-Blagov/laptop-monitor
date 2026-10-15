@@ -54,6 +54,18 @@ def process_one(
     clock: Any = None,
 ) -> dict[str, Any] | None:
     jobs_dir = jobs_root(jobs_dir)
+    if config.stage22_market_telegram_enabled():
+        from thailand.market_telegram import MarketTextSender, apply_configured_inputs
+
+        catalog_root, health_path, fx, russian_snapshot, russian_snapshot_root = apply_configured_inputs(
+            catalog_root=catalog_root,
+            health_path=health_path,
+            fx=fx,
+            russian_snapshot=russian_snapshot,
+            russian_snapshot_root=russian_snapshot_root,
+        )
+        if sender is not None:
+            sender = MarketTextSender(sender)
     ensure_queue_dirs(jobs_dir)
     recover_stale_processing(root=jobs_dir)
     from thailand.market_events import run_market_queue
