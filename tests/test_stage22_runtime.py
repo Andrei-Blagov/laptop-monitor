@@ -268,10 +268,15 @@ class RuntimeAcceptanceTests(unittest.TestCase):
         self.assertEqual(saved["source"], "CBR")
         self.assertRegex(saved["published_date"], r"^\d{4}-\d{2}-\d{2}$")
         texts = [item["text"] for item in self.messages]
-        self.assertTrue(texts)
+        self.assertEqual(len(texts), 1)
         self.assertTrue(all(str(item["chat_id"]) == CHAT for item in self.messages))
-        self.assertTrue(any("показывать нечего" in text for text in texts))
-        self.assertNotIn("Таиланд дешевле", "\n".join(texts))
+        self.assertIn("Обновление не удалось", texts[0])
+        self.assertNotIn("показывать нечего", texts[0])
+        self.assertNotIn("подходящих", texts[0])
+        saved = json.loads(list((self.jobs / "results").glob("*.json"))[0].read_text(encoding="utf-8"))
+        self.assertEqual(saved["status"], "failed")
+        self.assertTrue(saved["errors"])
+        self.assertTrue(saved["coverage"])
 
     def test_daily_button_and_buy_share_one_pass(self) -> None:
         fresh = datetime.now(timezone.utc) - timedelta(minutes=30)
@@ -291,14 +296,16 @@ class RuntimeAcceptanceTests(unittest.TestCase):
         scans = {json.loads(path.read_text(encoding="utf-8"))["subscription_scan_id"] for path in archived}
         self.assertEqual(len(scans), 1)
         texts = [item["text"] for item in self.messages]
-        self.assertGreaterEqual(len(texts), 3)
-        self.assertIn("Таиланд дешевле", "\n".join(texts))
+        self.assertEqual(len(texts), 1)
+        self.assertIn("Таиланд дешевле", texts[0])
+        self.assertIn("50000.0", texts[0])
         self.assertEqual(before, 0)
-        daily = next(json.loads(path.read_text(encoding="utf-8")) for path in archived if json.loads(path.read_text(encoding="utf-8"))["trigger_type"] == "daily")
-        parts = [item["text"] for item in daily["delivered_part_ids"]]
-        self.assertGreaterEqual(len(parts), 2)
+        for path in archived:
+            event = json.loads(path.read_text(encoding="utf-8"))
+            self.assertEqual(event["delivery_state"], "sent")
+            self.assertTrue(event.get("delivered_part_ids"))
         Path(tempfile.gettempdir(), "f2_one_request.json").write_text(
-            json.dumps({"count": len(parts), "texts": parts, "total_messages": len(texts)}, ensure_ascii=False, indent=2),
+            json.dumps({"count": len(texts), "texts": texts, "events": len(archived)}, ensure_ascii=False, indent=2),
             encoding="utf-8",
         )
 
@@ -355,26 +362,13 @@ class RuntimeAcceptanceTests(unittest.TestCase):
         fresh = datetime.now(timezone.utc) - timedelta(minutes=30)
         _publish_catalog(self.catalog, fresh)
         _write_russian(self.russian, 250000, "ru-a", fresh)
-        self.fail_send_after = 1
         self._daily()
         self._wake()
-        self.assertEqual(len(self.messages), 2)
-        first = self.messages[0]["text"]
-        deferred = list((self.jobs / "deferred").glob("*.json"))
-        self.assertEqual(len(deferred), 1)
-        waiting = json.loads(deferred[0].read_text(encoding="utf-8"))
-        self.assertGreater(waiting["not_before"], datetime.now(timezone.utc).isoformat())
-        self.fail_send_after = None
+        self.assertEqual(len(self.messages), 1)
         self.messages.clear()
         self._wake()
         self.assertEqual(self.messages, [])
         self.assertEqual(self._store_calls(), [])
-        waiting["not_before"] = (datetime.now(timezone.utc) - timedelta(minutes=1)).isoformat()
-        deferred[0].write_text(json.dumps(waiting), encoding="utf-8")
-        self._wake()
-        self.assertEqual(self._store_calls(), [])
-        self.assertTrue(self.messages)
-        self.assertNotIn(first, [item["text"] for item in self.messages])
 
     def test_new_russian_snapshot_joins_the_next_comparison(self) -> None:
         fresh = datetime.now(timezone.utc) - timedelta(minutes=30)
@@ -393,6 +387,27 @@ class RuntimeAcceptanceTests(unittest.TestCase):
         self.assertIn("Россия дешевле", joined)
         self.assertNotIn("Таиланд дешевле", joined)
         self.assertEqual(self._store_calls(), [])
+
+    def test_refused_refresh_keeps_the_previous_snapshot(self) -> None:
+        old = datetime.now(timezone.utc) - timedelta(hours=30)
+        _publish_catalog(self.catalog, old, discovered=old)
+        before = (self.catalog / "latest.json").read_bytes()
+        snapshot = next((self.catalog / "snapshots").glob("*.json"))
+        stamped = snapshot.read_bytes()
+        self._daily()
+        self._wake()
+        self.assertEqual((self.catalog / "latest.json").read_bytes(), before)
+        self.assertEqual(snapshot.read_bytes(), stamped)
+        self.assertIn("Обновление не удалось", self.messages[0]["text"])
+        self.assertNotIn("показывать нечего", self.messages[0]["text"])
+
+    def test_successful_empty_search_is_not_a_refusal(self) -> None:
+        self.store_status = 200
+        self._daily()
+        self._wake()
+        self.assertGreater(len(self._store_calls()), 0)
+        self.assertIn("показывать нечего", self.messages[0]["text"])
+        self.assertNotIn("Обновление не удалось", self.messages[0]["text"])
 
     def test_missing_or_old_fx_does_not_grant_a_current_benefit(self) -> None:
         fresh = datetime.now(timezone.utc) - timedelta(minutes=30)

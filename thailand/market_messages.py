@@ -44,9 +44,21 @@ def format_market_messages(
 def iter_market_sends(result: Mapping[str, Any], event: Mapping[str, Any], now_fn):
     """Yield one part at a time. ``now_fn`` runs immediately before that part is rendered."""
     recipients = [str(item).strip() for item in (event.get("recipients") or []) if str(item).strip()]
-    skeleton = _body_plan(result, str(event.get("requested_view") or "general_top"))
     keyboard = {"inline_keyboard": [[{"text": "Обновить Таиланд", "callback_data": "ctrl:ptop_go"}]]}
-    if not skeleton:
+    if str(result.get("status") or "") == "failed":
+        text = _failure_text(result)
+        for recipient in recipients:
+            now_fn()
+            yield {
+                "recipient": recipient,
+                "part_id": f"{recipient}:failed#0",
+                "text": text,
+                "reply_markup": keyboard,
+            }
+        return
+    skeleton = _body_plan(result, str(event.get("requested_view") or "general_top"))
+    product_cards = [spec for spec in skeleton if spec.get("card_id") != "coverage"]
+    if not product_cards:
         for recipient in recipients:
             now_fn()
             yield {
@@ -59,28 +71,36 @@ def iter_market_sends(result: Mapping[str, Any], event: Mapping[str, Any], now_f
     for recipient in recipients:
         for spec in skeleton:
             now = now_fn()
+            state_name = "info"
             if spec["kind"] == "body":
                 text = spec["text"]
                 local_id = spec["part_id"]
             else:
-                state, text = spec["state"](now)
-                local_id = f"{spec['card_id']}#state:{state}"
+                state_name, state_text = spec["state"](now)
+                text = spec["text"]
+                if state_text:
+                    text = f"{text}\n{state_text}"
+                local_id = spec["part_id"]
             yield {
                 "recipient": recipient,
                 "part_id": f"{recipient}:{local_id}",
                 "text": text,
+                "state": state_name,
                 "reply_markup": keyboard,
             }
 
 
 def _render_parts(result, event, now) -> list[dict[str, Any]]:
+    if str(result.get("status") or "") == "failed":
+        return [{"part_id": "failed#0", "text": _failure_text(result), "reply_markup": None}]
     rendered = []
     for spec in _body_plan(result, str(event.get("requested_view") or "general_top")):
-        if spec["kind"] == "body":
-            rendered.append({"part_id": spec["part_id"], "text": spec["text"], "reply_markup": None})
-        else:
-            state, text = spec["state"](now)
-            rendered.append({"part_id": f"{spec['card_id']}#state:{state}", "text": text, "reply_markup": None})
+        text = spec["text"]
+        if spec.get("kind") == "card" and spec.get("state"):
+            _name, state_text = spec["state"](now)
+            if state_text:
+                text = f"{text}\n{state_text}"
+        rendered.append({"part_id": spec["part_id"], "text": text, "reply_markup": None})
     return rendered
 
 
@@ -94,16 +114,65 @@ def _body_plan(result: Mapping[str, Any], view: str) -> list[dict[str, Any]]:
         "unmatched": _unmatched_cards(comparison, result),
     }
     plan: list[dict[str, Any]] = []
+    shown: dict[str, int] = {}
     for name in order:
         for card_id, body, state_fn in built[name]:
+            key = _model_key(body)
+            relation = _relation_line_from(body)
+            if key in shown:
+                previous = plan[shown[key]]
+                if relation and relation not in previous["text"]:
+                    previous["text"] += "\n" + relation
+                continue
             chunks = _chunks(body)
             for index, chunk in enumerate(chunks):
-                plan.append({"kind": "body", "part_id": f"{card_id}#{index}", "text": chunk, "card_id": card_id})
-            plan.append({"kind": "state", "card_id": card_id, "state": state_fn})
+                plan.append({
+                    "kind": "body" if index < len(chunks) - 1 else "card",
+                    "part_id": f"{card_id}#{index}",
+                    "text": chunk,
+                    "card_id": card_id,
+                    "state": state_fn,
+                })
+            shown[key] = len(plan) - 1
     coverage = _coverage_text(comparison, result)
     if coverage:
-        plan.append({"kind": "body", "part_id": "coverage#0", "text": coverage, "card_id": "coverage"})
+        if plan:
+            plan[-1]["text"] = f"{plan[-1]['text']}\n{coverage}"
+        else:
+            plan.append({"kind": "body", "part_id": "coverage#0", "text": coverage, "card_id": "coverage"})
     return plan
+
+
+def _model_key(body: str) -> str:
+    import re
+    lines = [line.strip() for line in body.splitlines() if line.strip()]
+    found = re.search(r"SKU-[A-Za-z0-9-]+", body)
+    if found:
+        return found.group(0).upper()
+    for line in lines:
+        if re.match(r"^\d+\.\s", line) or line.startswith("Таиланд —"):
+            return line.lower()
+    if lines and lines[0].startswith("Россия") and len(lines) > 1:
+        return lines[1].lower()
+    return lines[0].lower() if lines else body
+
+
+def _relation_line_from(body: str) -> str:
+    for line in body.splitlines():
+        if line.startswith(("Подтверждено:", "Региональные", "Другая конфигурация", "Подтверждённой пары нет")):
+            return line.strip()
+    return ""
+
+
+def _failure_text(result: Mapping[str, Any]) -> str:
+    lines = ["Обновление не удалось."]
+    for error in result.get("errors") or []:
+        if error:
+            lines.append(str(error))
+    coverage = _coverage_text(result.get("comparison") or {}, result)
+    if coverage:
+        lines.append(coverage)
+    return "\n".join(lines)
 
 
 def _thai_cards(rankings: Mapping[str, Any], result: Mapping[str, Any]) -> list[tuple]:

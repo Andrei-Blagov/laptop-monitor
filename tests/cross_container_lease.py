@@ -1,0 +1,86 @@
+"""Entry point for two containers that share a queue volume. Not a unit test."""
+from __future__ import annotations
+
+import json
+import sys
+import time
+from pathlib import Path
+
+ROOT = Path("/queue")
+
+
+def _event(event_id: str):
+    import config
+    from thailand.market_events import build_market_event, enqueue_market_event
+
+    event = build_market_event(
+        instance_id=config.get_instance_id(),
+        trigger_type="manual",
+        requested_view="general_top",
+        recipients=["42"],
+        event_id=event_id,
+    )
+    return enqueue_market_event(event, root=ROOT)
+
+
+def hold() -> None:
+    from thailand.market_events import VolumeLease
+
+    stored = _event("held")
+    lease = VolumeLease(ROOT / "scan.lease")
+    delivery = VolumeLease(ROOT / "delivery.lease")
+    if not lease.try_acquire() or not delivery.try_acquire():
+        raise SystemExit("lease was not free at start")
+    scan = {
+        "scan_id": "live-scan",
+        "discovery_key": json.loads((ROOT / "pending" / "held.json").read_text(encoding="utf-8")).get("discovery_key")
+        if (ROOT / "pending" / "held.json").is_file() else None,
+    }
+    event_path = next(ROOT.rglob("held.json"))
+    event = json.loads(event_path.read_text(encoding="utf-8"))
+    scan["discovery_key"] = event["discovery_key"]
+    scan["event_ids"] = ["held"]
+    scan["claimed_at"] = event["created_at"]
+    (ROOT / "processing").mkdir(parents=True, exist_ok=True)
+    (ROOT / "processing" / "held.json").write_text(json.dumps(event), encoding="utf-8")
+    if event_path.resolve() != (ROOT / "processing" / "held.json").resolve():
+        event_path.unlink(missing_ok=True)
+    (ROOT / "active_scan.json").write_text(json.dumps(scan), encoding="utf-8")
+    (ROOT / "ready").write_text(stored.get("status") or "ready", encoding="utf-8")
+    deadline = time.time() + 25
+    while time.time() < deadline and not (ROOT / "release").exists():
+        time.sleep(0.1)
+    lease.release()
+    delivery.release()
+
+
+def second() -> None:
+    from thailand.worker import process_one
+
+    _event("joined")
+    process_one(jobs_dir=ROOT, deliver=False)
+    joined = None
+    for folder in ("pending", "processing", "deferred", "delivery", "archive"):
+        path = ROOT / folder / "joined.json"
+        if path.is_file():
+            joined = folder
+    scan = json.loads((ROOT / "active_scan.json").read_text(encoding="utf-8"))
+    report = {
+        "joined_folder": joined,
+        "scan_id": scan.get("scan_id"),
+        "event_ids": scan.get("event_ids"),
+        "results": [path.name for path in (ROOT / "results").glob("*.json")] if (ROOT / "results").is_dir() else [],
+    }
+    (ROOT / "second.json").write_text(json.dumps(report), encoding="utf-8")
+
+
+def recover() -> None:
+    from thailand.market_events import recover_market_scan
+    from datetime import datetime, timezone
+
+    recovered = recover_market_scan(root=ROOT, now=datetime.now(timezone.utc), stale_seconds=0)
+    (ROOT / "recovered.json").write_text(json.dumps({"recovered": recovered}), encoding="utf-8")
+
+
+if __name__ == "__main__":
+    {"hold": hold, "second": second, "recover": recover}[sys.argv[1]]()

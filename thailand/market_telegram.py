@@ -170,7 +170,7 @@ class MarketTextSender:
         for part in iter_market_sends(result, event, self.now_fn):
             if _part_already_sent(part["part_id"], part["text"], done):
                 continue
-            historical = "#state:" in part["part_id"] and not part["part_id"].endswith("#state:current")
+            historical = part.get("state") in {"historical", "info"}
             self._send_one(
                 event, result, part, recipient=part["recipient"], part_id=part["part_id"],
                 historical=historical,

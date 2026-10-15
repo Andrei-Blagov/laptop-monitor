@@ -641,10 +641,12 @@ def _discover(previous, decision, root, timer: PassTiming, instance_id, health_p
                 next_at.append(when)
     attempted = [result for result in results if result.store in allowed]
     if attempted and all(_attempt_kind(result) == "failed" for result in attempted):
+        reasons = [f"{result.store}:{result.error_code or 'HTTP_ERROR'}" for result in attempted]
         return _outcome(
             FAILED, action="DISCOVER", snapshot_id=_id(previous),
-            errors=errors or ["transport_failed"], http_calls=http_calls,
+            errors=errors or reasons, http_calls=http_calls,
             skipped_offers=skipped, next_allowed_at=_earliest(next_at),
+            coverage=_failure_coverage(results),
             pass_started_at=pass_started.isoformat(),
         )
     if http_calls == 0 and not any(result.offers for result in results):
@@ -1205,6 +1207,22 @@ def _policy_row(source: str, *, disabled: bool, skipped: bool = False) -> dict[s
         "limitations": ["not_attempted"],
         "retry_after_seconds": None,
     }
+
+
+def _failure_coverage(results: Sequence[StoreScanResult]) -> list[dict[str, Any]]:
+    """Describe a refused pass without publishing a snapshot or touching its dates."""
+    rows = []
+    for result in results:
+        if result.policy_disabled or result.collection_mode == "disabled":
+            continue
+        rows.append({
+            "source": result.store,
+            "state": "failed",
+            "status": "failed",
+            "error_code": result.error_code or "HTTP_ERROR",
+            "limitations": ["transport_failed"],
+        })
+    return rows
 
 
 def _attempt_kind(result: StoreScanResult) -> str:

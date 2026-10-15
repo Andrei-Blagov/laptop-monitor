@@ -19,29 +19,19 @@
 - Существующий `laptop-monitor-thailand.path` по-прежнему смотрит только `pending/`.
 - `python -m personal_top enqueue` при включённом флаге ставит `personal_top3` в ту же очередь и не запускает отдельный тайский сбор. При выключенном флаге остаётся прежняя job v1. Текст unit-файла personal TOP-3 не менялся.
 
-## Сообщения одного запроса
+## Объединение доставок
 
-Прогон 2026-10-15, временный каталог, MockTransport. Один daily-запрос, общий проход с кнопкой и BUY, магазины повторно не вызывались. Daily отправил **9** частей. Три события вместе отправили **27** частей: те же 9 на каждый запрос.
+Один проход по-прежнему обслуживает все события. Одинаковые представление и результат отправляются один раз каждому получателю: daily, кнопка и BUY не теряются и все помечаются доставленными. Разные получатели получают сообщение каждый. Другое представление, например personal TOP-3, не подменяется общим.
 
-1. Россия ↔ Таиланд. ASUS ROG Strix SKU-MATCH17. Подтверждено: та же конфигурация и полный артикул. Магазин TH: jib. Наличие TH: в наличии. Цена TH: 80000 ฿ (200000.0 ₽). Цена RU: 250000 ₽. Магазин RU: regard. Ссылка TH: https://example.test/th-match. Разрешение: 2560x1600. GPU RTX 5070 Ti, CPU Intel Core Ultra 9 275HX, RAM 32, SSD 1024, Экран 16.0. Цена TH проверена: 2026-10-15T13:06:27.384928+00:00. Наличие TH проверено: то же время. Цена RU проверена: 2026-10-15T12:46:27.384928+00:00. Наличие RU проверено: то же время. Неизвестные расходы не равны нулю: customs, delivery, exchange_spread, travel. Курс: 2.5 ₽ за 1 ฿, CBR, получен 2026-10-15T13:36:27.628919+00:00.
+Повтор одной и той же модели не шлётся отдельной карточкой: подтверждённая пара, другая конфигурация и самостоятельный TOP с тем же SKU складываются в одну. Строка выгоды входит в эту карточку, а не в отдельное сообщение.
 
-2. Подтверждённая разница: Таиланд дешевле России, 50000.0 ₽, 20.0%, заметное преимущество.
+## Сообщение одного запроса
 
-3. Россия ↔ Таиланд. Та же модель, но другая конфигурация. Это не «та же модель дешевле». Цена TH: 80000 ฿. Цена RU: 250000 ₽. Те же магазины, ссылка и времена проверки.
+Прогон 2026-10-15, временный каталог, MockTransport. Daily, кнопка и BUY, один проход, магазины повторно не вызывались. Отправлено **1** сообщение на всех троих, не 9 и не 27. Все три события сохранены.
 
-4. Текущая выгода не подтверждена. Наблюдения из-за этого не называются устаревшими.
+Россия ↔ Таиланд. ASUS ROG Strix SKU-MATCH17. Подтверждено: та же конфигурация и полный артикул. Цена TH: 80000 ฿ (200000.0 ₽). Цена RU: 250000 ₽. Магазины jib и regard. Разрешение 2560x1600. Неизвестные расходы не равны нулю: customs, delivery, exchange_spread, travel. Курс: 2.5 ₽ за 1 ฿, CBR. Другая конфигурация той же модели указана в этой же карточке, не второй. Подтверждённая разница: Таиланд дешевле России, 50000.0 ₽, 20.0%, заметное преимущество.
 
-5. Вторая такая же карточка другой конфигурации, с теми же ценами и временами.
-
-6. Текущая выгода не подтверждена. Наблюдения из-за этого не называются устаревшими.
-
-7. Таиланд — самостоятельный TOP 1. ASUS ROG Strix SKU-MATCH17. Магазин: jib. Наличие: в наличии. Цена: 80000 ฿. Ориентир: 200000.0 ₽. Ссылка: https://example.test/th-match. Цена и наличие проверены: 2026-10-15T13:06:27.384928+00:00. Курс: 2.5 ₽ за 1 ฿, CBR, получен 2026-10-15T13:36:27.628919+00:00.
-
-8. Свежие данные без российской пары остаются информационными.
-
-9. Покрытие неполное (advice: не проверен, speedcom: не проверен, invadeit: не проверен, itcity: не проверен, banana: deferred, lazada: deferred, inspected_coverage_incomplete). Это не минимум всего рынка и не доказательство отсутствия модели.
-
-Первый запуск с пустыми каталогами, все включённые магазины ответили 503: **1** часть. «По сохранённому результату показывать нечего. Каталог пуст или подходящих предложений нет.» Текущей выгоды в ней нет.
+Полный отказ магазинов, все HTTP 503: **1** сообщение «Обновление не удалось.», не «подходящих моделей нет». В сохранённом результате есть `failed`, причины и покрытие. Прежний снимок и его даты не переписываются. Успешный пустой поиск остаётся фразой «По сохранённому результату показывать нечего».
 
 Устаревшая котировка и 429 на повторной проверке JIB не содержат «Таиланд дешевле». Состояние: «Эта пара не текущая». Повторное пробуждение магазины не вызывает.
 
@@ -51,35 +41,63 @@
 
 ## Будущее включение
 
-На сервере, после отдельного развёртывания этого дерева, не из этого пакета:
+На сервере, после отдельного развёртывания этого дерева. Эти команды в этом пакете не выполнялись.
+
+Сначала дождаться, пока текущий worker отпустит захват. Не останавливать контейнер посреди сбора: `scan.lease` на общем томе держит и `laptop-monitor-thailand.service`, и `laptop-monitor-market-retry.service`.
 
 ```
-# в .env, не включать до отдельного решения
+docker ps --filter name=laptop-monitor --format '{{.Names}} {{.Status}}'
+# пусто или контейнер worker уже завершился; active_scan.json нет, либо lease свободен
+```
+
+Флаг читается при старте контейнера. Правка `.env` у уже запущенного control-bot сама не применяется. После записи флага контейнер нужно пересоздать и проверить его фактическое окружение:
+
+```
+# в .env
 STAGE22_MARKET_TELEGRAM=1
 
-sudo cp /opt/laptop-monitor/deploy/systemd/laptop-monitor-market-daily.service /etc/systemd/system/
-sudo cp /opt/laptop-monitor/deploy/systemd/laptop-monitor-market-daily.timer /etc/systemd/system/
-sudo cp /opt/laptop-monitor/deploy/systemd/laptop-monitor-market-retry.service /etc/systemd/system/
-sudo cp /opt/laptop-monitor/deploy/systemd/laptop-monitor-market-retry.timer /etc/systemd/system/
+cd /opt/laptop-monitor
+sudo ./deploy/compose.sh up -d --force-recreate --no-deps control-bot
+docker inspect laptop-monitor-control --format '{{range .Config.Env}}{{println .}}{{end}}' | grep STAGE22_MARKET_TELEGRAM
+```
+
+Ожидаемая строка: `STAGE22_MARKET_TELEGRAM=1`. Если её нет, бот ещё на старом окружении и кнопки не переведены.
+
+Затем таймеры, не трогая уже отложенные события. Они остаются в `deferred/` и просыпаются одним общим проходом, без второго сбора:
+
+```
+sudo cp deploy/systemd/laptop-monitor-market-daily.service /etc/systemd/system/
+sudo cp deploy/systemd/laptop-monitor-market-daily.timer /etc/systemd/system/
+sudo cp deploy/systemd/laptop-monitor-market-retry.service /etc/systemd/system/
+sudo cp deploy/systemd/laptop-monitor-market-retry.timer /etc/systemd/system/
 sudo systemctl daemon-reload
 sudo systemctl enable --now laptop-monitor-market-daily.timer
 sudo systemctl enable --now laptop-monitor-market-retry.timer
 ```
 
-Старый `laptop-monitor-personal-top.timer` можно оставить. После флага его команда больше не начинает второй сбор. Каталог `deferred/` в path-юнит добавлять не нужно.
+Старый `laptop-monitor-personal-top.timer` можно оставить включённым. При флаге 1 его команда ставит событие в ту же очередь и не начинает отдельный обход. Каталог `deferred/` в path-юнит не добавлять.
 
 ## Откат
 
+Снова не посреди живого сбора. Сначала остановить новые таймеры, дождаться завершения worker и не включать старый personal-обход, пока в очереди ещё есть рыночные события: иначе v1 и оставшийся market-проход пойдут двумя независимыми сборами.
+
 ```
+sudo systemctl disable --now laptop-monitor-market-daily.timer
+sudo systemctl disable --now laptop-monitor-market-retry.timer
+# дождаться, пока контейнер worker завершится и scan.lease свободен
+# pending/, processing/ и deferred/ рыночных событий должны быть пусты
+# либо один оставшийся worker дорабатывает их до включения personal-таймера
+
 # в .env
 STAGE22_MARKET_TELEGRAM=0
 
-sudo systemctl disable --now laptop-monitor-market-daily.timer
-sudo systemctl disable --now laptop-monitor-market-retry.timer
+cd /opt/laptop-monitor
+sudo ./deploy/compose.sh up -d --force-recreate --no-deps control-bot
+docker inspect laptop-monitor-control --format '{{range .Config.Env}}{{println .}}{{end}}' | grep STAGE22_MARKET_TELEGRAM
 sudo systemctl daemon-reload
 ```
 
-`python -m personal_top enqueue` снова ставит job v1. Уже установленные `laptop-monitor-thailand.path` и `laptop-monitor-personal-top.timer` эти команды не удаляют.
+Ожидаемая строка после отката: `STAGE22_MARKET_TELEGRAM=0`, либо переменная отсутствует. Только после этого `laptop-monitor-personal-top.timer` снова ставит job v1 и является единственным ежедневным тайским обходом. `laptop-monitor-thailand.path` не удаляется.
 
 ## Ограничения
 
