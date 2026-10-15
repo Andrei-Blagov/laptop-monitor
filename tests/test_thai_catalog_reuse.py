@@ -10,7 +10,7 @@ from unittest.mock import patch
 
 import config
 
-from thai_catalog import discovery_scope_hash, export_thai_catalog
+from thai_catalog import SNAPSHOT_DIRNAME, discovery_scope_hash, export_thai_catalog, load_thai_catalog
 from thailand.catalog_reuse import (
     CATALOG_HOURS,
     DAILY_MIN_HOURS,
@@ -456,6 +456,34 @@ class CatalogReuseTests(unittest.TestCase):
         self.assertEqual(decision["action"], DEFERRED)
         self.assertEqual(decision["allowed_sources"], [])
         self.assertFalse(decision["refresh_allowed"])
+
+    def test_expired_snapshot_circuit_does_not_block_forever(self) -> None:
+        observed = NOW - timedelta(hours=9)
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            _publish(root, [_offer("th-old", "SKU-OLD17", 80_000, observed)], observed=observed)
+            document = load_thai_catalog(root, expected_instance_id="c22-test")
+            for row in document["source_coverage"]:
+                if row["source"] == "jib":
+                    row["state"] = "deferred"
+                    row["status"] = "deferred"
+            import hashlib
+            snapshot_path = root / SNAPSHOT_DIRNAME / f"{document['snapshot_id']}.json"
+            atomic_write_json(snapshot_path, document)
+            latest = json.loads((root / "latest.json").read_text(encoding="utf-8"))
+            latest["sha256"] = hashlib.sha256(snapshot_path.read_bytes()).hexdigest()
+            atomic_write_json(root / "latest.json", latest)
+            atomic_write_json(self.health_path, {"version": 1, "stores": {"jib": {
+                "disabled_until": (NOW - timedelta(hours=1)).isoformat(),
+                "consecutive_failures": 0,
+            }}})
+            decision = evaluate_catalog_reuse(
+                root, now=NOW, instance_id="c22-test", expected_scope_hash=discovery_scope_hash(),
+                health_path=self.health_path,
+            )
+        self.assertEqual(decision["action"], REVALIDATE)
+        self.assertEqual(decision["allowed_sources"], ["jib"])
+        self.assertTrue(decision["refresh_allowed"])
 
     def test_legacy_scan_path_stays_available(self) -> None:
         import inspect

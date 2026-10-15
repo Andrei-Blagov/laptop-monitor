@@ -56,6 +56,7 @@ class RecordingTransport:
                 offer_id=item.get("offer_id"), status="updated", price_thb=75_000,
                 availability_state="in_stock", availability_confirmed=True, observed_at=now,
                 http_calls=1, coverage=f"{mode}:{item['source']}",
+                sku=item.get("sku"), manufacturer_part_number=item.get("manufacturer_part_number"),
             )
         refresh.http_calls = 1
         return refresh
@@ -187,28 +188,45 @@ class CatalogRefreshTests(unittest.TestCase):
                 "th-a": OfferRefresh(
                     source="jib", external_id="th-a", status="updated", price_thb=75_000,
                     availability_state="in_stock", availability_confirmed=True, observed_at=NOW,
-                    http_calls=1, observed_specs={"cpu": "Intel Core Ultra 9 285HX"},
+                    http_calls=1, sku="SKU-AAA017",
+                    observed_specs={"cpu": "Intel Core Ultra 9 285HX", "gpu": "RTX 5080"},
                 ),
-                "th-b": OfferRefresh(source="jib", external_id="th-b", status="missing", reason="not_observed_on_recheck", http_calls=1),
+                "th-b": OfferRefresh(
+                    source="jib", external_id="th-b", status="missing", reason="not_observed_on_recheck",
+                    http_calls=1, sku="SKU-BBB017",
+                ),
             })
             outcome = execute_catalog_plan(
                 decision, snapshot_root=root, now=NOW, instance_id="c22-test",
-                health_path=self.health_path, fx=_fx(), transport=transport,
+                health_path=self.health_path, fx=_fx(), russian_snapshot=_russian(), transport=transport,
             )
             saved = load_thai_catalog(root, expected_instance_id="c22-test")
             changed = next(row for row in saved["offers"] if row["external_id"] == "th-a")
             untouched = next(row for row in saved["offers"] if row["external_id"] == "th-b")
             snapshot_count = len(list((root / "snapshots").glob("*.json")))
             stored_cpu = next(row for row in original["offers"] if row["external_id"] == "th-a")["specs"]["cpu"]["value"]
+            stored_price_at = next(row for row in original["offers"] if row["external_id"] == "th-a")["price_checked_at"]
         self.assertEqual(outcome["status"], PARTIAL)
         self.assertEqual(saved["parent_snapshot_id"], original["snapshot_id"])
         self.assertNotEqual(saved["snapshot_id"], original["snapshot_id"])
         self.assertEqual(saved["discovery_checked_at"], original_discovery)
-        self.assertEqual(changed["price_thb"], 75_000)
-        self.assertEqual(changed["price_checked_at"], NOW.isoformat())
+        self.assertEqual(changed["price_thb"], 80_000)
+        self.assertEqual(changed["price_checked_at"], stored_price_at)
         self.assertEqual(changed["specs"]["cpu"]["evidence"]["captured_at"], spec_time)
         self.assertEqual(changed["specs"]["cpu"]["value"], stored_cpu)
-        self.assertTrue(any(row.get("spec_conflict") for row in saved["refresh_diagnostics"]))
+        conflict = saved["conflicting_observations"][0]
+        self.assertEqual(conflict["price_thb"], 75_000)
+        self.assertEqual(conflict["reason"], "spec_conflict")
+        self.assertFalse(conflict["purchase_quote"])
+        self.assertIn("cpu", conflict["conflicts"])
+        self.assertIn("gpu", conflict["conflicts"])
+        identifiers = [
+            offer["external_id"]
+            for row in outcome["rankings"]["thai_top_value"]
+            for offer in row.get("offers") or []
+        ]
+        self.assertNotIn("th-a", identifiers)
+        self.assertTrue(all(pair.get("saving_rub") is None or pair.get("th_offer_id") != changed["offer_id"] for pair in outcome["comparison"]["pairs"]))
         self.assertEqual(untouched["price_checked_at"], kept["price_checked_at"])
         self.assertEqual(untouched["availability_checked_at"], kept["availability_checked_at"])
         self.assertGreaterEqual(snapshot_count, 2)
@@ -402,6 +420,7 @@ class CatalogRefreshTests(unittest.TestCase):
             )
             self.assertEqual((root / "latest.json").read_bytes(), before)
             self.assertEqual(load_thai_catalog(root, expected_instance_id="c22-test")["snapshot_id"], previous)
+            self.assertEqual(outcome["snapshot_id"], previous)
         self.assertEqual(outcome["status"], FAILED)
         self.assertIn("publish_failed:OSError", outcome["errors"])
 
@@ -418,8 +437,12 @@ class CatalogRefreshTests(unittest.TestCase):
                 "th-oos": OfferRefresh(
                     source="jib", external_id="th-oos", status="updated", price_thb=70_000,
                     availability_state="out_of_stock", availability_confirmed=True, observed_at=NOW, http_calls=1,
+                    sku="SKU-OOS017",
                 ),
-                "th-unk": OfferRefresh(source="jib", external_id="th-unk", status="unverified", reason="unconfirmed", http_calls=1),
+                "th-unk": OfferRefresh(
+                    source="jib", external_id="th-unk", status="unverified", reason="unconfirmed", http_calls=1,
+                    sku="SKU-UNK017",
+                ),
             })
             outcome = execute_catalog_plan(
                 decision, snapshot_root=root, now=NOW, instance_id="c22-test",
@@ -435,13 +458,13 @@ class CatalogRefreshTests(unittest.TestCase):
         stale = NOW - timedelta(hours=9)
         html = (
             "<html><head><title>ASUS ROG Strix SKU-OLD17</title></head><body>"
-            "<h1>ASUS ROG Strix SKU-OLD17</h1> salePrice: 75000 qty = 4 "
+            "<h1>ASUS ROG Strix SKUOLD17</h1> salePrice: 75000 qty = 4 "
             + (" " * 40)
             + "</body></html>"
         )
         with tempfile.TemporaryDirectory() as tmp:
             root = Path(tmp)
-            _publish(root, [_offer("th-old", "SKU-OLD17", 80_000, stale)], observed=stale)
+            _publish(root, [_offer("th-old", "SKUOLD17", 80_000, stale)], observed=stale)
             original_spec = load_thai_catalog(root, expected_instance_id="c22-test")["offers"][0]["specs"]["cpu"]["evidence"]["captured_at"]
             decision = self._decision(root)
             client = OneShotClient(Response(200, html, headers={"content-type": "text/html"}))
@@ -513,6 +536,314 @@ class CatalogRefreshTests(unittest.TestCase):
         self.assertEqual(outcome["http_calls"], 1)
         self.assertEqual([row["external_id"] for row in outcome["skipped_offers"]], ["th-b"])
         self.assertEqual(outcome["skipped_offers"][0]["next_allowed_at"], until)
+
+    def test_variant_change_and_missing_variant_do_not_replace_the_quote(self) -> None:
+        stale = NOW - timedelta(hours=9)
+        changed = _offer("th-var", "SKU-VAR017", 80_000, stale)
+        changed.variant_id = "color-a"
+        bare = _offer("th-bare", "SKU-BARE17", 81_000, stale)
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            _publish(root, [changed, bare], observed=stale)
+            decision = self._decision(root)
+            transport = RecordingTransport(refreshes={
+                "th-var": OfferRefresh(
+                    source="jib", external_id="th-var", variant_id="color-b", sku="SKU-VAR017",
+                    status="updated", price_thb=70_000, availability_state="in_stock",
+                    availability_confirmed=True, observed_at=NOW, http_calls=1,
+                ),
+                "th-bare": OfferRefresh(
+                    source="jib", external_id="th-bare", variant_id=None, sku=None,
+                    status="updated", price_thb=70_000, availability_state="in_stock",
+                    availability_confirmed=True, observed_at=NOW, http_calls=1,
+                ),
+            })
+            execute_catalog_plan(
+                decision, snapshot_root=root, now=NOW, instance_id="c22-test",
+                health_path=self.health_path, transport=transport,
+            )
+            saved = load_thai_catalog(root, expected_instance_id="c22-test")
+        reasons = {row["external_id"]: row["reason"] for row in saved["conflicting_observations"]}
+        self.assertEqual(reasons["th-var"], "variant_mismatch")
+        self.assertEqual(reasons["th-bare"], "variant_unconfirmed")
+        prices = {row["external_id"]: row["price_thb"] for row in saved["offers"]}
+        self.assertEqual(prices["th-var"], 80_000)
+        self.assertEqual(prices["th-bare"], 81_000)
+        self.assertTrue(all(row["purchase_quote"] is False for row in saved["conflicting_observations"]))
+
+    def test_clock_moves_during_http_and_does_not_freshen_the_quote(self) -> None:
+        from thailand.catalog_refresh import ManualClock
+
+        stale = NOW - timedelta(hours=9)
+        clock = ManualClock(NOW)
+        response_at = NOW + timedelta(minutes=2)
+        published_at = response_at + timedelta(hours=7)
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            _publish(root, [_offer("th-a", "SKU-AAA017", 80_000, stale)], observed=stale)
+            decision = self._decision(root, fx=_fx(), russian_snapshot=_russian())
+
+            class Moving(RecordingTransport):
+                def refresh_offer(self, item, *, mode, now):
+                    clock.advance(timedelta(minutes=2))
+                    refresh = super().refresh_offer(item, mode=mode, now=now)
+                    refresh.observed_at = clock.now()
+                    clock.advance(timedelta(hours=7))
+                    return refresh
+
+            outcome = execute_catalog_plan(
+                decision, snapshot_root=root, now=NOW, instance_id="c22-test",
+                health_path=self.health_path, fx=_fx(), russian_snapshot=_russian(),
+                transport=Moving(), clock=clock,
+            )
+            saved = load_thai_catalog(root, expected_instance_id="c22-test")
+        self.assertEqual(outcome["pass_started_at"], NOW.isoformat())
+        self.assertEqual(saved["offers"][0]["price_checked_at"], response_at.isoformat())
+        self.assertEqual(outcome["published_at"], published_at.isoformat())
+        self.assertEqual(saved["created_at"], published_at.isoformat())
+        self.assertNotEqual(saved["offers"][0]["price_checked_at"], saved["created_at"])
+        fresh = __import__("thai_catalog", fromlist=["rankings_from_catalog"]).rankings_from_catalog(
+            saved, _fx(), now=response_at + timedelta(minutes=1),
+        )
+        self.assertTrue(fresh["thai_top_value"])
+        self.assertEqual(outcome["rankings"]["thai_top_value"], [])
+        self.assertTrue(all(pair.get("saving_rub") is None for pair in outcome["comparison"]["pairs"]))
+
+    def test_live_parser_conflict_retry_after_deadline_and_failures(self) -> None:
+        import httpx
+        from thailand.catalog_refresh import LiveCatalogTransport, ManualClock
+        from thailand.source_health import load_health
+
+        stale = NOW - timedelta(hours=9)
+        conflict_html = (
+            "<html><head><title>ASUS ROG Strix SKUOLD17</title></head><body>"
+            "<h1>ASUS ROG Strix SKUOLD17</h1>"
+            "CPU: Intel Core Ultra 9 285HX "
+            "Graphics: RTX 5080 "
+            "salePrice: 75000 qty = 3 " + (" " * 40) + "</body></html>"
+        )
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            _publish(root, [_offer("th-old", "SKUOLD17", 80_000, stale)], observed=stale)
+            original = load_thai_catalog(root, expected_instance_id="c22-test")
+            decision = self._decision(root, fx=_fx(), russian_snapshot=_russian())
+
+            def conflict_handler(request: httpx.Request) -> httpx.Response:
+                self.assertNotIn("search_suggestion", str(request.url))
+                return httpx.Response(200, text=conflict_html)
+
+            client = httpx.Client(transport=httpx.MockTransport(conflict_handler))
+            outcome = execute_catalog_plan(
+                decision, snapshot_root=root, now=NOW, instance_id="c22-test",
+                health_path=self.health_path, fx=_fx(), russian_snapshot=_russian(),
+                transport=LiveCatalogTransport(client=client), clock=ManualClock(NOW),
+            )
+            saved = load_thai_catalog(root, expected_instance_id="c22-test")
+            self.assertEqual(saved["offers"][0]["price_thb"], 80_000)
+            self.assertEqual(saved["offers"][0]["price_checked_at"], original["offers"][0]["price_checked_at"])
+            self.assertEqual(saved["conflicting_observations"][0]["reason"], "spec_conflict")
+            self.assertFalse(saved["conflicting_observations"][0]["purchase_quote"])
+            self.assertEqual(outcome["rankings"]["thai_top_value"], [])
+            client.close()
+
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            _publish(root, [_offer("th-old", "SKUOLD17", 80_000, stale)], observed=stale)
+            decision = self._decision(root)
+            calls = []
+
+            def late_429(request: httpx.Request) -> httpx.Response:
+                calls.append(str(request.url))
+                if len(calls) == 1:
+                    return httpx.Response(200, json={"rec": []})
+                if len(calls) == 2:
+                    return httpx.Response(429, headers={"Retry-After": "90"}, text="slow")
+                raise AssertionError(request.url)
+
+            client = httpx.Client(transport=httpx.MockTransport(late_429))
+            decision["allowed_sources"] = ["jib"]
+            decision["action"] = "DISCOVER"
+            decision["refresh_allowed"] = True
+            clock = ManualClock(NOW)
+            outcome = execute_catalog_plan(
+                decision, snapshot_root=root, now=NOW, instance_id="c22-test",
+                health_path=self.health_path, transport=LiveCatalogTransport(client=client), clock=clock,
+            )
+            self.assertEqual(len(calls), 2)
+            health = load_health(self.health_path)
+            until = health["stores"]["jib"]["rate_limit_until"]
+            self.assertEqual(until, (NOW + timedelta(seconds=90)).isoformat())
+            self.assertEqual(outcome["status"], PARTIAL)
+            client.close()
+            atomic_write_json(self.health_path, {"version": 1, "stores": {}})
+
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            _publish(root, [_offer("th-old", "SKUOLD17", 80_000, stale)], observed=stale)
+            before = (root / "latest.json").read_bytes()
+            previous = load_thai_catalog(root, expected_instance_id="c22-test")["snapshot_id"]
+            decision = self._decision(root)
+            decision["allowed_sources"] = ["jib"]
+            decision["action"] = "DISCOVER"
+            decision["refresh_allowed"] = True
+
+            def down(_request: httpx.Request) -> httpx.Response:
+                return httpx.Response(500, text="down")
+
+            client = httpx.Client(transport=httpx.MockTransport(down))
+            outcome = execute_catalog_plan(
+                decision, snapshot_root=root, now=NOW, instance_id="c22-test",
+                health_path=self.health_path, transport=LiveCatalogTransport(client=client),
+                clock=ManualClock(NOW),
+            )
+            self.assertEqual(outcome["status"], FAILED)
+            self.assertEqual(outcome["snapshot_id"], previous)
+            self.assertEqual((root / "latest.json").read_bytes(), before)
+            self.assertGreater(outcome["http_calls"], 0)
+            client.close()
+            atomic_write_json(self.health_path, {"version": 1, "stores": {}})
+
+    def test_live_deadline_empty_read_partial_keep_and_fx(self) -> None:
+        import httpx
+        from thailand.catalog_refresh import LiveCatalogTransport, ManualClock
+
+        stale = NOW - timedelta(hours=9)
+        fresh = NOW - timedelta(hours=1)
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            _publish(root, [_offer("th-old", "SKUOLD17", 80_000, stale)], observed=stale)
+            decision = self._decision(root)
+            decision["allowed_sources"] = ["jib"]
+            decision["action"] = "DISCOVER"
+            decision["refresh_allowed"] = True
+            clock = ManualClock(NOW)
+            calls = []
+
+            def slow(request: httpx.Request) -> httpx.Response:
+                calls.append(1)
+                clock.advance(timedelta(hours=2))
+                return httpx.Response(200, json={"rec": []})
+
+            client = httpx.Client(transport=httpx.MockTransport(slow))
+            execute_catalog_plan(
+                decision, snapshot_root=root, now=NOW, instance_id="c22-test",
+                health_path=self.health_path, transport=LiveCatalogTransport(client=client),
+                clock=clock, overall_timeout_seconds=60,
+            )
+            self.assertEqual(calls, [1])
+            client.close()
+
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            advice = _offer("adv-1", "SKU-ADV017", 70_000, fresh, store="advice")
+            _publish(
+                root,
+                [_offer("th-old", "SKUOLD17", 80_000, fresh)],
+                observed=fresh,
+                extra=[_result([advice], store="advice")],
+            )
+            original = load_thai_catalog(root, expected_instance_id="c22-test")
+            jib_at = next(row["price_checked_at"] for row in original["offers"] if row["source"] == "jib")
+            decision = self._decision(root)
+            decision["allowed_sources"] = ["jib", "advice"]
+            decision["action"] = "DISCOVER"
+            decision["refresh_allowed"] = True
+
+            def route(request: httpx.Request) -> httpx.Response:
+                if "advice" in request.url.host:
+                    return httpx.Response(200, json={"products": []})
+                return httpx.Response(500, text="down")
+
+            client = httpx.Client(transport=httpx.MockTransport(route))
+            outcome = execute_catalog_plan(
+                decision, snapshot_root=root, now=NOW, instance_id="c22-test",
+                health_path=self.health_path, transport=LiveCatalogTransport(client=client),
+                clock=ManualClock(NOW),
+            )
+            saved = load_thai_catalog(root, expected_instance_id="c22-test")
+            kept = next(row for row in saved["offers"] if row["source"] == "jib")
+            self.assertEqual(outcome["status"], PARTIAL)
+            self.assertNotEqual(saved["snapshot_id"], original["snapshot_id"])
+            self.assertEqual(kept["price_checked_at"], jib_at)
+            jib_coverage = next(row for row in saved["source_coverage"] if row["source"] == "jib")
+            self.assertIn("attempt_failed_previous_observations_kept", jib_coverage["limitations"])
+            advice_coverage = next(row for row in saved["source_coverage"] if row["source"] == "advice")
+            self.assertNotEqual(advice_coverage["state"], "failed")
+            client.close()
+
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            _publish(root, [_offer("iv-1", "SKU-INV017", 80_000, fresh, store="invadeit")], observed=fresh)
+            decision = self._decision(root, fx=_fx())
+            decision["allowed_sources"] = ["invadeit"]
+            decision["action"] = "DISCOVER"
+            decision["refresh_allowed"] = True
+            seen = []
+            import thailand.invadeit as invadeit
+            original_collect = invadeit.collect
+
+            def wrapped(**kwargs):
+                seen.append(kwargs.get("fx"))
+                return original_collect(**kwargs)
+
+            def category(_request: httpx.Request) -> httpx.Response:
+                return httpx.Response(200, json={"items": [], "hasNextPage": False})
+
+            client = httpx.Client(transport=httpx.MockTransport(category))
+            with patch("thailand.invadeit.collect", wrapped), patch("thailand.fx.fetch_cbr_thb_rate", side_effect=AssertionError("cbr")):
+                outcome = execute_catalog_plan(
+                    decision, snapshot_root=root, now=NOW, instance_id="c22-test",
+                    health_path=self.health_path, fx=_fx(),
+                    transport=LiveCatalogTransport(client=client), clock=ManualClock(NOW),
+                )
+            self.assertEqual(outcome["status"], COMPLETED)
+            self.assertIsNotNone(seen[0])
+            self.assertEqual(seen[0].rub_per_thb, 2.5)
+            client.close()
+
+    def test_changed_snapshot_is_replanned_without_http(self) -> None:
+        observed = NOW - timedelta(hours=9)
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            _publish(root, [_offer("th-a", "SKU-AAA017", 80_000, observed)], observed=observed)
+            decision = self._decision(root)
+            _publish(root, [_offer("th-b", "SKU-BBB017", 81_000, observed)], observed=observed)
+            current = load_thai_catalog(root, expected_instance_id="c22-test")["snapshot_id"]
+            outcome = execute_catalog_plan(
+                decision, snapshot_root=root, now=NOW, instance_id="c22-test",
+                health_path=self.health_path, transport=BombTransport(),
+            )
+        self.assertEqual(outcome["status"], FAILED)
+        self.assertEqual(outcome["http_calls"], 0)
+        self.assertEqual(outcome["snapshot_id"], current)
+        self.assertIn("snapshot_changed", outcome["errors"])
+        self.assertEqual(outcome["replanned_decision"]["snapshot_id"], current)
+
+    def test_retry_after_http_date_is_stored(self) -> None:
+        import httpx
+        from thailand.catalog_refresh import LiveCatalogTransport, ManualClock
+        from thailand.source_health import load_health
+
+        stale = NOW - timedelta(hours=9)
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            _publish(root, [_offer("th-old", "SKUOLD17", 80_000, stale)], observed=stale)
+            decision = self._decision(root)
+
+            def limited(_request: httpx.Request) -> httpx.Response:
+                return httpx.Response(429, headers={"Retry-After": "Wed, 14 Oct 2026 13:00:00 GMT"}, text="later")
+
+            client = httpx.Client(transport=httpx.MockTransport(limited))
+            outcome = execute_catalog_plan(
+                decision, snapshot_root=root, now=NOW, instance_id="c22-test",
+                health_path=self.health_path, transport=LiveCatalogTransport(client=client),
+                clock=ManualClock(NOW),
+            )
+            until = load_health(self.health_path)["stores"]["jib"]["rate_limit_until"]
+        self.assertEqual(outcome["status"], PARTIAL)
+        self.assertEqual(until, (NOW + timedelta(hours=1)).isoformat())
+        self.assertEqual(outcome["next_allowed_at"], (NOW + timedelta(hours=1)).isoformat())
+        client.close()
 
 
 if __name__ == "__main__":

@@ -9,10 +9,13 @@ before every HTTP call.
 from __future__ import annotations
 
 import hashlib
+import inspect
+import re
 import time
 import uuid
 from dataclasses import dataclass, field
-from datetime import datetime
+from datetime import datetime, timedelta, timezone
+from email.utils import parsedate_to_datetime
 from pathlib import Path
 from typing import Any, Mapping, Sequence
 from urllib.parse import quote
@@ -26,12 +29,17 @@ from thai_catalog import (
     LATEST_NAME,
     SNAPSHOT_DIRNAME,
     ThaiCatalogError,
+    _diagnostics,
     _dumps,
+    _limitations,
+    _raw_observation,
+    _variants,
+    build_thai_catalog,
     comparison_from_catalog,
-    export_thai_catalog,
     load_thai_catalog,
     rankings_from_catalog,
 )
+from thailand.discovery import QUERY_BUDGET
 from thailand.catalog_reuse import _source_block
 from thailand.errors import RATE_LIMITED
 from thailand.models import StoreScanResult
@@ -47,6 +55,10 @@ FAILED = "failed"
 POINT_CHECK_SOURCES = frozenset({"jib"})
 BOUNDED_SOURCE_REFRESH_SOURCES = frozenset({"advice", "speedcom", "invadeit", "itcity"})
 POLICY_DISABLED_SOURCES = frozenset({"banana", "lazada"})
+# Backstop for a runaway loop. Adapters keep their own search and detail caps.
+DEFAULT_REQUEST_BUDGET = QUERY_BUDGET + 24
+_FULL_ID = re.compile(r"[A-Z0-9][A-Z0-9._/\-]*")
+_BARE_PLATFORM = re.compile(r"(?:G\d{3}[A-Z]{1,4}|\d{2}[A-Z]{3}\d{2}H|[A-Z]\d[A-Z]{4,6})")
 
 
 @dataclass
@@ -65,43 +77,172 @@ class OfferRefresh:
     retry_after_seconds: int | None = None
     coverage: str = ""
     observed_specs: dict[str, Any] = field(default_factory=dict)
-    variant_confirmed: bool = True
+    sku: str | None = None
+    manufacturer_part_number: str | None = None
+    variant_confirmed: bool = False
+
+
+class ManualClock:
+    """Test clock. ``advance`` moves the instant; nothing here rewrites observations."""
+
+    def __init__(self, instant: datetime) -> None:
+        self.instant = _clock(instant)
+
+    def now(self) -> datetime:
+        return self.instant
+
+    def advance(self, delta: timedelta) -> None:
+        self.instant = self.instant + delta
+
+
+class GuardedClient:
+    """Check enabled, health, deadline, and budget before every real HTTP call."""
+
+    def __init__(
+        self,
+        inner: httpx.Client,
+        *,
+        source: str,
+        clock: ManualClock,
+        health_path,
+        deadline_at: datetime,
+        budget: int,
+    ) -> None:
+        self.inner = inner
+        self.source = source
+        self.clock = clock
+        self.health_path = health_path
+        self.deadline_at = deadline_at
+        self.budget = budget
+        self.http_calls = 0
+        self.successes = 0
+        self.stopped = False
+        self.real_429 = False
+        self.blocked_reason: str | None = None
+        self.retry_after_seconds: int | None = None
+
+    def get(self, url, **kwargs):
+        reason = self._block_reason()
+        if reason:
+            self.blocked_reason = self.blocked_reason or reason
+            return httpx.Response(429, headers={"X-Block-Reason": reason})
+        response = self.inner.get(url, **kwargs)
+        self.http_calls += 1
+        now = self.clock.now()
+        if response.status_code == 429:
+            self.real_429 = True
+            self.stopped = True
+            self.retry_after_seconds = _retry_after_value(response.headers.get("Retry-After"), now)
+            record_observation(
+                self.source, ok=False, error_code=RATE_LIMITED,
+                retry_after_seconds=self.retry_after_seconds, now=now, path=self.health_path,
+            )
+            return response
+        if response.status_code >= 400:
+            record_observation(
+                self.source, ok=False, error_code=f"HTTP_{response.status_code}",
+                now=now, path=self.health_path,
+            )
+            return response
+        self.successes += 1
+        record_observation(self.source, ok=True, offer_count=0, now=now, path=self.health_path)
+        return response
+
+    def close(self) -> None:
+        return None
+
+    def _block_reason(self) -> str | None:
+        if self.stopped or self.real_429:
+            return "stopped_after_429"
+        if not _source_enabled(self.source):
+            return "source_disabled"
+        if self.clock.now() >= self.deadline_at:
+            return "deadline"
+        if self.budget <= 0 or self.http_calls >= self.budget:
+            return "budget"
+        block, _when = _source_block(
+            self.source,
+            {"enabled": True, "policy_disabled": False, "state": "ok"},
+            self.clock.now(),
+            self.health_path,
+        )
+        if block:
+            return block
+        return None
 
 
 class LiveCatalogTransport:
     """Store calls used when a test does not inject its own transport.
 
     REVALIDATE never calls ``collect``. DISCOVER calls one adapter ``collect``
-    per allowed source and does not receive a Russian TOP.
+    per allowed source and does not receive a Russian TOP. Every ``client.get``
+    inside that collect passes through ``GuardedClient``.
     """
 
-    def __init__(self, client: httpx.Client | None = None, timeout: float = 20.0) -> None:
+    def __init__(
+        self,
+        client: httpx.Client | None = None,
+        timeout: float = 20.0,
+        *,
+        request_budget: int | None = None,
+    ) -> None:
         self.client = client
         self.timeout = timeout
+        self.request_budget = request_budget if request_budget is not None else DEFAULT_REQUEST_BUDGET
+        self.clock: ManualClock | None = None
+        self.health_path = None
+        self.deadline_at: datetime | None = None
+        self.fx_rate = None
         self.calls: list[tuple[str, str, str | None]] = []
+        self.guards: list[GuardedClient] = []
 
-    def refresh_offer(self, item: Mapping[str, Any], *, mode: str, now: datetime) -> OfferRefresh:
+    def refresh_offer(self, item: Mapping[str, Any], *, mode: str, now: datetime, clock: ManualClock | None = None) -> OfferRefresh:
+        del now
         source = str(item.get("source") or "")
         external_id = str(item.get("external_id") or "")
         self.calls.append((mode, source, external_id))
         if source in POLICY_DISABLED_SOURCES or mode == "refused":
             return _skipped(item, "source_disabled", coverage="disabled source was not requested")
+        guard = self._guard(source)
+        active = clock or self.clock
         if mode == "point" and source in POINT_CHECK_SOURCES:
-            return _jib_point(item, client=self.client, timeout=self.timeout, now=now)
+            return _jib_point(item, client=guard, timeout=self.timeout, clock=active)
         if mode == "bounded" and source in BOUNDED_SOURCE_REFRESH_SOURCES:
-            return _bounded_request(item, client=self.client, timeout=self.timeout, now=now)
+            return _bounded_request(item, client=guard, timeout=self.timeout, clock=active)
         return _skipped(item, "refresh_mode_refused", coverage="broad search was not started")
 
     def discover_source(self, source: str, *, now: datetime) -> StoreScanResult:
         del now
         self.calls.append(("discover", source, None))
-        if source in POLICY_DISABLED_SOURCES:
+        if source in POLICY_DISABLED_SOURCES or not _source_enabled(source):
             raise ThaiCatalogError(f"disabled source is not discoverable: {source}")
         adapter = next(item for item in get_thailand_adapters() if item.slug == source)
-        kwargs: dict[str, Any] = {"timeout": self.timeout}
-        if self.client is not None:
-            kwargs["client"] = self.client
-        return adapter.collect(**kwargs)
+        guard = self._guard(source)
+        kwargs: dict[str, Any] = {}
+        signature = inspect.signature(adapter.collect)
+        accepts_any = any(parameter.kind == inspect.Parameter.VAR_KEYWORD for parameter in signature.parameters.values())
+        if "timeout" in signature.parameters or accepts_any:
+            kwargs["timeout"] = self.timeout
+        if "client" in signature.parameters or accepts_any:
+            kwargs["client"] = guard
+        if ("fx" in signature.parameters or accepts_any) and self.fx_rate is not None and source == "invadeit":
+            kwargs["fx"] = self.fx_rate
+        result = adapter.collect(**kwargs)
+        return _finish_guarded_result(result, guard)
+
+    def _guard(self, source: str) -> GuardedClient:
+        if self.client is None or self.clock is None or self.deadline_at is None:
+            raise ThaiCatalogError("live transport requires a client, clock, and deadline")
+        guard = GuardedClient(
+            self.client,
+            source=source,
+            clock=self.clock,
+            health_path=self.health_path,
+            deadline_at=self.deadline_at,
+            budget=self.request_budget,
+        )
+        self.guards.append(guard)
+        return guard
 
 
 def execute_catalog_plan(
@@ -116,9 +257,11 @@ def execute_catalog_plan(
     transport: Any = None,
     publish_barrier: Any = None,
     overall_timeout_seconds: float | None = None,
+    clock: ManualClock | None = None,
 ) -> dict[str, Any]:
     """Run one reuse decision. Returns the orchestration result and does not notify."""
-    clock = _clock(now)
+    timer = clock or ManualClock(_clock(now))
+    pass_started = timer.now()
     root = Path(snapshot_root)
     actor = transport or LiveCatalogTransport()
     action = str(decision.get("action") or "")
@@ -126,30 +269,45 @@ def execute_catalog_plan(
         previous = load_thai_catalog(root, expected_instance_id=instance_id)
     except (ThaiCatalogError, OSError, ValueError) as exc:
         if action != "DISCOVER":
-            return _outcome(FAILED, action=action, errors=[f"catalog_unusable:{type(exc).__name__}"], detail=str(exc))
+            return _outcome(
+                FAILED, action=action, errors=[f"catalog_unusable:{type(exc).__name__}"],
+                detail=str(exc), pass_started_at=pass_started.isoformat(),
+            )
         previous = None
+    bound = decision.get("snapshot_id")
+    if previous is not None and bound and bound != previous.get("snapshot_id"):
+        return _refuse_stale_decision(
+            root, previous, timer, instance_id, health_path, russian_snapshot, fx, pass_started,
+        )
     if action in {"REUSE", "DEFERRED"} or not decision.get("refresh_allowed"):
-        return _reuse_or_defer(previous, action, fx, russian_snapshot, clock)
+        return _reuse_or_defer(previous, action, fx, russian_snapshot, timer.now(), pass_started)
     timeout = float(
         overall_timeout_seconds
         if overall_timeout_seconds is not None
         else config.THAILAND_OVERALL_TIMEOUT_SECONDS
     )
-    started = time.monotonic()
+    if isinstance(actor, LiveCatalogTransport):
+        actor.clock = timer
+        actor.health_path = health_path
+        actor.deadline_at = pass_started + timedelta(seconds=timeout)
+        actor.fx_rate = _fx_rate(fx, pass_started)
     if action == "REVALIDATE":
         return _revalidate(
-            previous, decision, root, clock, instance_id, health_path, russian_snapshot, fx,
-            actor, publish_barrier, started, timeout,
+            previous, decision, root, timer, instance_id, health_path, russian_snapshot, fx,
+            actor, publish_barrier, timeout, pass_started,
         )
     if action == "DISCOVER":
         return _discover(
-            previous, decision, root, clock, instance_id, health_path, russian_snapshot, fx,
-            actor, publish_barrier, started, timeout,
+            previous, decision, root, timer, instance_id, health_path, russian_snapshot, fx,
+            actor, publish_barrier, timeout, pass_started,
         )
-    return _outcome(FAILED, action=action, errors=[f"unknown_action:{action}"], snapshot_id=_id(previous))
+    return _outcome(
+        FAILED, action=action, errors=[f"unknown_action:{action}"],
+        snapshot_id=_id(previous), pass_started_at=pass_started.isoformat(),
+    )
 
 
-def _reuse_or_defer(document, action, fx, russian_snapshot, now: datetime) -> dict[str, Any]:
+def _reuse_or_defer(document, action, fx, russian_snapshot, now: datetime, pass_started: datetime | None = None) -> dict[str, Any]:
     if document is None:
         return _outcome(FAILED, action=action, errors=["catalog_missing"])
     rankings, comparison, views = _views(document, fx, russian_snapshot, now)
@@ -164,39 +322,81 @@ def _reuse_or_defer(document, action, fx, russian_snapshot, now: datetime) -> di
         views=views,
         coverage=list(document.get("source_coverage") or []),
         http_calls=0,
+        pass_started_at=(pass_started or now).isoformat(),
+        published_at=None,
     )
 
 
-def _revalidate(previous, decision, root, now, instance_id, health_path, russian, fx, transport, barrier, started, timeout):
+def _refuse_stale_decision(root, previous, timer, instance_id, health_path, russian_snapshot, fx, pass_started):
+    from thailand.catalog_reuse import evaluate_catalog_reuse
+
+    replanned = evaluate_catalog_reuse(
+        root,
+        now=timer.now(),
+        instance_id=instance_id,
+        health_path=health_path,
+        russian_snapshot=russian_snapshot,
+        fx=fx,
+    )
+    return _outcome(
+        FAILED,
+        action=replanned.get("action"),
+        snapshot_id=previous.get("snapshot_id"),
+        errors=["snapshot_changed"],
+        http_calls=0,
+        pass_started_at=pass_started.isoformat(),
+        replanned_decision=replanned,
+    )
+
+
+def _call_refresh(transport, item, mode: str, timer: ManualClock) -> OfferRefresh:
+    kwargs: dict[str, Any] = {"mode": mode, "now": timer.now()}
+    if "clock" in inspect.signature(transport.refresh_offer).parameters:
+        kwargs["clock"] = timer
+    return transport.refresh_offer(item, **kwargs)
+
+
+def _revalidate(previous, decision, root, timer: ManualClock, instance_id, health_path, russian, fx, transport, barrier, timeout, pass_started):
+    del instance_id
     if previous is None:
-        return _outcome(FAILED, action="REVALIDATE", errors=["catalog_missing"])
+        return _outcome(FAILED, action="REVALIDATE", errors=["catalog_missing"], pass_started_at=pass_started.isoformat())
+    saved_id = previous.get("snapshot_id")
     updated, skipped, errors, http_calls, next_at = [], [], [], 0, []
     stopped: set[str] = set()
     coverage_rows = {row.get("source"): row for row in previous.get("source_coverage") or []}
+    deadline = pass_started + timedelta(seconds=timeout)
     for item in decision.get("revalidate_offers") or []:
         source = str(item.get("source") or "")
-        if _timed_out(started, timeout):
+        if timer.now() >= deadline:
             skipped.append(_skip(item, "deadline"))
             continue
         if source in stopped:
             skipped.append(_skip(item, "stopped_after_429"))
             continue
-        block, when = _source_block(source, coverage_rows.get(source), now, health_path)
+        block, when = _source_block(source, coverage_rows.get(source), timer.now(), health_path)
         if block or source in POLICY_DISABLED_SOURCES or source not in POINT_CHECK_SOURCES | BOUNDED_SOURCE_REFRESH_SOURCES:
             reason = block or "source_disabled"
             skipped.append(_skip(item, reason, when))
             if when:
                 next_at.append(when)
             continue
+        if not _source_enabled(source):
+            skipped.append(_skip(item, "source_disabled"))
+            continue
         mode = "point" if source in POINT_CHECK_SOURCES else "bounded"
-        refresh = transport.refresh_offer(item, mode=mode, now=now)
+        refresh = _call_refresh(transport, item, mode, timer)
         http_calls += int(refresh.http_calls or 0)
+        if refresh.http_calls:
+            _note_attempt(previous, source, response_at=refresh.observed_at or timer.now(), http_calls=refresh.http_calls, mode=mode)
         if refresh.status == "rate_limited":
             stopped.add(source)
-            when = _remember_rate_limit(source, refresh, now, health_path)
+            when = _remember_rate_limit(source, refresh, timer.now(), health_path)
             skipped.append(_skip(item, "retry_after", when))
             if when:
                 next_at.append(when)
+            continue
+        if refresh.status == "failed" and not refresh.http_calls:
+            skipped.append(_skip(item, refresh.reason or "failed"))
             continue
         kind = _apply_refresh(previous, refresh)
         row = _row(refresh, kind)
@@ -204,24 +404,33 @@ def _revalidate(previous, decision, root, now, instance_id, health_path, russian
             updated.append(row)
         else:
             skipped.append(row)
-            if refresh.reason:
+            if refresh.reason and kind != "conflict":
                 errors.append(refresh.reason)
     if http_calls == 0 and not updated:
-        rankings, comparison, views = _views(previous, fx, russian, now)
+        rankings, comparison, views = _views(previous, fx, russian, timer.now())
         return _outcome(
-            DEFERRED, action="REVALIDATE", snapshot_id=previous.get("snapshot_id"),
+            DEFERRED, action="REVALIDATE", snapshot_id=saved_id,
             updated_offers=updated, skipped_offers=skipped, errors=errors, http_calls=0,
             next_allowed_at=_earliest(next_at), rankings=rankings, comparison=comparison,
             views=views, coverage=list(previous.get("source_coverage") or []),
+            pass_started_at=pass_started.isoformat(),
         )
-    saved, error = _save_revalidated(previous, root, now, barrier)
+    if updated == [] and skipped and all(row.get("reason") in {"failed", "HTTP_ERROR"} or str(row.get("reason") or "").startswith("HTTP_") for row in skipped):
+        return _outcome(
+            FAILED, action="REVALIDATE", snapshot_id=saved_id,
+            updated_offers=[], skipped_offers=skipped, errors=errors or ["transport_failed"],
+            http_calls=http_calls, next_allowed_at=_earliest(next_at),
+            pass_started_at=pass_started.isoformat(),
+        )
+    published_at = timer.now()
+    saved, error, current_id = _save_revalidated(previous, root, published_at, barrier, saved_id)
     if error:
         return _outcome(
-            FAILED, action="REVALIDATE", snapshot_id=previous.get("snapshot_id"),
+            FAILED, action="REVALIDATE", snapshot_id=current_id,
             updated_offers=updated, skipped_offers=skipped, errors=[error], http_calls=http_calls,
-            next_allowed_at=_earliest(next_at),
+            next_allowed_at=_earliest(next_at), pass_started_at=pass_started.isoformat(),
         )
-    rankings, comparison, views = _views(saved, fx, russian, now)
+    rankings, comparison, views = _views(saved, fx, russian, published_at)
     status = COMPLETED if updated and not skipped else PARTIAL
     return _outcome(
         status, action="REVALIDATE", snapshot_id=saved.get("snapshot_id"),
@@ -229,10 +438,11 @@ def _revalidate(previous, decision, root, now, instance_id, health_path, russian
         skipped_offers=skipped, errors=errors, http_calls=http_calls,
         next_allowed_at=_earliest(next_at), rankings=rankings, comparison=comparison,
         views=views, coverage=list(saved.get("source_coverage") or []),
+        pass_started_at=pass_started.isoformat(), published_at=published_at.isoformat(),
     )
 
 
-def _discover(previous, decision, root, now, instance_id, health_path, russian, fx, transport, barrier, started, timeout):
+def _discover(previous, decision, root, timer: ManualClock, instance_id, health_path, russian, fx, transport, barrier, timeout, pass_started):
     allowed = []
     skipped = []
     next_at = []
@@ -242,7 +452,7 @@ def _discover(previous, decision, root, now, instance_id, health_path, russian, 
         if adapter is None or not adapter.enabled or source in POLICY_DISABLED_SOURCES:
             skipped.append({"source": source, "reason": "source_disabled"})
             continue
-        block, when = _source_block(source, {"enabled": True, "policy_disabled": False, "state": "ok"}, now, health_path)
+        block, when = _source_block(source, {"enabled": True, "policy_disabled": False, "state": "ok"}, timer.now(), health_path)
         if block:
             skipped.append({"source": source, "reason": block, "next_allowed_at": when})
             if when:
@@ -250,66 +460,79 @@ def _discover(previous, decision, root, now, instance_id, health_path, russian, 
             continue
         allowed.append(source)
     if not allowed:
-        return _reuse_or_defer(previous, "DEFERRED", fx, russian, now) | {"skipped_offers": skipped, "next_allowed_at": _earliest(next_at)}
+        outcome = _reuse_or_defer(previous, "DEFERRED", fx, russian, timer.now(), pass_started)
+        outcome["skipped_offers"] = skipped
+        outcome["next_allowed_at"] = _earliest(next_at)
+        return outcome
     results: list[StoreScanResult] = []
     http_calls = 0
     errors = []
+    deadline = pass_started + timedelta(seconds=timeout)
     for adapter in get_thailand_adapters():
         if adapter.slug in allowed:
             continue
-        results.append(_placeholder(adapter, now, health_path))
+        results.append(_placeholder(adapter, timer.now(), health_path))
     for source in allowed:
-        if _timed_out(started, timeout):
+        if timer.now() >= deadline:
             skipped.append({"source": source, "reason": "deadline"})
-            results.append(StoreScanResult(store=source, ok=False, error_code="TIMEOUT", technical_detail="deadline", collection_mode="failed"))
+            results.append(StoreScanResult(store=source, ok=False, error_code="TIMEOUT", technical_detail="deadline", collection_mode="skipped"))
             continue
-        block, when = _source_block(source, {"enabled": True, "policy_disabled": False, "state": "ok"}, now, health_path)
-        if block:
-            skipped.append({"source": source, "reason": block, "next_allowed_at": when})
+        block, when = _source_block(source, {"enabled": True, "policy_disabled": False, "state": "ok"}, timer.now(), health_path)
+        if block or not _source_enabled(source):
+            reason = block or "source_disabled"
+            skipped.append({"source": source, "reason": reason, "next_allowed_at": when})
             if when:
                 next_at.append(when)
-            results.append(_placeholder(enabled[source], now, health_path))
+            results.append(_placeholder(enabled[source], timer.now(), health_path))
             continue
         try:
-            result = transport.discover_source(source, now=now)
+            result = transport.discover_source(source, now=timer.now())
         except Exception as exc:  # noqa: BLE001 — one source must not erase last-good
             errors.append(f"{source}:{type(exc).__name__}")
             results.append(StoreScanResult(store=source, ok=False, error=type(exc).__name__, error_code="HTTP_ERROR", collection_mode="failed"))
             continue
+        _stamp_response_time(result, timer.now())
         results.append(result)
         http_calls += _request_count(result)
         if _rate_limited(result):
-            when = _remember_rate_limit(source, result, now, health_path)
+            when = _remember_rate_limit(source, result, timer.now(), health_path)
             if when:
                 next_at.append(when)
+    attempted = [result for result in results if result.store in allowed]
+    if attempted and all(_attempt_kind(result) == "failed" for result in attempted):
+        return _outcome(
+            FAILED, action="DISCOVER", snapshot_id=_id(previous),
+            errors=errors or ["transport_failed"], http_calls=http_calls,
+            skipped_offers=skipped, next_allowed_at=_earliest(next_at),
+            pass_started_at=pass_started.isoformat(),
+        )
     if http_calls == 0 and not any(result.offers for result in results):
-        outcome = _reuse_or_defer(previous, "DEFERRED", fx, russian, now)
+        outcome = _reuse_or_defer(previous, "DEFERRED", fx, russian, timer.now(), pass_started)
         outcome["skipped_offers"] = skipped
         outcome["errors"] = errors
         outcome["next_allowed_at"] = _earliest(next_at)
         return outcome
+    if previous is None:
+        previous = {"snapshot_id": None, "offers": [], "source_coverage": [], "discovery_checked_at": None, "schema_version": 1}
+    response_at = timer.now()
+    published_at = timer.now()
     try:
-        manifest = export_thai_catalog(
-            results,
-            snapshot_root=root,
-            now=now,
-            discovery_checked_at=now,
-            instance_id=instance_id,
-            parent_snapshot_id=_id(previous),
-            publish_barrier=barrier,
-        )
+        document = _merge_discover(previous, results, published_at=published_at, response_at=response_at, instance_id=instance_id)
+        _publish_document(root, document, barrier)
+        saved = load_thai_catalog(root, expected_instance_id=instance_id)
     except (ThaiCatalogError, OSError, ValueError) as exc:
         return _outcome(
-            FAILED, action="DISCOVER", snapshot_id=_id(previous), errors=[*errors, f"publish_failed:{type(exc).__name__}"],
+            FAILED, action="DISCOVER", snapshot_id=_id(previous),
+            errors=[*errors, f"publish_failed:{type(exc).__name__}"],
             http_calls=http_calls, skipped_offers=skipped, next_allowed_at=_earliest(next_at),
+            pass_started_at=pass_started.isoformat(),
         )
-    saved = load_thai_catalog(root, expected_instance_id=instance_id)
-    rankings, comparison, views = _views(saved, fx, russian, now)
-    partial = bool(skipped or errors or any(_rate_limited(result) or not result.ok for result in results if result.store in allowed))
+    rankings, comparison, views = _views(saved, fx, russian, published_at)
+    partial = any(_attempt_kind(result) != "checked" for result in attempted) or bool(skipped or errors)
     return _outcome(
         PARTIAL if partial else COMPLETED,
         action="DISCOVER",
-        snapshot_id=manifest["snapshot_id"],
+        snapshot_id=saved.get("snapshot_id"),
         parent_snapshot_id=saved.get("parent_snapshot_id"),
         skipped_offers=skipped,
         errors=errors,
@@ -319,6 +542,8 @@ def _discover(previous, decision, root, now, instance_id, health_path, russian, 
         comparison=comparison,
         views=views,
         coverage=list(saved.get("source_coverage") or []),
+        pass_started_at=pass_started.isoformat(),
+        published_at=published_at.isoformat(),
     )
 
 
@@ -333,20 +558,21 @@ def _apply_refresh(document: dict[str, Any], refresh: OfferRefresh) -> str:
         "status": refresh.status,
         "reason": refresh.reason,
         "coverage": refresh.coverage,
+        "purchase_quote_updated": False,
     }
     if offer is None or refresh.status in {"missing", "skipped", "failed", "unverified", "rate_limited"}:
         entry["timestamps_unchanged"] = True
         diagnostics.append(entry)
         return "skipped"
-    if not refresh.variant_confirmed or refresh.status == "conflict":
+    problem = _quote_blocked(offer, refresh)
+    if problem:
+        _store_separate_observation(document, offer, refresh, problem)
         entry["status"] = "conflict"
-        entry["reason"] = refresh.reason or "variant_not_confirmed"
+        entry["reason"] = problem["reason"]
         entry["timestamps_unchanged"] = True
+        entry["purchase_quote_updated"] = False
         diagnostics.append(entry)
-        return "skipped"
-    conflicts = _spec_conflicts(offer, refresh.observed_specs)
-    if conflicts:
-        entry["spec_conflict"] = conflicts
+        return "conflict"
     if refresh.observed_at is None or (refresh.price_thb is None and not refresh.availability_confirmed):
         entry["status"] = "unverified"
         entry["timestamps_unchanged"] = True
@@ -369,40 +595,139 @@ def _apply_refresh(document: dict[str, Any], refresh: OfferRefresh) -> str:
     offer["observed_at"] = observed
     entry["status"] = "updated"
     entry["timestamps_unchanged"] = False
+    entry["purchase_quote_updated"] = True
     diagnostics.append(entry)
     return "updated"
+
+
+def _quote_blocked(offer: Mapping[str, Any], refresh: OfferRefresh) -> dict[str, Any] | None:
+    """Return why this observation must not replace the stored purchase quote."""
+    stored_variant = offer.get("variant_id")
+    observed_variant = refresh.variant_id
+    shared = _shared_full_ids(offer, refresh)
+    if stored_variant and observed_variant and stored_variant != observed_variant:
+        reason = "variant_mismatch"
+    elif not (stored_variant and observed_variant and stored_variant == observed_variant) and not shared:
+        # variant_id None on either side is not proof, and neither is a bare external_id.
+        reason = "variant_unconfirmed"
+    elif _identifier_conflict(offer, refresh):
+        reason = "identifier_conflict"
+    else:
+        reason = None
+    conflicts = _spec_conflicts(offer, refresh.observed_specs)
+    if conflicts:
+        reason = "spec_conflict"
+    if reason is None:
+        return None
+    return {"reason": reason, "conflicts": conflicts, "shared_identifiers": sorted(shared)}
+
+
+def _store_separate_observation(document: dict[str, Any], offer: Mapping[str, Any], refresh: OfferRefresh, problem: dict[str, Any]) -> None:
+    document.setdefault("conflicting_observations", []).append({
+        "source": refresh.source,
+        "external_id": refresh.external_id,
+        "variant_id": refresh.variant_id,
+        "offer_id": offer.get("offer_id"),
+        "sku": refresh.sku,
+        "manufacturer_part_number": refresh.manufacturer_part_number,
+        "price_thb": refresh.price_thb,
+        "availability_state": refresh.availability_state,
+        "availability_confirmed": refresh.availability_confirmed,
+        "observed_at": refresh.observed_at.isoformat() if refresh.observed_at else None,
+        "observed_specs": dict(refresh.observed_specs),
+        "reason": problem["reason"],
+        "conflicts": problem["conflicts"],
+        "purchase_quote": False,
+        "stored_price_thb": offer.get("price_thb"),
+        "stored_price_checked_at": offer.get("price_checked_at"),
+    })
 
 
 def _spec_conflicts(offer: Mapping[str, Any], observed: Mapping[str, Any]) -> dict[str, Any]:
     conflicts = {}
     specs = offer.get("specs") or {}
     for name, value in observed.items():
-        if value is None:
+        if value is None or name not in {"cpu", "gpu", "ram_gb", "ssd_gb", "screen_inch", "screen_resolution"}:
             continue
         current = (specs.get(name) or {}).get("value")
-        if current is not None and str(current) != str(value):
-            conflicts[name] = {"stored": current, "observed": value}
+        if current is None:
+            continue
+        if _same_spec(name, current, value):
+            continue
+        conflicts[name] = {"stored": current, "observed": value}
     return conflicts
 
 
-def _find_offer(document: Mapping[str, Any], refresh: OfferRefresh) -> dict[str, Any] | None:
-    for offer in document.get("offers") or []:
-        if offer.get("source") != refresh.source or offer.get("external_id") != refresh.external_id:
-            continue
-        if refresh.variant_id is not None and offer.get("variant_id") != refresh.variant_id:
-            continue
-        if refresh.offer_id and offer.get("offer_id") not in {None, refresh.offer_id}:
-            continue
-        return offer
+def _same_spec(name: str, stored, observed) -> bool:
+    if name in {"ram_gb", "ssd_gb"}:
+        return str(stored) == str(observed)
+    if name == "screen_inch":
+        return str(stored) == str(observed)
+    return " ".join(str(stored).upper().split()) == " ".join(str(observed).upper().split())
+
+
+def _full_identifier(value: object) -> str | None:
+    if value is None:
+        return None
+    code = "".join(str(value).upper().split())
+    if not code or _BARE_PLATFORM.fullmatch(code):
+        return None
+    if _FULL_ID.fullmatch(code) and len(code) >= 6 and any(c.isdigit() for c in code) and any(c.isalpha() for c in code):
+        return code
     return None
 
 
-def _save_revalidated(document: dict[str, Any], root: Path, now: datetime, barrier) -> tuple[dict | None, str | None]:
-    parent = document.get("snapshot_id")
+def _id_set(offer: Mapping[str, Any], refresh: OfferRefresh | None = None) -> set[str]:
+    values = [
+        offer.get("sku"),
+        offer.get("manufacturer_part_number"),
+        *(offer.get("sku_candidates") or []),
+        *(offer.get("mpn_candidates") or []),
+    ]
+    if refresh is not None:
+        values.extend([refresh.sku, refresh.manufacturer_part_number])
+    return {code for code in (_full_identifier(value) for value in values) if code}
+
+
+def _shared_full_ids(offer: Mapping[str, Any], refresh: OfferRefresh) -> set[str]:
+    stored = _id_set(offer)
+    observed = {code for code in (_full_identifier(value) for value in (refresh.sku, refresh.manufacturer_part_number)) if code}
+    return stored & observed
+
+
+def _identifier_conflict(offer: Mapping[str, Any], refresh: OfferRefresh) -> bool:
+    stored = _id_set(offer)
+    observed = {code for code in (_full_identifier(value) for value in (refresh.sku, refresh.manufacturer_part_number)) if code}
+    return bool(stored and observed and not (stored & observed))
+
+
+def _find_offer(document: Mapping[str, Any], refresh: OfferRefresh) -> dict[str, Any] | None:
+    rows = [
+        offer for offer in document.get("offers") or []
+        if offer.get("source") == refresh.source and offer.get("external_id") == refresh.external_id
+    ]
+    if refresh.offer_id:
+        exact = [offer for offer in rows if offer.get("offer_id") == refresh.offer_id]
+        if exact:
+            rows = exact
+    if refresh.variant_id:
+        same = [offer for offer in rows if offer.get("variant_id") == refresh.variant_id]
+        if same:
+            return same[0]
+    return rows[0] if rows else None
+
+
+def _save_revalidated(document: dict[str, Any], root: Path, published_at: datetime, barrier, saved_id: str) -> tuple[dict | None, str | None, str]:
+    try:
+        current = load_thai_catalog(root, expected_instance_id=document.get("instance_id"))
+    except (ThaiCatalogError, OSError, ValueError):
+        current = None
+    if current is not None and current.get("snapshot_id") != saved_id:
+        return None, "snapshot_changed", str(current.get("snapshot_id"))
     document["snapshot_id"] = str(uuid.uuid4())
-    document["parent_snapshot_id"] = parent
-    document["created_at"] = now.isoformat()
-    document["finished_at"] = now.isoformat()
+    document["parent_snapshot_id"] = saved_id
+    document["created_at"] = published_at.isoformat()
+    document["finished_at"] = published_at.isoformat()
     limitations = list(document.get("catalog_limitations") or [])
     if "revalidate_not_broad_discovery" not in limitations:
         limitations.append("revalidate_not_broad_discovery")
@@ -411,8 +736,8 @@ def _save_revalidated(document: dict[str, Any], root: Path, now: datetime, barri
         _publish_document(root, document, barrier)
         saved = load_thai_catalog(root, expected_instance_id=document.get("instance_id"))
     except (ThaiCatalogError, OSError, ValueError) as exc:
-        return None, f"publish_failed:{type(exc).__name__}"
-    return saved, None
+        return None, f"publish_failed:{type(exc).__name__}", saved_id
+    return saved, None, saved.get("snapshot_id") or saved_id
 
 
 def _publish_document(root: Path, document: Mapping[str, Any], barrier) -> None:
@@ -436,7 +761,7 @@ def _publish_document(root: Path, document: Mapping[str, Any], barrier) -> None:
     })
 
 
-def _jib_point(item, *, client, timeout: float, now: datetime) -> OfferRefresh:
+def _jib_point(item, *, client, timeout: float, clock: ManualClock | None) -> OfferRefresh:
     from thailand.jib import fetch_read_product
 
     owns = client is None
@@ -446,11 +771,19 @@ def _jib_point(item, *, client, timeout: float, now: datetime) -> OfferRefresh:
     finally:
         if owns:
             http.close()
-    refresh = _base(item, coverage="point_check:jib_read_product", http_calls=1)
+    calls = getattr(http, "http_calls", 1)
+    refresh = _base(item, coverage="point_check:jib_read_product", http_calls=calls)
+    refresh.retry_after_seconds = getattr(http, "retry_after_seconds", None)
     error = str(detail.get("error") or "")
-    if error == "HTTP_429":
+    if getattr(http, "blocked_reason", None) and not getattr(http, "real_429", False):
+        refresh.status = "skipped"
+        refresh.reason = http.blocked_reason
+        refresh.http_calls = calls
+        return refresh
+    if error == "HTTP_429" or getattr(http, "real_429", False):
         refresh.status = "rate_limited"
         refresh.reason = "retry_after"
+        refresh.observed_at = None
         return refresh
     if error:
         refresh.status = "failed"
@@ -459,24 +792,30 @@ def _jib_point(item, *, client, timeout: float, now: datetime) -> OfferRefresh:
         return refresh
     refresh.observed_specs = {
         name: detail.get(name)
-        for name in ("cpu", "ram_gb", "ssd_gb", "screen_inch", "screen_resolution")
+        for name in ("cpu", "gpu", "ram_gb", "ssd_gb", "screen_inch", "screen_resolution")
         if detail.get(name) is not None
     }
     if detail.get("screen_size_inch") is not None:
         refresh.observed_specs["screen_inch"] = detail.get("screen_size_inch")
+    refresh.sku = detail.get("sku")
+    refresh.manufacturer_part_number = detail.get("manufacturer_part_number")
+    refresh.variant_id = detail.get("variant_id")
     refresh.price_thb = detail.get("price_thb")
     refresh.availability_state = detail.get("availability_status")
     refresh.availability_confirmed = bool(detail.get("availability_confirmed"))
-    if refresh.price_thb or refresh.availability_confirmed:
+    if clock is not None and (refresh.price_thb or refresh.availability_confirmed):
         refresh.status = "updated"
-        refresh.observed_at = now
+        refresh.observed_at = clock.now()
+    elif refresh.price_thb or refresh.availability_confirmed:
+        refresh.status = "unverified"
+        refresh.reason = "response_time_missing"
     else:
         refresh.status = "unverified"
         refresh.reason = "price_and_availability_unconfirmed"
     return refresh
 
 
-def _bounded_request(item, *, client, timeout: float, now: datetime) -> OfferRefresh:
+def _bounded_request(item, *, client, timeout: float, clock: ManualClock | None) -> OfferRefresh:
     source = str(item.get("source") or "")
     url = _bounded_url(source, item)
     coverage = f"bounded_source_refresh:{source}:one_request"
@@ -498,17 +837,23 @@ def _bounded_request(item, *, client, timeout: float, now: datetime) -> OfferRef
     finally:
         if owns:
             http.close()
-    refresh = _base(item, coverage=coverage, http_calls=1)
-    if response.status_code == 429:
+    calls = getattr(http, "http_calls", 1)
+    refresh = _base(item, coverage=coverage, http_calls=calls)
+    refresh.retry_after_seconds = getattr(http, "retry_after_seconds", None) or _retry_after(response, clock.now() if clock else None)
+    if getattr(http, "blocked_reason", None) and not getattr(http, "real_429", False):
+        refresh.status = "skipped"
+        refresh.reason = http.blocked_reason
+        refresh.http_calls = calls
+        return refresh
+    if response.status_code == 429 or getattr(http, "real_429", False):
         refresh.status = "rate_limited"
         refresh.reason = "retry_after"
-        refresh.retry_after_seconds = _retry_after(response)
         return refresh
     if response.status_code >= 400:
         refresh.status = "failed"
         refresh.reason = f"HTTP_{response.status_code}"
         return refresh
-    observed = _parse_bounded(source, response, item, now)
+    observed = _parse_bounded(source, response, item, clock.now() if clock else datetime.now())
     if observed is None:
         refresh.status = "missing"
         refresh.reason = "not_observed_on_recheck"
@@ -517,10 +862,12 @@ def _bounded_request(item, *, client, timeout: float, now: datetime) -> OfferRef
     refresh.availability_state = observed.availability_state
     refresh.availability_confirmed = observed.availability_confirmed
     refresh.observed_specs = observed.observed_specs
-    refresh.variant_confirmed = observed.variant_confirmed
-    if observed.price_thb or observed.availability_confirmed:
+    refresh.sku = observed.sku
+    refresh.manufacturer_part_number = observed.manufacturer_part_number
+    refresh.variant_id = observed.variant_id
+    if clock is not None and (observed.price_thb or observed.availability_confirmed):
         refresh.status = "updated"
-        refresh.observed_at = now
+        refresh.observed_at = clock.now()
     else:
         refresh.status = "unverified"
         refresh.reason = "bounded_response_did_not_confirm_quote"
@@ -591,19 +938,192 @@ def _match_offer(offers, item) -> OfferRefresh | None:
             source=offer.store,
             external_id=offer.external_id,
             variant_id=offer.variant_id,
+            sku=offer.sku,
+            manufacturer_part_number=offer.manufacturer_part_number,
             price_thb=offer.price_thb,
             availability_state=offer.availability_status,
             availability_confirmed=bool(offer.availability_confirmed),
             observed_specs={
                 "cpu": offer.cpu,
+                "gpu": offer.gpu,
                 "ram_gb": offer.ram_gb,
                 "ssd_gb": offer.ssd_gb,
                 "screen_inch": offer.screen_size_inch,
                 "screen_resolution": offer.screen_resolution,
             },
-            variant_confirmed=True,
         )
     return None
+
+
+def _source_enabled(source: str) -> bool:
+    for adapter in get_thailand_adapters():
+        if adapter.slug == source:
+            return bool(adapter.enabled) and source not in POLICY_DISABLED_SOURCES
+    return False
+
+
+def _finish_guarded_result(result: StoreScanResult, guard: GuardedClient) -> StoreScanResult:
+    result.request_count = guard.http_calls
+    if guard.real_429:
+        result.retry_after_seconds = guard.retry_after_seconds
+        result.discovery_rate_limited = True
+        result.error_code = RATE_LIMITED
+        result.ok = False
+        return result
+    if guard.blocked_reason and guard.http_calls == 0:
+        result.ok = False
+        result.discovery_rate_limited = False
+        result.error_code = "TIMEOUT" if guard.blocked_reason == "deadline" else "BLOCKED"
+        result.technical_detail = guard.blocked_reason
+        result.collection_mode = "skipped"
+        return result
+    if guard.blocked_reason in {"deadline", "budget"}:
+        result.discovery_rate_limited = False
+        if result.error_code == RATE_LIMITED:
+            result.error_code = "TIMEOUT" if guard.blocked_reason == "deadline" else "BUDGET"
+            result.ok = False
+        result.technical_detail = guard.blocked_reason
+        limitations = list(result.discovery_limitations or [])
+        limitations.append(guard.blocked_reason)
+        result.discovery_limitations = limitations
+    if guard.http_calls and guard.successes == 0 and not guard.real_429:
+        result.ok = False
+        result.error_code = "HTTP_ERROR"
+        result.collection_mode = "failed"
+        result.discovery_rate_limited = False
+    return result
+
+
+def _stamp_response_time(result: StoreScanResult, response_at: datetime) -> None:
+    for offer in list(result.offers or []) + list(result.unverified_candidates or []):
+        offer.collected_at = response_at
+
+
+def _attempt_kind(result: StoreScanResult) -> str:
+    if result.policy_disabled or result.collection_mode == "disabled":
+        return "disabled"
+    if result.technical_detail in {"deadline", "budget", "circuit", "source_disabled"} and not result.offers:
+        return "not_attempted"
+    if result.collection_mode == "skipped" and not result.offers:
+        return "not_attempted"
+    if result.error_code == "NO_RESULTS" or (result.ok and not _rate_limited(result)):
+        return "checked"
+    if _rate_limited(result) or result.technical_detail in {"deadline", "budget"}:
+        return "partial"
+    if not result.ok:
+        return "failed"
+    return "checked"
+
+
+def _note_attempt(document: dict[str, Any], source: str, *, response_at: datetime, http_calls: int, mode: str) -> None:
+    for row in document.get("source_coverage") or []:
+        if row.get("source") != source:
+            continue
+        row["request_count"] = int(row.get("request_count") or 0) + int(http_calls)
+        row["latest_attempt_at"] = response_at.isoformat()
+        limitations = list(row.get("limitations") or [])
+        mark = f"{mode}_revalidate"
+        if mark not in limitations:
+            limitations.append(mark)
+        row["limitations"] = limitations
+        return
+
+
+def _merge_discover(previous: Mapping[str, Any], results: Sequence[StoreScanResult], *, published_at: datetime, response_at: datetime, instance_id: str) -> dict[str, Any]:
+    kinds = {result.store: _attempt_kind(result) for result in results}
+    broad_complete = bool(kinds) and all(kind == "checked" for kind in kinds.values() if kind != "disabled")
+    discovered = moment(previous.get("discovery_checked_at")) if not broad_complete else None
+    discovery_at = discovered if discovered is not None and not broad_complete else response_at
+    if discovery_at > published_at:
+        discovery_at = published_at
+    document = build_thai_catalog(
+        results,
+        now=published_at,
+        discovery_checked_at=discovery_at,
+        instance_id=instance_id,
+        parent_snapshot_id=previous.get("snapshot_id"),
+        started_at=response_at,
+    )
+    old_by_source: dict[str, list] = {}
+    for offer in previous.get("offers") or []:
+        old_by_source.setdefault(offer.get("source"), []).append(offer)
+    new_by_source: dict[str, list] = {}
+    for offer in document.get("offers") or []:
+        new_by_source.setdefault(offer.get("source"), []).append(offer)
+    merged: list = []
+    seen_sources = set()
+    for result in results:
+        source = result.store
+        seen_sources.add(source)
+        kind = kinds[source]
+        fresh = new_by_source.get(source, [])
+        previous_rows = old_by_source.get(source, [])
+        if kind == "checked":
+            merged.extend(fresh)
+        elif kind == "partial":
+            seen_ids = {row.get("external_id") for row in fresh}
+            merged.extend(fresh)
+            merged.extend(row for row in previous_rows if row.get("external_id") not in seen_ids)
+        else:
+            merged.extend(previous_rows)
+    for source, rows in old_by_source.items():
+        if source not in seen_sources:
+            merged.extend(rows)
+    document["offers"] = merged
+    document["variants"], document["conflicts"] = _variants(merged)
+    document["exclusions"] = _diagnostics(merged)
+    document["raw_observations"] = [_raw_observation(offer) for offer in merged]
+    prev_cov = {row.get("source"): row for row in previous.get("source_coverage") or []}
+    coverage = []
+    for row in document.get("source_coverage") or []:
+        source = row.get("source")
+        kind = kinds.get(source, "not_attempted")
+        if kind in {"not_attempted", "disabled"} and source in prev_cov:
+            coverage.append(dict(prev_cov[source]))
+            continue
+        updated = dict(row)
+        if kind == "failed":
+            updated["state"] = "failed"
+            updated["status"] = "failed"
+            updated["latest_attempt_at"] = response_at.isoformat()
+            updated["checked_at"] = response_at.isoformat()
+            notes = list(updated.get("limitations") or [])
+            notes.append("attempt_failed_previous_observations_kept")
+            updated["limitations"] = notes
+        elif kind == "partial":
+            notes = list(updated.get("limitations") or [])
+            notes.append("partial_previous_observations_kept")
+            updated["limitations"] = notes
+            updated["latest_attempt_at"] = response_at.isoformat()
+        elif kind == "checked":
+            updated["latest_attempt_at"] = response_at.isoformat()
+        coverage.append(updated)
+    document["source_coverage"] = coverage
+    document["catalog_limitations"] = _limitations(coverage)
+    document["created_at"] = published_at.isoformat()
+    document["finished_at"] = published_at.isoformat()
+    return document
+
+
+def _fx_rate(fx: Mapping[str, Any] | None, now: datetime):
+    if not fx:
+        return None
+    from thailand.models import FxRate
+
+    try:
+        fetched = moment(fx.get("fetched_at")) or now
+        return FxRate(
+            source=str(fx.get("source") or "CBR"),
+            currency=str(fx.get("currency") or "THB"),
+            nominal=int(fx.get("nominal") or 1),
+            official_rate=float(fx.get("rub_per_thb") or 0),
+            rub_per_thb=float(fx.get("rub_per_thb") or 0),
+            published_date=fx.get("published_date"),
+            fetched_at=fetched,
+            error=fx.get("error"),
+        )
+    except (TypeError, ValueError):
+        return None
 
 
 def _placeholder(adapter, now: datetime, health_path) -> StoreScanResult:
@@ -659,9 +1179,13 @@ def _outcome(status: str, **kwargs) -> dict[str, Any]:
         "views": kwargs.get("views"),
         "errors": list(kwargs.get("errors") or []),
         "next_allowed_at": kwargs.get("next_allowed_at"),
+        "pass_started_at": kwargs.get("pass_started_at"),
+        "published_at": kwargs.get("published_at"),
     }
     if kwargs.get("detail"):
         result["errors"].append(kwargs["detail"])
+    if kwargs.get("replanned_decision") is not None:
+        result["replanned_decision"] = kwargs["replanned_decision"]
     return result
 
 
@@ -738,11 +1262,27 @@ def _rate_limited(result: StoreScanResult) -> bool:
     return result.error_code == RATE_LIMITED or result.collection_mode == "rate_limited" or bool(result.discovery_rate_limited)
 
 
-def _retry_after(response) -> int | None:
-    raw = response.headers.get("Retry-After") if response.headers else None
-    if not raw:
+def _retry_after(response, now: datetime | None = None) -> int | None:
+    headers = getattr(response, "headers", None)
+    raw = headers.get("Retry-After") if headers else None
+    return _retry_after_value(raw, now)
+
+
+def _retry_after_value(raw: object, now: datetime | None) -> int | None:
+    if raw is None:
         return None
+    text = str(raw).strip()
+    if not text:
+        return None
+    if text.isdigit():
+        return max(1, int(text))
     try:
-        return max(1, int(str(raw).strip()))
-    except ValueError:
+        parsed = parsedate_to_datetime(text)
+    except (TypeError, ValueError, IndexError, OverflowError):
         return None
+    if parsed.tzinfo is None:
+        parsed = parsed.replace(tzinfo=timezone.utc)
+    if now is None:
+        return None
+    seconds = int((parsed.astimezone(timezone.utc) - now).total_seconds())
+    return max(1, seconds)

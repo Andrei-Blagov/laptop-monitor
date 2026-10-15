@@ -157,6 +157,9 @@ def _stale_offers(document: Mapping[str, Any], now: datetime) -> list[dict[str, 
             "reason": "+".join(reasons),
             "price_checked_at": offer.get("price_checked_at"),
             "availability_checked_at": offer.get("availability_checked_at"),
+            "sku": offer.get("sku"),
+            "manufacturer_part_number": offer.get("manufacturer_part_number"),
+            "gpu": ((offer.get("specs") or {}).get("gpu") or {}).get("value"),
         })
     return found
 
@@ -202,8 +205,8 @@ def _source_block(source: str, row: Mapping[str, Any] | None, now: datetime, hea
         return "source_unknown", None
     if row.get("policy_disabled") or row.get("enabled") is False:
         return "policy_disabled", None
-    if row.get("state") == "deferred":
-        return "circuit", _health_until(source, "disabled_until", health_path)
+    # An old snapshot can still say deferred after the health window has expired.
+    # The live health file above is the authority; a stale deferred row is not.
     retry = row.get("retry_after_seconds")
     checked = moment(row.get("latest_attempt_at") or row.get("checked_at"))
     if isinstance(retry, int) and not isinstance(retry, bool) and retry > 0 and checked is not None:
