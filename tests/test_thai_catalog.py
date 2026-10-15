@@ -38,6 +38,11 @@ JIB_DETAIL = """
 """
 
 
+def _field_evidence(collected: datetime) -> dict:
+    entry = {"method": "structured_api", "captured_at": collected.isoformat()}
+    return {name: dict(entry) for name in ("cpu", "ram_gb", "ssd_gb", "screen_inch", "screen_resolution")}
+
+
 def _full(external_id: str, price: int, sku: str, *, collected: datetime = OBSERVED, status: str = "in_stock", available: bool = True, cpu: str | None = "Intel Core Ultra 9 275HX", gpu: str | None = "RTX 5070 Ti", gpu_source: str = "structured_api", resolution: str | None = "2560x1600", ram: int | None = 32) -> ThailandOffer:
     return ThailandOffer(
         store="jib",
@@ -63,6 +68,7 @@ def _full(external_id: str, price: int, sku: str, *, collected: datetime = OBSER
         price_source="structured_api",
         price_verified_for_variant=True,
         channel="direct",
+        metadata={"field_evidence": _field_evidence(collected)},
     )
 
 
@@ -102,6 +108,54 @@ def _invadeit(product_id: int, sku: str, fixture: str) -> ThailandOffer:
     assert offer is not None
     payload = json.loads((FIXTURES / fixture).read_text(encoding="utf-8"))
     return enrich_offer_from_specifications(offer, payload, fetched_at=OBSERVED)
+
+
+def _russian_gate() -> dict:
+    observed = OBSERVED.isoformat()
+    evidence = {
+        "source": "regard",
+        "external_id": "ru-gate",
+        "captured_at": observed,
+        "method": "specs_cache",
+        "capture_state": "known",
+    }
+    specs = {
+        "cpu": "Intel Core Ultra 9 275HX",
+        "gpu": "RTX 5070 Ti",
+        "ram_gb": 32,
+        "ssd_gb": 1024,
+        "screen_inch": 16,
+        "screen_resolution": "2560x1600",
+    }
+    return {
+        "schema_version": 1,
+        "snapshot_id": "ru-gate-snapshot",
+        "instance_id": "thai-test",
+        "created_at": NOW.isoformat(),
+        "offers": [{
+            "offer_id": "ru-gate",
+            "external_id": "ru-gate",
+            "store": "regard",
+            "model_id": "ru-gate-model",
+            "sku_candidates": ["SKU-GATE-1"],
+            "mpn_candidates": [],
+            "public_price_rub": 250_000,
+            "price_checked_at": observed,
+            "availability_checked_at": observed,
+            "observed_at": observed,
+            "stock_state": "in_stock",
+            "availability_evidence": {**evidence, "method": "store_listing", "available": True},
+            "product_name": "ASUS ROG Strix SKU-GATE-1",
+            "specs": {name: {"value": value, "evidence": evidence} for name, value in specs.items()},
+        }],
+        "source_coverage": [{
+            "store": "regard",
+            "state": "ok",
+            "latest_attempt_at": observed,
+        }],
+        "top_model_ids": ["ru-gate-model"],
+        "personal_profiles": [],
+    }
 
 
 def _fx() -> dict:
@@ -241,6 +295,86 @@ class ThaiCatalogTests(unittest.TestCase):
         self.assertEqual(second["specs"]["screen_resolution"]["evidence"]["external_id"], "81991")
         self.assertEqual(first["specs"]["screen_resolution"]["evidence"]["captured_at"], OBSERVED.isoformat())
         self.assertNotEqual(first["specs"]["screen_resolution"]["evidence"]["captured_at"], document["created_at"])
+
+    def test_unverified_candidate_is_not_a_purchase_or_a_confirmed_saving(self) -> None:
+        confirmed = _full("confirmed-1", 80_000, "SKU-GATE-1")
+        candidate = _full("candidate-gate", 50_000, "SKU-GATE-1")
+        document = build_thai_catalog(
+            [_finished("jib", [confirmed], candidates=[candidate])],
+            now=NOW,
+            discovery_checked_at=OBSERVED,
+            instance_id="thai-test",
+        )
+        rows = {row["external_id"]: row for row in document["offers"]}
+        withheld = rows["candidate-gate"]
+        self.assertEqual(withheld["record_role"], "candidate")
+        self.assertEqual(withheld["purchase_excluded_reason"], "unverified_candidate")
+        self.assertTrue(withheld["candidate_observation"]["availability_confirmed"])
+        self.assertTrue(withheld["candidate_observation"]["price_verified_for_variant"])
+        self.assertEqual(withheld["candidate_observation"]["specs"]["cpu"]["evidence"]["capture_state"], "known")
+        self.assertFalse(withheld["availability_confirmed"])
+        self.assertFalse(withheld["price_verified_for_variant"])
+        self.assertEqual(withheld["specs"]["cpu"]["evidence"]["capture_state"], "unknown")
+        self.assertIsNone(withheld["specs"]["cpu"]["evidence"]["captured_at"])
+        self.assertIn(
+            withheld["offer_id"],
+            {row["offer_id"] for row in document["exclusions"] if row["reason"] == "unverified_candidate"},
+        )
+        rankings = rankings_from_catalog(document, _fx(), now=NOW)
+        ranked = {offer_id for row in rankings["eligible_models"] for offer_id in row["member_offer_ids"]}
+        top = {offer_id for row in rankings["thai_top_value"] for offer_id in row["member_offer_ids"]}
+        self.assertIn(rows["confirmed-1"]["offer_id"], ranked)
+        self.assertIn(rows["confirmed-1"]["offer_id"], top)
+        self.assertNotIn(withheld["offer_id"], ranked)
+        self.assertNotIn(withheld["offer_id"], top)
+        compared = comparison_from_catalog(document, _russian_gate(), _fx(), now=NOW)
+        by_th = {pair["th_offer_id"]: pair for pair in compared["pairs"]}
+        self.assertEqual(by_th[rows["confirmed-1"]["offer_id"]]["comparison_status"], "confirmed")
+        self.assertIsNotNone(by_th[rows["confirmed-1"]["offer_id"]]["saving_rub"])
+        self.assertNotEqual(by_th[withheld["offer_id"]]["comparison_status"], "confirmed")
+        self.assertIsNone(by_th[withheld["offer_id"]]["saving_rub"])
+
+    def test_gpu_evidence_is_not_copied_onto_other_fields(self) -> None:
+        offer = ThailandOffer(
+            store="jib",
+            external_id="gpu-basis",
+            name="ASUS ROG Strix GPU basis",
+            url="https://example.test/jib/gpu-basis",
+            price_thb=80_000,
+            available=True,
+            collected_at=OBSERVED,
+            sku="SKU-GPU-BASIS",
+            brand="ASUS",
+            cpu="Intel Core Ultra 9 275HX",
+            gpu="RTX 5070 Ti",
+            gpu_source="structured_api",
+            ram_gb=32,
+            ssd_gb=1024,
+            screen_size_inch=16.0,
+            screen_resolution="2560x1600",
+            availability_status="in_stock",
+            availability_confirmed=True,
+            availability_source="structured_api",
+            price_source="structured_api",
+            price_verified_for_variant=True,
+            channel="direct",
+        )
+        document = build_thai_catalog(
+            [_finished("jib", [offer])],
+            now=NOW,
+            discovery_checked_at=OBSERVED,
+            instance_id="thai-test",
+        )
+        row = next(item for item in document["offers"] if item["external_id"] == "gpu-basis")
+        self.assertEqual(row["specs"]["gpu"]["evidence"]["method"], "structured_api")
+        self.assertEqual(row["specs"]["gpu"]["evidence"]["capture_state"], "known")
+        self.assertEqual(row["specs"]["gpu"]["evidence"]["captured_at"], OBSERVED.isoformat())
+        for field in ("cpu", "ram_gb", "ssd_gb", "screen_inch", "screen_resolution"):
+            evidence = row["specs"][field]["evidence"]
+            self.assertEqual(evidence["capture_state"], "unknown")
+            self.assertIsNone(evidence["captured_at"])
+            self.assertNotEqual(evidence["method"], "structured_api")
+        self.assertEqual(row["specs"]["cpu"]["value"], "Intel Core Ultra 9 275HX")
 
     def test_stock_candidates_partial_and_timestamps(self) -> None:
         document = self._catalog()

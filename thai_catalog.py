@@ -3,6 +3,22 @@
 The catalog is built from store results the caller already collected. It does
 not read the Russian TOP, call stores, or replace an observation time with the
 export clock.
+
+C2 field-evidence contract. Package D confirms a spec only when its evidence
+method is one of the allowed methods and ``capture_state`` is not ``unknown``.
+C1 therefore confirms a non-GPU field only from that field's own record:
+
+- ``metadata["field_evidence"][field]`` with ``method`` and ``captured_at``
+  taken from the parse that produced the value;
+- ``metadata["screen_resolution_evidence"]["fetched_at"]`` for the built-in
+  panel only;
+- a search-suggestion title, method ``explicit_title``, observed at
+  ``collected_at``, because that title is the text that was read.
+
+``gpu_source`` applies only to ``specs.gpu``. It is not a source, method, or
+timestamp for CPU, RAM, SSD, diagonal, or resolution. C2 adapters must record
+``field_evidence`` while parsing. C1 does not invent a missing timestamp or
+copy the GPU observation onto another field.
 """
 from __future__ import annotations
 
@@ -286,7 +302,7 @@ def _offer_record(
     price_at = observed_iso if price_known and usable_time else None
     trust = _seller_trust(offer)
     specs = {name: _spec_slot(offer, name, attr, now=now) for name, attr in CORE_FIELDS}
-    return {
+    record = {
         "offer_id": _stable("th-offer", ["th", offer.store, str(offer.external_id), str(offer.variant_id or "")]),
         "source": offer.store,
         "external_id": str(offer.external_id),
@@ -316,12 +332,52 @@ def _offer_record(
         "known_extras": {},
         "identity_evidence": _identity(offer, now=now),
     }
+    if candidate:
+        return _withhold_purchase_confirmation(record)
+    return record
+
+
+def _withhold_purchase_confirmation(record: dict[str, Any]) -> dict[str, Any]:
+    """Keep the candidate's own facts, but do not present them as a purchase quote.
+
+    Package D does not read ``record_role``. The fields it does read — confirmed
+    availability, variant price, and spec evidence — are therefore withheld.
+    """
+    record["candidate_observation"] = {
+        "price_thb": record["price_thb"],
+        "price_checked_at": record["price_checked_at"],
+        "price_verified_for_variant": record["price_verified_for_variant"],
+        "availability_state": record["availability_state"],
+        "availability_confirmed": record["availability_confirmed"],
+        "availability_checked_at": record["availability_checked_at"],
+        "availability_evidence": json.loads(json.dumps(record["availability_evidence"])),
+        "seller_trust": record["seller_trust"],
+        "specs": json.loads(json.dumps(record["specs"])),
+        "identity_evidence": json.loads(json.dumps(record["identity_evidence"])),
+    }
+    record["price_verified_for_variant"] = False
+    record["availability_confirmed"] = False
+    record["availability_checked_at"] = None
+    evidence = dict(record["availability_evidence"])
+    evidence.update(captured_at=None, capture_state="unknown", available=None, method=GPU_SOURCE_UNKNOWN)
+    record["availability_evidence"] = evidence
+    for slot in record["specs"].values():
+        if isinstance(slot.get("evidence"), dict):
+            slot["evidence"]["captured_at"] = None
+            slot["evidence"]["capture_state"] = "unknown"
+    for slot in record["identity_evidence"].values():
+        if isinstance(slot.get("evidence"), dict):
+            slot["evidence"]["captured_at"] = None
+            slot["evidence"]["capture_state"] = "unknown"
+    record["purchase_excluded_reason"] = "unverified_candidate"
+    return record
 
 
 def _spec_slot(offer: ThailandOffer, field: str, attr: str, *, now: datetime) -> dict[str, Any]:
     value = getattr(offer, attr, None)
-    method = _field_method(offer, field)
-    if field == "gpu" and method in UNCONFIRMING_GPU:
+    basis = _own_field_basis(offer, field)
+    if field == "gpu" and (basis is None or basis[0] in UNCONFIRMING_GPU):
+        method = str(offer.gpu_source or GPU_SOURCE_UNKNOWN)
         return {
             "value": None,
             "evidence": {
@@ -329,14 +385,26 @@ def _spec_slot(offer: ThailandOffer, field: str, attr: str, *, now: datetime) ->
                 "external_id": str(offer.external_id),
                 "captured_at": None,
                 "capture_state": "unknown",
-                "method": method or GPU_SOURCE_UNKNOWN,
-                "provenance": method or GPU_SOURCE_UNKNOWN,
+                "method": method,
+                "provenance": method,
                 "candidate_value": offer.candidate_gpu or value,
             },
         }
     if value is None:
         return {"value": None, "evidence": None}
-    captured = _field_time(offer, field)
+    if basis is None:
+        return {
+            "value": value,
+            "evidence": {
+                "source": offer.store,
+                "external_id": str(offer.external_id),
+                "captured_at": None,
+                "capture_state": "unknown",
+                "method": GPU_SOURCE_UNKNOWN,
+                "provenance": GPU_SOURCE_UNKNOWN,
+            },
+        }
+    method, captured = basis
     moment = _parse(captured)
     confirmed = method in CONFIRMING_METHODS and moment is not None and moment <= now
     return {
@@ -344,43 +412,45 @@ def _spec_slot(offer: ThailandOffer, field: str, attr: str, *, now: datetime) ->
         "evidence": {
             "source": offer.store,
             "external_id": str(offer.external_id),
-            "captured_at": _iso(moment) if moment is not None and confirmed else None,
+            "captured_at": _iso(moment) if confirmed and moment is not None else None,
             "capture_state": "known" if confirmed else "unknown",
-            "method": method if method in CONFIRMING_METHODS else (method or GPU_SOURCE_UNKNOWN),
-            "provenance": method or GPU_SOURCE_UNKNOWN,
+            "method": method if method in CONFIRMING_METHODS else GPU_SOURCE_UNKNOWN,
+            "provenance": method,
         },
     }
 
 
-def _field_method(offer: ThailandOffer, field: str) -> str:
+def _own_field_basis(offer: ThailandOffer, field: str) -> tuple[str, str] | None:
+    """Return (method, captured_at) only for evidence that belongs to this field."""
     if field == "gpu":
-        return str(offer.gpu_source or GPU_SOURCE_UNKNOWN)
-    if field == "screen_resolution" and isinstance((offer.metadata or {}).get("screen_resolution_evidence"), dict):
-        return "structured_api"
+        method = str(offer.gpu_source or GPU_SOURCE_UNKNOWN)
+        if method not in CONFIRMING_METHODS:
+            return None
+        return method, _iso(_utc(offer.collected_at))
     meta = offer.metadata or {}
-    if meta.get("detail_enriched") or offer.gpu_source == "structured_api":
-        return "structured_api"
-    if offer.gpu_source == "structured_product_page":
-        return "structured_product_page"
-    if offer.gpu_source == "explicit_title" or meta.get("source") == "search_suggestion":
-        return "explicit_title"
-    if offer.price_source == "product_detail" or offer.availability_source == "product_detail":
-        return "product_detail"
-    return GPU_SOURCE_UNKNOWN
-
-
-def _field_time(offer: ThailandOffer, field: str) -> str | None:
-    if field == "screen_resolution":
-        evidence = (offer.metadata or {}).get("screen_resolution_evidence")
-        if isinstance(evidence, dict) and evidence.get("fetched_at"):
-            return str(evidence["fetched_at"])
-    return _iso(_utc(offer.collected_at))
+    if field == "screen_resolution" and isinstance(meta.get("screen_resolution_evidence"), dict):
+        fetched = meta["screen_resolution_evidence"].get("fetched_at")
+        if fetched:
+            return "structured_api", str(fetched)
+    recorded = meta.get("field_evidence")
+    if isinstance(recorded, dict) and isinstance(recorded.get(field), dict):
+        entry = recorded[field]
+        method = str(entry.get("method") or "")
+        captured = entry.get("captured_at")
+        if method in CONFIRMING_METHODS and _parse(None if captured is None else str(captured)) is not None:
+            return method, str(captured)
+        return None
+    if meta.get("source") == "search_suggestion":
+        return "explicit_title", _iso(_utc(offer.collected_at))
+    return None
 
 
 def _identity(offer: ThailandOffer, *, now: datetime) -> dict[str, Any]:
     found: dict[str, Any] = {}
-    method = _field_method(offer, "cpu")
-    captured = _field_time(offer, "cpu")
+    basis = _own_field_basis(offer, "brand")
+    if basis is None:
+        return found
+    method, captured = basis
     moment = _parse(captured)
     confirmed = method in CONFIRMING_METHODS and moment is not None and moment <= now
     evidence = {
@@ -389,7 +459,7 @@ def _identity(offer: ThailandOffer, *, now: datetime) -> dict[str, Any]:
         "captured_at": _iso(moment) if confirmed and moment is not None else None,
         "capture_state": "known" if confirmed else "unknown",
         "method": method if method in CONFIRMING_METHODS else GPU_SOURCE_UNKNOWN,
-        "provenance": method or GPU_SOURCE_UNKNOWN,
+        "provenance": method,
     }
     if offer.brand:
         found["brand"] = {"value": offer.brand, "evidence": evidence}
@@ -593,7 +663,7 @@ def _diagnostics(offers: Sequence[Mapping[str, Any]]) -> list[dict[str, Any]]:
     rows: list[dict[str, Any]] = []
     for offer in offers:
         if offer["record_role"] == "candidate":
-            reason = "candidate"
+            reason = "unverified_candidate"
         elif not offer["availability_confirmed"]:
             reason = "availability_unconfirmed"
         elif offer["availability_state"] in {"out_of_stock", "preorder", "unknown"}:
