@@ -529,11 +529,15 @@ def run_thailand_scan(
     write_snapshot: bool = True,
     target_model: dict[str, Any] | None = None,
     personal_targets: Sequence[dict[str, Any]] | None = None,
+    catalog_root: Path | str | None = None,
+    russian_market_snapshot: dict[str, Any] | None = None,
 ) -> dict[str, Any]:
     """
     Best-effort Thailand scan. Never raises to caller for store failures.
 
     Returns structured result for Telegram / diagnostics.
+    ``catalog_root`` publishes the C2.1 full catalog beside that result.
+    It does not replace ``thailand_top`` or the Telegram comparison.
     """
     started_at = datetime.now(timezone.utc)
     t0 = time.perf_counter()
@@ -807,6 +811,20 @@ def run_thailand_scan(
                 target_search if isinstance(target_search, dict) else None,
                 stores=result.get("stores") or [],
             ).to_dict()
+
+        if catalog_root is not None:
+            from thailand.catalog_scan import fx_observation_document, publish_collected_catalog
+
+            result["market_catalog"] = publish_collected_catalog(
+                store_results,
+                snapshot_root=catalog_root,
+                now=finished_at,
+                discovery_checked_at=started_at,
+                instance_id=config.get_instance_id(),
+                russian_snapshot=russian_market_snapshot,
+                fx=fx_observation_document(fx),
+                started_at=started_at,
+            )
 
         if write_snapshot:
             snap_payload = {

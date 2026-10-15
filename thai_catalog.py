@@ -12,8 +12,9 @@ C1 therefore confirms a non-GPU field only from that field's own record:
   taken from the parse that produced the value;
 - ``metadata["screen_resolution_evidence"]["fetched_at"]`` for the built-in
   panel only;
-- a search-suggestion title, method ``explicit_title``, observed at
-  ``collected_at``, because that title is the text that was read.
+- a search-suggestion title only when the adapter recorded
+  ``field_evidence`` for the fields ``specs_from_text`` actually returned.
+  The catalog does not treat every value on a suggestion card as title evidence.
 
 ``gpu_source`` applies only to ``specs.gpu``. It is not a source, method, or
 timestamp for CPU, RAM, SSD, diagonal, or resolution. C2 adapters must record
@@ -440,8 +441,6 @@ def _own_field_basis(offer: ThailandOffer, field: str) -> tuple[str, str] | None
         if method in CONFIRMING_METHODS and _parse(None if captured is None else str(captured)) is not None:
             return method, str(captured)
         return None
-    if meta.get("source") == "search_suggestion":
-        return "explicit_title", _iso(_utc(offer.collected_at))
     return None
 
 

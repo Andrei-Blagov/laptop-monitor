@@ -83,6 +83,11 @@ def parse_advice_product_dict(
         catalog_gpu=str(catalog_gpu) if catalog_gpu else None,
         apply_catalog_gpu=False,
     )
+    title_fields = {
+        key for key in ("cpu", "ram_gb", "ssd_gb", "screen_inch", "screen_resolution")
+        if specs.get(key) is not None
+    }
+    structured_fields: set[str] = set()
     gpu_source = GPU_SOURCE_UNKNOWN
     gpu = None
     if raw.get("gpu"):
@@ -96,12 +101,14 @@ def parse_advice_product_dict(
     for key in ("cpu", "brand", "warranty", "screen_resolution"):
         if raw.get(key):
             specs[key] = raw[key]
+            if key in {"cpu", "screen_resolution"}:
+                structured_fields.add(key)
     for key, cast in (("ram_gb", int), ("ssd_gb", int), ("screen_size_inch", float)):
         if raw.get(key) is not None:
             try:
-                specs[key if key != "screen_size_inch" else "screen_inch"] = cast(
-                    raw[key]
-                )
+                target = "screen_inch" if key == "screen_size_inch" else key
+                specs[target] = cast(raw[key])
+                structured_fields.add(target)
             except (TypeError, ValueError):
                 pass
     candidate = canonical_gpu(str(catalog_gpu)) if catalog_gpu else None
@@ -159,6 +166,20 @@ def parse_advice_product_dict(
             "source": raw.get("source") or "advice_json",
             "candidate_gpu_source": GPU_SOURCE_SEARCH_QUERY if candidate else None,
         },
+    )
+    from thailand.field_evidence import record_field_evidence
+
+    record_field_evidence(
+        offer,
+        {key: specs.get(key) for key in title_fields - structured_fields},
+        method="explicit_title",
+        captured_at=collected_at,
+    )
+    record_field_evidence(
+        offer,
+        {key: specs.get(key) for key in structured_fields},
+        method="structured_api",
+        captured_at=collected_at,
     )
     return compute_verification(offer)
 

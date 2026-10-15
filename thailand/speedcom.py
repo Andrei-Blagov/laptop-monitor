@@ -237,6 +237,20 @@ def parse_speedcom_product(
             variant_id=variant_id or None,
             metadata={"product_type": product.get("product_type"), "handle": handle},
         )
+        from thailand.field_evidence import record_field_evidence
+
+        record_field_evidence(
+            offer,
+            {
+                "cpu": specs.get("cpu"),
+                "ram_gb": specs.get("ram_gb"),
+                "ssd_gb": specs.get("ssd_gb"),
+                "screen_inch": specs.get("screen_inch"),
+                "screen_resolution": specs.get("screen_resolution"),
+            },
+            method="structured_api",
+            captured_at=collected_at,
+        )
         compute_verification(offer)
         offers.append(offer)
     return offers
