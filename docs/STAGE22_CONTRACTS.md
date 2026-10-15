@@ -103,6 +103,8 @@ Use offline fixtures in tests/fixtures/stage22, mock clock, isolated file roots,
 
 ## 7. File/module ownership and rollout
 
+**Передача 15.10.2026:** текущий единственный исполнитель всех модулей и тестов — ChatGPT Work. Cursor больше не участвует. Ниже зафиксировано историческое распределение A–F2; повторная реализация не требуется. См. [новый порядок работы](STAGE22_WORK_HANDOFF.md) и [комментарий владельца](https://github.com/Andrei-Blagov/laptop-monitor/pull/12#issuecomment-6194956542). Семантика контрактов и ограничения выпуска не изменяются.
+
 Для следующего пакета интерфейсы фиксируются этим документом; исполняемые serializers/readers будут в B/C, matching в D. before source policy hash/schema change требуется согласованное обновление contract и fixture. `NO_CONFIRMED_RU_MATCH` и incomplete не разрешают переносить specs от cluster best, от series profile или другого offer.
 
 Work A owns these documents and isolated fixtures. Work D later owns pure comparison/evidence algorithms + tests (separate branch/PR). Cursor B owns RU exporter/pipeline. Cursor C owns TH catalogue/reuse/fx; Cursor E owns queue/systemd, Cursor F owns Telegram/deploy. Agree file boundaries before parallel coding; never edit same file concurrently.

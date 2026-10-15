@@ -68,7 +68,7 @@ class VolumeLease:
     def try_acquire(self) -> bool:
         key = _lease_key(self.path)
         state = _LEASES.get(key)
-        if self._counted and state and state["pid"] == os.getpid():
+        if self._counted and self._owner_pid == os.getpid() and state and state["pid"] == os.getpid():
             return True
         self._counted = False
         if state:

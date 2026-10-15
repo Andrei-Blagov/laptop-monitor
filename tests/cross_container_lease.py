@@ -109,5 +109,58 @@ def finish() -> None:
     (ROOT / "finished.json").write_text(json.dumps(report), encoding="utf-8")
 
 
+def hold_delivery() -> None:
+    import config
+    from thailand.market_events import VolumeLease, build_market_event
+
+    lease = VolumeLease(ROOT / "delivery.lease")
+    if not lease.try_acquire():
+        raise SystemExit("delivery lease busy")
+    event = build_market_event(instance_id=config.get_instance_id(), trigger_type="manual",
+        requested_view="thai_top", recipients=["42"], event_id="sending")
+    event.update(subscription_scan_id="sending", result_id="sending")
+    (ROOT / "delivering" / "sending.json").write_text(json.dumps(event))
+    (ROOT / "results" / "sending.json").write_text(json.dumps({"result_id": "sending"}))
+    (ROOT / "delivery-ready").write_text("ready")
+    deadline = time.monotonic() + 90
+    while time.monotonic() < deadline:
+        time.sleep(0.1)
+    lease.release()
+
+
+def probe_delivery() -> None:
+    from thailand.market_events import _retry_delivery
+
+    class NeverSend:
+        def send(self, *args, **kwargs):
+            raise AssertionError("live delivery was stolen")
+
+    result = _retry_delivery(ROOT, NeverSend())
+    assert result is None
+    assert (ROOT / "delivering" / "sending.json").is_file()
+
+
+def recover_delivery() -> None:
+    from thailand.market_events import _retry_delivery
+
+    class Sender:
+        def __init__(self):
+            self.count = 0
+
+        def send(self, *args, **kwargs):
+            self.count += 1
+
+    sender = Sender()
+    first = _retry_delivery(ROOT, sender)
+    second = _retry_delivery(ROOT, sender)
+    assert first["status"] == "delivered"
+    assert second is None
+    assert sender.count == 1
+    assert (ROOT / "archive" / "sending.json").is_file()
+    (ROOT / "delivery-recovered.json").write_text(json.dumps({"sent": sender.count, "idle": second}))
+
+
 if __name__ == "__main__":
-    {"hold": hold, "second": second, "recover": recover, "finish": finish}[sys.argv[1]]()
+    {"hold": hold, "second": second, "recover": recover, "finish": finish,
+     "hold-delivery": hold_delivery, "probe-delivery": probe_delivery,
+     "recover-delivery": recover_delivery}[sys.argv[1]]()

@@ -26,7 +26,8 @@ def main(argv=None):
     prefix = "laptop-f2-" + uuid.uuid4().hex[:12]
     holder = prefix + "-holder"
     volume = prefix + "-queue"
-    evidence = {"image": args.image, "ok": False}
+    evidence = {"image": args.image, "ok": False,
+                "head": subprocess.check_output(["git", "rev-parse", "HEAD"], cwd=ROOT).decode().strip()}
     if shutil.which("docker") is None:
         evidence["unavailable"] = "Docker executable is not installed"
         (output / "containers-report.json").write_text(json.dumps(evidence, indent=2) + "\n")
@@ -54,6 +55,9 @@ def main(argv=None):
             subprocess.run([sys.executable, "-m", "scripts.release_verify", "--image", args.image],
                            cwd=ROOT, stdout=log, stderr=subprocess.STDOUT, check=True, timeout=320)
         evidence["image_verified"] = True
+        metadata = json.loads(docker("image", "inspect", args.image))[0]
+        evidence["image_id"] = metadata["Id"]
+        evidence["image_user"] = metadata["Config"]["User"]
         docker("volume", "create", volume)
         docker("run", "--rm", "--user", "root", *common, args.image,
                "chown", "10001:10001", "/queue")
@@ -91,6 +95,22 @@ def main(argv=None):
         assert len(finished["sent"]) == 1, finished
         assert finished["again"] is None, finished
         evidence["finished"] = finished
+        docker("rm", "--force", holder)
+        docker("run", "--detach", "--name", holder, *common, args.image,
+               "python", "/checks/cross_container_lease.py", "hold-delivery")
+        deadline = time.monotonic() + 30
+        while time.monotonic() < deadline:
+            ready = docker("exec", holder, "python", "-c",
+                           "from pathlib import Path; print(Path('/queue/delivery-ready').exists())")
+            if ready == "True":
+                break
+            time.sleep(0.2)
+        else:
+            raise AssertionError("delivery holder not ready: " + docker("logs", holder, check=False))
+        docker("run", "--rm", *common, args.image, "python", "/checks/cross_container_lease.py", "probe-delivery")
+        docker("kill", "--signal", "KILL", holder)
+        docker("run", "--rm", *common, args.image, "python", "/checks/cross_container_lease.py", "recover-delivery")
+        evidence["delivery_after_kill"] = read("delivery-recovered")
         evidence["ok"] = True
         print("PASS: image, shared leases, live owner, kill recovery, one delivery and idle wake")
         return 0

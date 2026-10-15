@@ -57,6 +57,7 @@ def main(argv=None):
         tracked = subprocess.check_output(["git", "ls-files", "-z", "*.py"], cwd=ROOT).decode().split("\0")
         ok = run("compileall", [py, "-m", "compileall", "-q", *[p for p in tracked if p]]) and ok
         ok = run("diff", ["git", "diff", "--check", "HEAD"]) and ok
+        ok = run("systemd", [py, "-m", "scripts.check_systemd"]) and ok
         ok = run("bundle", [py, "-m", "scripts.build_deploy_bundle"]) and ok
         version = (ROOT / "VERSION").read_text().strip()
         bundle = ROOT / "dist" / f"laptop-monitor-{version}.tar.gz"
