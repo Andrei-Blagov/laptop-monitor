@@ -2,7 +2,7 @@ from __future__ import annotations
 
 import logging
 import xml.etree.ElementTree as ET
-from datetime import datetime, timezone
+from datetime import date, datetime, timezone
 
 import httpx
 
@@ -66,6 +66,67 @@ def fetch_cbr_thb_rate(
     finally:
         if owns:
             client.close()
+
+
+def cbr_published_iso(raw: str | None) -> str | None:
+    """CBR prints ``DD.MM.YYYY``. The market observation stores an ISO date."""
+    if not raw:
+        return None
+    text = str(raw).strip()
+    try:
+        return date.fromisoformat(text).isoformat()
+    except ValueError:
+        pass
+    try:
+        return datetime.strptime(text, "%d.%m.%Y").date().isoformat()
+    except ValueError:
+        return None
+
+
+def refresh_fx_observation(
+    path: Path | str | None = None,
+    *,
+    client: httpx.Client | None = None,
+    now: datetime | None = None,
+) -> dict | None:
+    """Update the configured FX file with ``fetch_cbr_thb_rate``.
+
+    A failed fetch leaves the previous file in place. An unreadable publication
+    date is stored as missing, so it cannot authorize a current RUB benefit.
+    """
+    from pathlib import Path as PathType
+
+    import config
+    from thailand.job_queue import _atomic_write
+
+    destination = PathType(path or config.FX_OBSERVATION_PATH)
+    rate = fetch_cbr_thb_rate(client=client)
+    if rate is None:
+        if not destination.is_file():
+            return None
+        try:
+            import json
+            data = json.loads(destination.read_text(encoding="utf-8"))
+        except (OSError, ValueError):
+            return None
+        return data if isinstance(data, dict) else None
+    mark_stale_if_old(rate, now=now)
+    published = cbr_published_iso(rate.published_date)
+    payload = {
+        "fx_id": f"cbr-{published or 'undated'}-{rate.nominal}",
+        "source": "CBR",
+        "currency": rate.currency or "THB",
+        "nominal": rate.nominal,
+        "official_rate": rate.official_rate,
+        "rub_per_thb": str(rate.rub_per_thb),
+        "fetched_at": rate.fetched_at.isoformat(),
+        "published_date": published,
+        "stale": rate.stale,
+        "rate_age_hours": rate.rate_age_hours,
+        "error": rate.error,
+    }
+    _atomic_write(destination, payload)
+    return payload
 
 
 def thb_to_rub(price_thb: int | float | None, fx: FxRate | None) -> int | None:

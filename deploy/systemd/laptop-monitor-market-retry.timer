@@ -1,0 +1,11 @@
+[Unit]
+Description=Promote due Thailand retries without watching the deferred directory
+
+[Timer]
+OnCalendar=*-*-* *:0/15:00
+Persistent=true
+AccuracySec=1min
+Unit=laptop-monitor-market-retry.service
+
+[Install]
+WantedBy=timers.target

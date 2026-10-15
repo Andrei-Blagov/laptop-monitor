@@ -1,0 +1,10 @@
+[Unit]
+Description=Shared Thailand market check at 08:00 Europe/Moscow
+
+[Timer]
+OnCalendar=*-*-* 08:00:00 Europe/Moscow
+Persistent=true
+Unit=laptop-monitor-market-daily.service
+
+[Install]
+WantedBy=timers.target
