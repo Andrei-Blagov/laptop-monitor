@@ -8,6 +8,8 @@ from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from unittest.mock import patch
 
+import config
+
 from thai_catalog import discovery_scope_hash, export_thai_catalog
 from thailand.catalog_reuse import (
     CATALOG_HOURS,
@@ -32,9 +34,9 @@ def _evidence(when: datetime) -> dict:
     return {name: dict(entry) for name in ("cpu", "ram_gb", "ssd_gb", "screen_inch", "screen_resolution")}
 
 
-def _offer(external_id: str, sku: str, price: int, when: datetime) -> ThailandOffer:
+def _offer(external_id: str, sku: str, price: int, when: datetime, *, store: str = "jib") -> ThailandOffer:
     return ThailandOffer(
-        store="jib",
+        store=store,
         external_id=external_id,
         name=f"ASUS ROG Strix {sku}",
         url=f"https://example.test/{external_id}",
@@ -165,6 +167,17 @@ def _russian(top: list[str] | None = None) -> dict:
 
 
 class CatalogReuseTests(unittest.TestCase):
+    def setUp(self) -> None:
+        self._health_dir = tempfile.TemporaryDirectory()
+        self.health_path = Path(self._health_dir.name) / "health.json"
+        atomic_write_json(self.health_path, {"version": 1, "stores": {}})
+        self._health_patch = patch.object(config, "THAILAND_SOURCE_HEALTH_PATH", str(self.health_path))
+        self._health_patch.start()
+
+    def tearDown(self) -> None:
+        self._health_patch.stop()
+        self._health_dir.cleanup()
+
     def test_fresh_catalog_recomputes_without_http(self) -> None:
         observed = NOW - timedelta(hours=5)
         offers = [_offer(f"th-{index}", f"SKU-TH-{index}", 70000 + index * 1000, observed) for index in range(1, 7)]
@@ -355,6 +368,93 @@ class CatalogReuseTests(unittest.TestCase):
         self.assertEqual(decision["action"], DEFERRED)
         self.assertEqual(decision["revalidate_offers"], [])
         self.assertEqual(decision["deferred_offers"][0]["block_reason"], "retry_after")
+        self.assertFalse(decision["refresh_allowed"])
+
+    def test_omitted_health_path_still_honors_the_standard_store(self) -> None:
+        until = (NOW + timedelta(hours=3)).isoformat()
+        atomic_write_json(self.health_path, {"version": 1, "stores": {"jib": {
+            "disabled_until": until,
+            "consecutive_failures": 3,
+        }}})
+        observed = NOW - timedelta(hours=9)
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            _publish(root, [_offer("th-old", "SKU-OLD17", 80_000, observed)], observed=observed)
+            decision = evaluate_catalog_reuse(
+                root, now=NOW, instance_id="c22-test", expected_scope_hash=discovery_scope_hash(),
+            )
+        self.assertIsNone(decision.get("health_path"))
+        self.assertEqual(decision["action"], DEFERRED)
+        self.assertEqual(decision["revalidate_offers"], [])
+        self.assertEqual(decision["allowed_sources"], [])
+        self.assertFalse(decision["refresh_allowed"])
+        self.assertEqual(decision["deferred_offers"][0]["block_reason"], "circuit")
+        self.assertEqual(decision["deferred_offers"][0]["next_allowed_at"], until)
+
+    def test_disabled_source_is_not_an_allowed_request(self) -> None:
+        observed = NOW - timedelta(hours=9)
+        banana = _offer("bn-old", "SKU-BAN17", 80_000, observed, store="banana")
+        advice = _offer("adv-old", "SKU-ADV17", 81_000, observed, store="advice")
+        disabled = _result([banana], store="banana")
+        disabled.policy_disabled = True
+        disabled.collection_mode = "disabled"
+        disabled.ok = True
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            _publish(root, [advice], observed=observed, extra=[disabled])
+            decision = evaluate_catalog_reuse(
+                root, now=NOW, instance_id="c22-test", expected_scope_hash=discovery_scope_hash(),
+            )
+        self.assertEqual(decision["action"], REVALIDATE)
+        self.assertEqual(decision["allowed_sources"], ["advice"])
+        self.assertEqual([row["source"] for row in decision["revalidate_offers"]], ["advice"])
+        blocked = {row["source"]: row["block_reason"] for row in decision["deferred_offers"]}
+        self.assertEqual(blocked["banana"], "policy_disabled")
+        self.assertNotIn("banana", decision["allowed_sources"])
+
+    def test_partial_block_keeps_only_open_sources(self) -> None:
+        until = (NOW + timedelta(hours=4)).isoformat()
+        atomic_write_json(self.health_path, {"version": 1, "stores": {
+            "jib": {"disabled_until": until, "consecutive_failures": 3},
+            "advice": {"rate_limit_until": (NOW - timedelta(minutes=5)).isoformat()},
+        }})
+        observed = NOW - timedelta(hours=9)
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            _publish(
+                root,
+                [_offer("th-old", "SKU-OLD17", 80_000, observed)],
+                observed=observed,
+                extra=[_result([_offer("adv-old", "SKU-ADV17", 81_000, observed, store="advice")], store="advice")],
+            )
+            decision = evaluate_catalog_reuse(
+                root, now=NOW, instance_id="c22-test", expected_scope_hash=discovery_scope_hash(),
+                health_path=self.health_path,
+            )
+        self.assertEqual(decision["action"], REVALIDATE)
+        self.assertEqual(decision["allowed_sources"], ["advice"])
+        self.assertTrue(decision["refresh_allowed"])
+        deferred = decision["deferred_offers"][0]
+        self.assertEqual(deferred["source"], "jib")
+        self.assertEqual(deferred["block_reason"], "circuit")
+        self.assertEqual(deferred["next_allowed_at"], until)
+
+    def test_every_enabled_source_blocked_forbids_network(self) -> None:
+        until = (NOW + timedelta(hours=2)).isoformat()
+        atomic_write_json(self.health_path, {"version": 1, "stores": {
+            slug: {"disabled_until": until, "consecutive_failures": 3}
+            for slug in ("jib", "advice", "speedcom", "invadeit", "itcity")
+        }})
+        observed = NOW - timedelta(hours=27)
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            _publish(root, [_offer("th-1", "SKU-OLD17", 80_000, observed)], observed=observed)
+            decision = evaluate_catalog_reuse(
+                root, now=NOW, instance_id="c22-test", expected_scope_hash=discovery_scope_hash(),
+                health_path=self.health_path,
+            )
+        self.assertEqual(decision["action"], DEFERRED)
+        self.assertEqual(decision["allowed_sources"], [])
         self.assertFalse(decision["refresh_allowed"])
 
     def test_legacy_scan_path_stays_available(self) -> None:
