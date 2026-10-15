@@ -147,21 +147,37 @@ class MarketTextSender:
         self.now_fn = now_fn
 
     def send(self, event: dict[str, Any], result: Mapping[str, Any], *, current: bool, historical: bool, info_current: bool = False) -> None:
-        del current, info_current
-        parts = format_market_messages(result, event, now=self.now_fn())
-        done = set(event.get("delivered_part_ids") or [])
+        del current, historical, info_current
+        from thailand.market_messages import iter_market_sends
+
+        from thailand.market_messages import _body_plan
+
+        done = _done_records(event.get("delivered_part_ids"))
         recipients = [str(item) for item in (event.get("recipients") or []) if str(item)]
-        for part in parts:
-            for recipient in recipients:
-                part_id = f"{recipient}:{part['part_id']}"
-                if part_id in done:
-                    continue
-                self._send_one(
-                    event, result, part, recipient=recipient, part_id=part_id, historical=historical,
-                )
-                done.add(part_id)
-                event["delivered_part_ids"] = sorted(done)
-                _persist_delivery(self.jobs_dir, event)
+        skeleton = _body_plan(result, str(event.get("requested_view") or "general_top"))
+        planned = [(recipient, spec) for recipient in recipients for spec in skeleton]
+        if not planned:
+            planned = [("", {"kind": "body", "part_id": "empty#0", "text": "По сохранённому результату показывать нечего. Каталог пуст или подходящих предложений нет.", "card_id": "empty"})]
+        keyboard = {"inline_keyboard": [[{"text": "Обновить Таиланд", "callback_data": "ctrl:ptop_go"}]]}
+        for index, (recipient, spec) in enumerate(planned):
+            now = self.now_fn()
+            if spec["kind"] == "body":
+                text = spec["text"]
+                local_id = spec["part_id"]
+            else:
+                state, text = spec["state"](now)
+                local_id = f"{spec['card_id']}#state:{state}"
+            part_id = f"{recipient}:{local_id}" if recipient else local_id
+            if _part_already_sent(part_id, text, done):
+                continue
+            part = {"text": text, "reply_markup": keyboard}
+            self._send_one(
+                event, result, part, recipient=recipient, part_id=part_id,
+                historical=local_id.endswith("#state:current") is False and "#state:" in local_id,
+            )
+            done.append({"id": part_id, "text": text})
+            event["delivered_part_ids"] = done
+            _persist_delivery(self.jobs_dir, event)
 
     def _send_one(self, event, result, part, *, recipient: str, part_id: str, historical: bool) -> None:
         if hasattr(self.inner, "send_market_message"):
@@ -180,6 +196,37 @@ class MarketTextSender:
         outcome = self.inner.send_message(part["text"])
         if not getattr(outcome, "ok", False):
             raise RuntimeError(getattr(outcome, "error", None) or "telegram_send_failed")
+
+
+def _done_records(raw: Any) -> list[dict[str, str]]:
+    records = []
+    for item in raw or []:
+        if isinstance(item, str):
+            records.append({"id": item, "text": ""})
+        elif isinstance(item, dict) and item.get("id"):
+            records.append({"id": str(item["id"]), "text": str(item.get("text") or "")})
+    return records
+
+
+def _part_already_sent(part_id: str, text: str, records: list[dict[str, str]]) -> bool:
+    """Skip a part whose id or exact text was already confirmed, including a bare id that later grew a #index."""
+    by_id = {item["id"]: item["text"] for item in records}
+    previous = by_id.get(part_id)
+    if previous is not None and (previous == "" or previous == text or text in previous):
+        return True
+    local = part_id.split(":", 1)[-1]
+    base = local.split("#", 1)[0]
+    recipient = part_id[: -len(local) - 1] if local != part_id else ""
+    bare = f"{recipient}:{base}" if recipient else base
+    blob = by_id.get(bare, "")
+    if blob and text and text in blob:
+        return True
+    prefix = f"{recipient}:{base}#" if recipient else f"{base}#"
+    pieces = [
+        item["text"] for item in records
+        if item["id"].startswith(prefix) and "#state:" not in item["id"] and item["text"]
+    ]
+    return bool(pieces and text and text in "\n".join(pieces))
 
 
 def _persist_delivery(jobs_dir: Path | str, event: Mapping[str, Any]) -> None:

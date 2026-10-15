@@ -106,7 +106,7 @@ class MarketTelegramTests(unittest.TestCase):
             fx=kwargs.get("fx", _fx()),
             transport=kwargs.get("transport"),
             sender=kwargs.get("sender", self.sender),
-            clock=ManualClock(kwargs.get("when", NOW)),
+            clock=kwargs.get("clock") or ManualClock(kwargs.get("when", NOW)),
             deliver=True,
             state_path=self.root / "state.json",
             russian_snapshot=kwargs.get("russian_snapshot"),
@@ -211,6 +211,10 @@ class MarketTelegramTests(unittest.TestCase):
                     "name": "Только Таиланд", "url": "https://example.test/unmatched",
                     "price_thb": "90000", "price_rub": "225000", "gpu": "RTX 5080",
                     "reason": "not_observed", "unmatched_value_candidate": True,
+                    "variant_id": "solo", "best_offer_id": "solo-1",
+                    "offers": [{"offer_id": "solo-1", "source": "jib", "url": "https://example.test/unmatched",
+                                "price": "90000", "availability_state": "in_stock",
+                                "price_checked_at": fresh, "availability_checked_at": fresh}],
                 }],
                 "unmatched_value_top": [],
                 "market_coverage_complete": False,
@@ -239,7 +243,7 @@ class MarketTelegramTests(unittest.TestCase):
         self.assertIn("Покрытие неполное", text)
         self.assertIn("Личный TOP-3", text)
         self.assertIn("Выгодная по порогу, не сигнал BUY", text)
-        self.assertIn("не значит, что данные устарели", text)
+        self.assertIn("не означает, что цена устарела", text)
         self.assertIn("Таиланд дешевле России", text)
         self.assertIn("30000 ₽", text)
         self.assertIn("13%", text)
@@ -278,9 +282,9 @@ class MarketTelegramTests(unittest.TestCase):
         event.update(subscription_scan_id="fx", result_id="fx")
         (self.jobs / "delivery" / "fx-event.json").write_text(json.dumps(event), encoding="utf-8")
         self._run()
-        text = self.sender.sent[0]["text"]
-        self.assertFalse(self.sender.sent[0]["current"])
-        self.assertTrue(self.sender.sent[0]["info_current"])
+        text = "\n".join(item["text"] for item in self.sender.sent)
+        state = next(item for item in self.sender.sent if "#state:" in item["part_id"])
+        self.assertFalse(state["current"])
         self.assertIn("Текущая выгода не подтверждена", text)
         self.assertIn(fresh, text)
         self.assertNotIn("Наблюдение не текущее", text)
@@ -459,7 +463,7 @@ class MarketTelegramTests(unittest.TestCase):
         self.assertIn("остаются информационными", thai)
         self.assertNotIn("не текущая", thai)
         self.assertIn("Эта пара не текущая", text)
-        self.assertIn("advice: rate_limited", text)
+        self.assertIn("advice: 429", text)
 
     def test_configured_sender_posts_through_mock_transport(self) -> None:
         import httpx
@@ -556,6 +560,175 @@ class MarketTelegramTests(unittest.TestCase):
             stored = enqueue_buy_candidate(signal, instance_id=INSTANCE, jobs_dir=self.jobs, now=NOW)
         body = json.loads((self.jobs / "pending" / f"{stored['event_id']}.json").read_text(encoding="utf-8"))
         self.assertEqual(body["recipients"], ["555"])
+
+    def test_old_unmatched_price_is_historical_without_blaming_the_missing_pair(self) -> None:
+        fresh = NOW.isoformat()
+        old = (NOW - timedelta(hours=48)).isoformat()
+        offer = {
+            "offer_id": "best-old", "source": "jib", "url": "https://example.test/old-value",
+            "price": "90000", "availability_state": "in_stock",
+            "price_checked_at": old, "availability_checked_at": old,
+        }
+        fresh_offer = dict(offer, offer_id="best-fresh", price_checked_at=fresh, availability_checked_at=fresh,
+                           url="https://example.test/fresh-value")
+        result = {
+            "fx": {**_fx(), "fetched_at": old},
+            "comparison": {"unmatched_th": [
+                {"name": "Старая выгода", "variant_id": "old", "best_offer_id": "best-old", "offers": [offer],
+                 "unmatched_value_candidate": True, "reason": "not_observed", "price_thb": "90000"},
+                {"name": "Свежая без пары", "variant_id": "fresh", "best_offer_id": "best-fresh", "offers": [fresh_offer],
+                 "unmatched_value_candidate": False, "reason": "not_observed", "price_thb": "80000"},
+            ], "pairs": [], "best_pairs_by_th_variant_id": {}},
+            "rankings": {},
+        }
+        parts = format_market_messages(result, {"requested_view": "general_top", "recipients": ["1"]}, now=NOW)
+        text = "\n".join(part["text"] for part in parts)
+        self.assertIn(old, text)
+        self.assertIn("историческ", text.lower())
+        self.assertIn("не означает", text)
+        fresh_state = next(part["text"] for part in parts if part["part_id"].endswith("unmatched:fresh#state:info"))
+        self.assertNotIn("историческ", fresh_state.lower())
+
+    def test_first_recipient_moves_the_clock_before_the_next(self) -> None:
+        fresh = NOW.isoformat()
+
+        class Clock:
+            def __init__(self) -> None:
+                self.current = NOW
+
+            def now(self):
+                return self.current
+
+        clock = Clock()
+        sender = TextSender()
+        original = sender.send_text
+
+        def send_text(event, text, **kwargs):
+            original(event, text, **kwargs)
+            if kwargs["recipient"] == "111" and "#state:" in kwargs["part_id"]:
+                clock.current = NOW + timedelta(hours=48)
+
+        sender.send_text = send_text
+        result = {
+            "fx": _fx(),
+            "rankings": {"thai_top_value": [{
+                "model_id": "shift", "name": "Shift", "best_offer_id": "s",
+                "offers": [{"offer_id": "s", "source": "jib", "price": "80000", "url": "https://example.test/shift",
+                            "availability_state": "in_stock", "price_checked_at": fresh, "availability_checked_at": fresh}],
+            }]},
+            "comparison": {},
+        }
+        (self.jobs / "results").mkdir(parents=True)
+        (self.jobs / "delivery").mkdir(parents=True)
+        (self.jobs / "results" / "shift.json").write_text(json.dumps(result), encoding="utf-8")
+        event = build_market_event(
+            instance_id=INSTANCE, trigger_type="manual", requested_view="thai_top",
+            recipients=["111", "222"], event_id="shift", now=NOW,
+        )
+        event.update(subscription_scan_id="shift", result_id="shift")
+        (self.jobs / "delivery" / "shift.json").write_text(json.dumps(event), encoding="utf-8")
+        self._run(sender=sender, clock=clock)
+        first = " ".join(item["text"] for item in sender.sent if item["recipient"] == "111" and "#state:" in item["part_id"])
+        second = " ".join(item["text"] for item in sender.sent if item["recipient"] == "222" and "#state:" in item["part_id"])
+        self.assertIn("информационными", first)
+        self.assertIn("не текущая", second)
+
+    def test_confirmed_part_survives_both_chunk_boundaries(self) -> None:
+        from thailand.market_telegram import MarketTextSender
+
+        def row(name: str) -> dict:
+            return {
+                "model_id": "edge", "name": name, "best_offer_id": "e",
+                "offers": [{"offer_id": "e", "source": "jib", "price": "1", "url": "https://example.test/edge",
+                            "availability_state": "in_stock", "price_checked_at": NOW.isoformat(),
+                            "availability_checked_at": NOW.isoformat()}],
+            }
+
+        def body_ids(name: str) -> list[str]:
+            rendered = format_market_messages(
+                {"rankings": {"thai_top_value": [row(name)]}, "comparison": {}, "fx": _fx()},
+                {"requested_view": "thai_top", "recipients": ["1"]}, now=NOW,
+            )
+            return [part["part_id"] for part in rendered if part["part_id"].startswith("thai:edge#") and "state" not in part["part_id"]]
+
+        short_name = "A"
+        while len(body_ids(short_name)) < 1:
+            short_name += "A"
+        while len(body_ids(short_name)) == 1:
+            one_name = short_name
+            short_name += "A" * 40
+        two_name = short_name
+        self.assertEqual(body_ids(one_name), ["thai:edge#0"])
+        self.assertEqual(body_ids(two_name), ["thai:edge#0", "thai:edge#1"])
+        one_parts = format_market_messages(
+            {"rankings": {"thai_top_value": [row(one_name)]}, "comparison": {}, "fx": _fx()},
+            {"requested_view": "thai_top"}, now=NOW,
+        )
+        two_parts = format_market_messages(
+            {"rankings": {"thai_top_value": [row(two_name)]}, "comparison": {}, "fx": _fx()},
+            {"requested_view": "thai_top"}, now=NOW,
+        )
+        (self.jobs / "delivering").mkdir(parents=True)
+        event = {"event_id": "edge", "recipients": ["1"], "requested_view": "thai_top", "delivered_part_ids": [
+            {"id": "1:thai:edge#0", "text": next(part["text"] for part in two_parts if part["part_id"] == "thai:edge#0")},
+        ]}
+        (self.jobs / "delivering" / "edge.json").write_text(json.dumps(event), encoding="utf-8")
+        grown = TextSender()
+        MarketTextSender(grown, jobs_dir=self.jobs, now_fn=lambda: NOW).send(
+            event, {"rankings": {"thai_top_value": [row(two_name)]}, "comparison": {}, "fx": _fx()},
+            current=False, historical=True, info_current=True,
+        )
+        grown_ids = [item["part_id"] for item in grown.sent]
+        self.assertNotIn("1:thai:edge#0", grown_ids)
+        self.assertIn("1:thai:edge#1", grown_ids)
+        event["delivered_part_ids"] = [
+            {"id": "1:thai:edge#0", "text": next(part["text"] for part in two_parts if part["part_id"] == "thai:edge#0")},
+            {"id": "1:thai:edge#1", "text": next(part["text"] for part in two_parts if part["part_id"] == "thai:edge#1")},
+            {"id": "1:thai:edge#state:info", "text": "kept"},
+        ]
+        again = TextSender()
+        MarketTextSender(again, jobs_dir=self.jobs, now_fn=lambda: NOW).send(
+            event, {"rankings": {"thai_top_value": [row(two_name)]}, "comparison": {}, "fx": _fx()},
+            current=False, historical=True, info_current=True,
+        )
+        again_ids = [item["part_id"] for item in again.sent]
+        self.assertNotIn("1:thai:edge#0", again_ids)
+        self.assertNotIn("1:thai:edge#1", again_ids)
+        event["delivered_part_ids"] = [
+            {"id": "1:thai:edge#0", "text": next(part["text"] for part in two_parts if part["part_id"] == "thai:edge#0")},
+            {"id": "1:thai:edge#1", "text": next(part["text"] for part in two_parts if part["part_id"] == "thai:edge#1")},
+            {"id": "1:thai:edge#state:info", "text": "kept"},
+        ]
+        shrunk = TextSender()
+        MarketTextSender(shrunk, jobs_dir=self.jobs, now_fn=lambda: NOW + timedelta(hours=48)).send(
+            event, {"rankings": {"thai_top_value": [row(one_name)]}, "comparison": {}, "fx": _fx()},
+            current=False, historical=True, info_current=False,
+        )
+        shrunk_ids = [item["part_id"] for item in shrunk.sent]
+        self.assertFalse(any(item == "1:thai:edge" for item in shrunk_ids))
+        self.assertTrue(any(item.endswith("state:historical") for item in shrunk_ids))
+
+    def test_th_only_coverage_reaches_the_message(self) -> None:
+        from tests.test_thai_catalog_reuse import _result
+
+        observed = NOW - timedelta(hours=2)
+        _publish(
+            self.catalog,
+            [_offer("th-jib", "SKU-AAA017", 80_000, observed)],
+            observed=observed,
+            extra=[_result([], store="advice", rate_limited=True)],
+        )
+        enqueue_view_refresh(chat_id=42, view="thai_top", now=NOW)
+        outcome = self._run(russian_snapshot=None, fx=_fx())
+        result = json.loads((self.jobs / "results" / f"{outcome['result_id']}.json").read_text(encoding="utf-8"))
+        self.assertIsNone(result["comparison"])
+        states = {row["source"]: row["state"] for row in result["coverage"]}
+        self.assertEqual(states["jib"], "ok")
+        self.assertEqual(states["advice"], "429")
+        self.assertIn("failed", states.values())
+        text = "\n".join(item["text"] for item in self.sender.sent)
+        self.assertIn("advice: 429", text)
+        self.assertIn("не проверен", text)
 
 
 if __name__ == "__main__":
