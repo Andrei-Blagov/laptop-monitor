@@ -48,25 +48,27 @@ def iter_market_sends(result: Mapping[str, Any], event: Mapping[str, Any], now_f
     if str(result.get("status") or "") == "failed":
         text = _failure_text(result)
         for recipient in recipients:
-            now_fn()
-            yield {
-                "recipient": recipient,
-                "part_id": f"{recipient}:failed#0",
-                "text": text,
-                "reply_markup": keyboard,
-            }
+            for index, chunk in enumerate(_chunks(text)):
+                now_fn()
+                yield {
+                    "recipient": recipient,
+                    "part_id": f"{recipient}:failed#{index}",
+                    "text": chunk,
+                    "reply_markup": keyboard,
+                }
         return
     skeleton = _body_plan(result, str(event.get("requested_view") or "general_top"))
     product_cards = [spec for spec in skeleton if spec.get("card_id") != "coverage"]
     if not product_cards:
         for recipient in recipients:
-            now_fn()
-            yield {
-                "recipient": recipient,
-                "part_id": f"{recipient}:empty#0",
-                "text": "По сохранённому результату показывать нечего. Каталог пуст или подходящих предложений нет.",
-                "reply_markup": keyboard,
-            }
+            for index, chunk in enumerate(_chunks(_empty_text(result))):
+                now_fn()
+                yield {
+                    "recipient": recipient,
+                    "part_id": f"{recipient}:empty#{index}",
+                    "text": chunk,
+                    "reply_markup": keyboard,
+                }
         return
     for recipient in recipients:
         for spec in skeleton:
@@ -92,9 +94,14 @@ def iter_market_sends(result: Mapping[str, Any], event: Mapping[str, Any], now_f
 
 def _render_parts(result, event, now) -> list[dict[str, Any]]:
     if str(result.get("status") or "") == "failed":
-        return [{"part_id": "failed#0", "text": _failure_text(result), "reply_markup": None}]
+        return [{"part_id": f"failed#{i}", "text": chunk, "reply_markup": None}
+                for i, chunk in enumerate(_chunks(_failure_text(result)))]
+    plan = _body_plan(result, str(event.get("requested_view") or "general_top"))
+    if not any(spec.get("card_id") != "coverage" for spec in plan):
+        return [{"part_id": f"empty#{i}", "text": chunk, "reply_markup": None}
+                for i, chunk in enumerate(_chunks(_empty_text(result)))]
     rendered = []
-    for spec in _body_plan(result, str(event.get("requested_view") or "general_top")):
+    for spec in plan:
         text = spec["text"]
         if spec.get("kind") == "card" and spec.get("state"):
             _name, state_text = spec["state"](now)
@@ -102,6 +109,12 @@ def _render_parts(result, event, now) -> list[dict[str, Any]]:
                 text = f"{text}\n{state_text}"
         rendered.append({"part_id": spec["part_id"], "text": text, "reply_markup": None})
     return rendered
+
+
+def _empty_text(result) -> str:
+    text = "По сохранённому результату показывать нечего. Каталог пуст или подходящих предложений нет."
+    coverage = _coverage_text(result.get("comparison") or {}, result)
+    return f"{text}\n{coverage}" if coverage else text
 
 
 def _body_plan(result: Mapping[str, Any], view: str) -> list[dict[str, Any]]:
@@ -116,8 +129,7 @@ def _body_plan(result: Mapping[str, Any], view: str) -> list[dict[str, Any]]:
     plan: list[dict[str, Any]] = []
     shown: dict[str, int] = {}
     for name in order:
-        for card_id, body, state_fn in built[name]:
-            key = _model_key(body)
+        for card_id, body, state_fn, key in built[name]:
             relation = _relation_line_from(body)
             if key in shown:
                 previous = plan[shown[key]]
@@ -136,25 +148,22 @@ def _body_plan(result: Mapping[str, Any], view: str) -> list[dict[str, Any]]:
             shown[key] = len(plan) - 1
     coverage = _coverage_text(comparison, result)
     if coverage:
-        if plan:
+        if plan and len(plan[-1]["text"]) + len(coverage) + 1 <= MESSAGE_LIMIT - 512:
             plan[-1]["text"] = f"{plan[-1]['text']}\n{coverage}"
         else:
-            plan.append({"kind": "body", "part_id": "coverage#0", "text": coverage, "card_id": "coverage"})
+            for index, chunk in enumerate(_chunks(coverage)):
+                plan.append({"kind": "body", "part_id": f"coverage#{index}", "text": chunk, "card_id": "coverage"})
     return plan
 
 
-def _model_key(body: str) -> str:
-    import re
-    lines = [line.strip() for line in body.splitlines() if line.strip()]
-    found = re.search(r"SKU-[A-Za-z0-9-]+", body)
-    if found:
-        return found.group(0).upper()
-    for line in lines:
-        if re.match(r"^\d+\.\s", line) or line.startswith("Таиланд —"):
-            return line.lower()
-    if lines and lines[0].startswith("Россия") and len(lines) > 1:
-        return lines[1].lower()
-    return lines[0].lower() if lines else body
+def _model_key(row: Mapping[str, Any], offer: Mapping[str, Any], fallback: str) -> str:
+    # D assigns distinct variant IDs to conflicting/regional configurations.
+    # A printed SKU or a display title cannot establish model identity.
+    variant = row.get("th_variant_id") or row.get("variant_id")
+    if variant:
+        return f"variant:{variant}"
+    offer_id = row.get("th_offer_id") or offer.get("offer_id")
+    return f"offer:{offer_id}" if offer_id else fallback
 
 
 def _relation_line_from(body: str) -> str:
@@ -186,7 +195,8 @@ def _thai_cards(rankings: Mapping[str, Any], result: Mapping[str, Any]) -> list[
         lines.extend(_offer_lines(offer, row, result))
         lines.append(_fx_line(result))
         card_id = f"thai:{row.get('model_id') or index}"
-        cards.append((card_id, "\n".join(lines), lambda now, offer=offer: _thai_state(offer, now)))
+        cards.append((card_id, "\n".join(lines), lambda now, offer=offer: _thai_state(offer, now),
+                      _model_key(row, offer, card_id)))
     return cards
 
 
@@ -213,7 +223,8 @@ def _cross_cards(comparison, result, view) -> list[tuple]:
             lines.append("Личный TOP-3: эталон для этой карточки, поиск им не ограничен")
         lines.extend(_pair_price_lines(pair, result, purchase_current=False))
         card_id = f"pair:{pair.get('pair_id')}"
-        cards.append((card_id, "\n".join(line for line in lines if line), lambda now, pair=pair, result=result: _cross_state(pair, result, now)))
+        cards.append((card_id, "\n".join(line for line in lines if line), lambda now, pair=pair, result=result: _cross_state(pair, result, now),
+                      _model_key(pair, th, card_id)))
     return cards
 
 
@@ -298,7 +309,8 @@ def _unmatched_cards(comparison: Mapping[str, Any], result: Mapping[str, Any]) -
         if reason in {"limited_coverage", "not_observed"}:
             lines.append("Покрытие проверенных источников неполное. Это не доказательство отсутствия модели.")
         card_id = f"unmatched:{row.get('variant_id') or row.get('model_id') or offer.get('offer_id') or index}"
-        cards.append((card_id, "\n".join(lines), lambda now, row=row, offer=offer, result=result: _unmatched_state(row, offer, result, now)))
+        cards.append((card_id, "\n".join(lines), lambda now, row=row, offer=offer, result=result: _unmatched_state(row, offer, result, now),
+                      _model_key(row, offer, card_id)))
     return cards
 
 
@@ -547,11 +559,13 @@ def _card_title(name: object) -> str:
 
 
 def _chunks(text: str) -> list[str]:
+    # Reserve space for the freshness sentence rendered at send time.
+    limit = MESSAGE_LIMIT - 512
     blocks = []
     for block in text.split("\n\n"):
-        while len(block) > MESSAGE_LIMIT:
-            blocks.append(block[:MESSAGE_LIMIT])
-            block = block[MESSAGE_LIMIT:]
+        while len(block) > limit:
+            blocks.append(block[:limit])
+            block = block[limit:]
         if block:
             blocks.append(block)
     if not blocks:
@@ -560,7 +574,7 @@ def _chunks(text: str) -> list[str]:
     buffer = ""
     for block in blocks:
         piece = block if not buffer else buffer + "\n\n" + block
-        if buffer and len(piece) > MESSAGE_LIMIT:
+        if buffer and len(piece) > limit:
             parts.append(buffer)
             buffer = block
         else:

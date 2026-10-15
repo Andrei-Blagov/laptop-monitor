@@ -6,6 +6,7 @@ compatible subscriber. Delivery retries do not call stores.
 from __future__ import annotations
 
 import json
+import hashlib
 import os
 import time
 import uuid
@@ -32,7 +33,23 @@ SEPARATE_REASONS = frozenset({
 })
 
 
-_LEASES: dict[str, int] = {}
+_LEASES: dict[str, dict[str, Any]] = {}
+
+
+def _lease_key(path: Path) -> str:
+    return str(path.resolve())
+
+
+def _forget_inherited_leases() -> None:
+    # Closing an inherited descriptor does not unlock the parent's flock.
+    # LOCK_UN here would unlock the shared open-file description in both.
+    for state in _LEASES.values():
+        state["handle"].close()
+    _LEASES.clear()
+
+
+if hasattr(os, "register_at_fork"):
+    os.register_at_fork(after_in_child=_forget_inherited_leases)
 
 
 class VolumeLease:
@@ -46,12 +63,18 @@ class VolumeLease:
         self.path = path
         self._fh = None
         self._counted = False
+        self._owner_pid = None
 
     def try_acquire(self) -> bool:
-        key = str(self.path)
-        if _LEASES.get(key, 0) > 0:
-            _LEASES[key] += 1
+        key = _lease_key(self.path)
+        state = _LEASES.get(key)
+        if self._counted and state and state["pid"] == os.getpid():
+            return True
+        self._counted = False
+        if state:
+            state["count"] += 1
             self._counted = True
+            self._owner_pid = os.getpid()
             return True
         self.path.parent.mkdir(parents=True, exist_ok=True)
         if not self.path.exists() or self.path.stat().st_size == 0:
@@ -69,23 +92,27 @@ class VolumeLease:
             self._fh.close()
             self._fh = None
             return False
-        _LEASES[key] = 1
+        _LEASES[key] = {"handle": self._fh, "count": 1, "pid": os.getpid()}
         self._counted = True
+        self._owner_pid = os.getpid()
         return True
 
     def release(self) -> None:
-        if not self._counted:
+        if not self._counted or self._owner_pid != os.getpid():
             return
-        key = str(self.path)
-        left = _LEASES.get(key, 0) - 1
+        key = _lease_key(self.path)
+        state = _LEASES.get(key)
+        self._counted = False
+        if state is None or state["pid"] != os.getpid():
+            self._fh = None
+            return
+        left = state["count"] - 1
         if left > 0:
-            _LEASES[key] = left
-            self._counted = False
+            state["count"] = left
+            self._fh = None
             return
         _LEASES.pop(key, None)
-        self._counted = False
-        if self._fh is None:
-            return
+        self._fh = state["handle"]
         try:
             if os.name == "nt":
                 import msvcrt
@@ -106,14 +133,14 @@ def _lease_path(base: Path, name: str) -> Path:
 
 def scan_lease_live(path: Path) -> bool:
     """True while this process or another container still holds the scan lease."""
-    if _LEASES.get(str(path), 0) > 0:
+    if _lease_key(path) in _LEASES:
         return True
     return lease_held_by_other(path)
 
 
 def lease_held_by_other(path: Path) -> bool:
     """True when a different process, possibly in another container, holds ``path``."""
-    if _LEASES.get(str(path), 0) > 0:
+    if _lease_key(path) in _LEASES:
         return False
     probe = VolumeLease(path)
     if probe.try_acquire():
@@ -216,7 +243,7 @@ def _lock(root: Path) -> FileLock:
 
 def _dirs(root: Path) -> None:
     ensure_queue_dirs(root)
-    for name in ("deferred", "results", "delivery", "delivering"):
+    for name in ("deferred", "results", "delivery", "delivering", "receipts"):
         (root / name).mkdir(parents=True, exist_ok=True)
 
 
@@ -875,6 +902,8 @@ def _retry_delivery_locked(base: Path, sender, *, clock=None, fallback: datetime
     sent_ids = []
     for (result_id, view), events in groups.items():
         result = _load_result(base, result_id)
+        receipt_id = hashlib.sha256(json.dumps([result_id, view]).encode()).hexdigest()
+        receipt = _read_json(base / "receipts" / f"{receipt_id}.json") or {}
         claimed = []
         for event in events:
             with _lock(base):
@@ -886,6 +915,10 @@ def _retry_delivery_locked(base: Path, sender, *, clock=None, fallback: datetime
         recipients = []
         done = []
         seen_ids: set[str] = set()
+        for record in receipt.get("delivered_part_ids") or []:
+            if isinstance(record, dict) and record.get("id"):
+                seen_ids.add(str(record["id"]))
+                done.append(record)
         for event in claimed:
             for recipient in event.get("recipients") or []:
                 text = str(recipient).strip()
@@ -901,6 +934,7 @@ def _retry_delivery_locked(base: Path, sender, *, clock=None, fallback: datetime
         outgoing["recipients"] = recipients
         outgoing["requested_view"] = view
         outgoing["delivered_part_ids"] = done
+        outgoing["_delivery_receipt_id"] = receipt_id
         now = _send_moment(clock, fallback)
         try:
             state = _deliver_one(sender, outgoing, result, now)
@@ -916,6 +950,9 @@ def _retry_delivery_locked(base: Path, sender, *, clock=None, fallback: datetime
                 _write_event(base, "deferred", event)
                 (base / "delivering" / f"{event['event_id']}.json").unlink(missing_ok=True)
             return {"status": "delivery_failed", "event_id": primary["event_id"], "http_calls": 0}
+        _atomic_write(base / "receipts" / f"{receipt_id}.json", {
+            "delivered_part_ids": outgoing.get("delivered_part_ids") or [],
+        })
         for event in claimed:
             event["delivered_part_ids"] = outgoing.get("delivered_part_ids")
             event["delivery_state"] = "sent"

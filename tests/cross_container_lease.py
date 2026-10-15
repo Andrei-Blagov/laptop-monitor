@@ -47,7 +47,7 @@ def hold() -> None:
         event_path.unlink(missing_ok=True)
     (ROOT / "active_scan.json").write_text(json.dumps(scan), encoding="utf-8")
     (ROOT / "ready").write_text(stored.get("status") or "ready", encoding="utf-8")
-    deadline = time.time() + 25
+    deadline = time.time() + 90
     while time.time() < deadline and not (ROOT / "release").exists():
         time.sleep(0.1)
     lease.release()
@@ -55,10 +55,16 @@ def hold() -> None:
 
 
 def second() -> None:
+    from unittest.mock import patch
     from thailand.worker import process_one
 
+    class NeverSend:
+        def send(self, *args, **kwargs):
+            raise AssertionError("second worker must not deliver")
+
     _event("joined")
-    process_one(jobs_dir=ROOT, deliver=False)
+    with patch("thailand.market_events._run_plan", side_effect=AssertionError("second scan")):
+        process_one(jobs_dir=ROOT, deliver=True, sender=NeverSend())
     joined = None
     for folder in ("pending", "processing", "deferred", "delivery", "archive"):
         path = ROOT / folder / "joined.json"
@@ -82,5 +88,26 @@ def recover() -> None:
     (ROOT / "recovered.json").write_text(json.dumps({"recovered": recovered}), encoding="utf-8")
 
 
+def finish() -> None:
+    from unittest.mock import patch
+    from thailand.market_events import run_market_queue
+
+    class Sender:
+        def __init__(self):
+            self.sent = []
+
+        def send(self, event, result, **kwargs):
+            self.sent.append({"recipients": event["recipients"], "view": event["requested_view"]})
+
+    sender = Sender()
+    plan = ({"action": "REUSE"}, {"status": "completed", "http_calls": 0}, 1)
+    with patch("thailand.market_events._run_plan", return_value=plan) as mocked:
+        first = run_market_queue(jobs_dir=ROOT, catalog_root=ROOT / "catalog", sender=sender)
+        again = run_market_queue(jobs_dir=ROOT, catalog_root=ROOT / "catalog", sender=sender)
+    report = {"passes": mocked.call_count, "first": first, "again": again, "sent": sender.sent,
+              "archived": sorted(p.stem for p in (ROOT / "archive").glob("*.json"))}
+    (ROOT / "finished.json").write_text(json.dumps(report), encoding="utf-8")
+
+
 if __name__ == "__main__":
-    {"hold": hold, "second": second, "recover": recover}[sys.argv[1]]()
+    {"hold": hold, "second": second, "recover": recover, "finish": finish}[sys.argv[1]]()

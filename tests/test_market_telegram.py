@@ -350,10 +350,10 @@ class MarketTelegramTests(unittest.TestCase):
             reasons=[], rule_ids=[], over_hist_pct=None, fingerprint="buy-fp",
             cluster_key=None, history_started_at=None,
         )
-        first = enqueue_buy_candidate(signal, instance_id=INSTANCE, jobs_dir=self.jobs, ru_snapshot_id="ru-1", now=NOW)
+        first = enqueue_buy_candidate(signal, instance_id=INSTANCE, jobs_dir=self.jobs, ru_snapshot_id="ru-1", now=NOW, recipients=["42"])
         self._run()
         calls = len(self.sender.sent)
-        second = enqueue_buy_candidate(signal, instance_id=INSTANCE, jobs_dir=self.jobs, ru_snapshot_id="ru-1", now=NOW)
+        second = enqueue_buy_candidate(signal, instance_id=INSTANCE, jobs_dir=self.jobs, ru_snapshot_id="ru-1", now=NOW, recipients=["42"])
         self.assertTrue(second["duplicate"])
         self.assertIsNone(self._run(sender=TextSender()))
         self.assertEqual(len(self.sender.sent), calls)
