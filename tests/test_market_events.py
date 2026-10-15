@@ -78,6 +78,32 @@ class CountingTransport:
         raise AssertionError(f"discover {source} {now}")
 
 
+def _hold_child(jobs: str, catalog: str, health: str, counter: str, hold: str) -> None:
+    process_one(
+        jobs_dir=jobs, catalog_root=catalog, health_path=health, fx=_fx(),
+        transport=CountingTransport(counter=Path(counter), hold=Path(hold)),
+        sender=FakeSender(), clock=ManualClock(NOW), deliver=False,
+        state_path=str(Path(jobs) / "buy-state.json"),
+    )
+
+
+def _delivery_child(jobs: str, catalog: str, health: str, hold: str, release: str, log: str) -> None:
+    class _Slow:
+        def send(self, event, result, *, current: bool, historical: bool) -> None:
+            del result, current, historical
+            Path(hold).write_text("sending", encoding="utf-8")
+            while not Path(release).exists():
+                time.sleep(0.02)
+            with Path(log).open("a", encoding="utf-8") as handle:
+                handle.write(event["event_id"] + "\n")
+
+    process_one(
+        jobs_dir=jobs, catalog_root=catalog, health_path=health, fx=_fx(),
+        sender=_Slow(), clock=ManualClock(NOW), deliver=True,
+        state_path=str(Path(jobs) / "buy-state.json"),
+    )
+
+
 def _child(jobs: str, catalog: str, health: str, counter: str) -> None:
     process_one(
         jobs_dir=jobs,
@@ -218,20 +244,36 @@ class MarketEventQueueTests(unittest.TestCase):
         enqueue_market_event(self._event("manual", ["chat"], "deliver-1"), root=self.jobs, now=NOW)
         failed = self._run()
         self.assertEqual(failed["status"], "delivery_failed")
+        self.assertTrue((self.jobs / "deferred" / "deliver-1.json").is_file())
+        self.assertEqual(self.sender.sent, [])
+        self.assertIsNone(self._run())
         self.assertEqual(self.transport.calls, 0)
-        retried = self._run()
-        self.assertEqual(retried["http_calls"], 0)
-        self.assertEqual(self.transport.calls, 0)
+        later = process_one(
+            jobs_dir=self.jobs, catalog_root=self.catalog, health_path=self.health, fx=_fx(),
+            transport=self.transport, sender=self.sender, clock=ManualClock(NOW + timedelta(minutes=31)),
+            deliver=True, state_path=self.root / "buy-state.json",
+        )
+        self.assertEqual(later["http_calls"], 0)
         self.assertEqual(self.sender.sent[0]["event_id"], "deliver-1")
+        self.assertEqual(self._stored("deliver-1")["delivery_state"], "sent")
 
     def test_stale_purchase_is_not_sent_as_current(self) -> None:
         self.jobs.mkdir(exist_ok=True)
         (self.jobs / "results").mkdir(parents=True)
         (self.jobs / "delivery").mkdir(parents=True)
+        fresh = NOW.isoformat()
+        stale = (NOW - timedelta(hours=9)).isoformat()
         result = {
             "result_id": "scan-old", "scan_id": "scan-old", "snapshot_id": "snap-old",
-            "quote_checked_at": (NOW - timedelta(hours=9)).isoformat(),
-            "purchase_current": True, "http_calls": 0, "generated_at": (NOW - timedelta(hours=9)).isoformat(),
+            "quote_checked_at": fresh, "purchase_current": True,
+            "all_offers": [{"price_checked_at": fresh}],
+            "fx": {**_fx(), "fetched_at": fresh},
+            "views": {"general_top": [
+                {"model": "shown", "price_thb": "70000", "price_checked_at": fresh, "availability_checked_at": stale},
+                {"model": "ru-side", "price_thb": "70000", "price_checked_at": fresh,
+                 "availability_checked_at": fresh, "ru_price_checked_at": stale},
+            ]},
+            "http_calls": 0, "generated_at": stale,
         }
         (self.jobs / "results" / "scan-old.json").write_text(json.dumps(result), encoding="utf-8")
         event = self._event("buy", ["chat"], "stale-buy")
@@ -246,6 +288,10 @@ class MarketEventQueueTests(unittest.TestCase):
         self.assertEqual(self.transport.calls, 0)
         self.assertEqual(self.sender.sent[0]["current"], False)
         self.assertEqual(self.sender.sent[0]["historical"], True)
+        stored = self._stored("stale-buy")
+        self.assertEqual(stored["delivery_state"], "sent")
+        self.assertEqual(stored["delivered_as"], "historical")
+        self.assertFalse((self.jobs / "deferred" / "stale-buy.json").exists())
 
     def test_referenced_snapshot_survives_retention(self) -> None:
         self._catalog(2)
@@ -353,6 +399,209 @@ class MarketEventQueueTests(unittest.TestCase):
         )
         self.assertEqual(archived["buy_delivery"], "already_sent")
         self.assertFalse((self.jobs / "pending" / f"{job['job_id']}.json").exists())
+
+    def test_missing_sender_keeps_the_waiting_event(self) -> None:
+        self._catalog(2)
+        enqueue_market_event(self._event("manual", ["chat"], "hold-1"), root=self.jobs, now=NOW)
+        process_one(
+            jobs_dir=self.jobs, catalog_root=self.catalog, health_path=self.health, fx=_fx(),
+            transport=self.transport, sender=self.sender, clock=ManualClock(NOW),
+            deliver=False, state_path=self.root / "buy-state.json",
+        )
+        enqueue_market_event(self._event("manual", ["chat"], "hold-2"), root=self.jobs, now=NOW)
+        process_one(
+            jobs_dir=self.jobs, catalog_root=self.catalog, health_path=self.health, fx=_fx(),
+            transport=self.transport, sender=None, clock=ManualClock(NOW),
+            deliver=True, state_path=self.root / "buy-state.json",
+        )
+        for event_id in ("hold-1", "hold-2"):
+            self.assertTrue((self.jobs / "delivery" / f"{event_id}.json").is_file())
+            self.assertFalse((self.jobs / "archive" / f"{event_id}.json").exists())
+            self.assertNotEqual(self._stored(event_id).get("delivery_state"), "sent")
+        self.assertEqual(self.sender.sent, [])
+
+    def test_two_processes_do_not_send_one_event(self) -> None:
+        if multiprocessing.current_process().name != "MainProcess":
+            return
+        fresh = NOW.isoformat()
+        (self.jobs / "results").mkdir(parents=True)
+        (self.jobs / "delivery").mkdir(parents=True)
+        result = {"result_id": "scan-send", "scan_id": "scan-send", "fx": {"fetched_at": fresh},
+                  "views": {"general_top": [{"model": "A", "price_thb": "1", "price_checked_at": fresh,
+                                             "availability_checked_at": fresh}]}}
+        (self.jobs / "results" / "scan-send.json").write_text(json.dumps(result), encoding="utf-8")
+        event = self._event("manual", ["chat"], "once")
+        event["subscription_scan_id"] = "scan-send"
+        event["result_id"] = "scan-send"
+        (self.jobs / "delivery" / "once.json").write_text(json.dumps(event), encoding="utf-8")
+        hold = self.root / "sending"
+        release = self.root / "release-send"
+        log = self.root / "sent.txt"
+        log.write_text("", encoding="utf-8")
+        args = (str(self.jobs), str(self.catalog), str(self.health), str(hold), str(release), str(log))
+        first = multiprocessing.Process(target=_delivery_child, args=args)
+        second = multiprocessing.Process(target=_delivery_child, args=args)
+        first.start()
+        second.start()
+        deadline = time.monotonic() + 5
+        while not hold.exists() and time.monotonic() < deadline:
+            time.sleep(0.02)
+        release.write_text("go", encoding="utf-8")
+        first.join(8)
+        second.join(8)
+        self.assertFalse(first.is_alive())
+        self.assertFalse(second.is_alive())
+        self.assertEqual(log.read_text(encoding="utf-8").count("once"), 1)
+
+    def test_persistent_delivery_failure_does_not_spin(self) -> None:
+        from thailand.worker import drain
+
+        self._catalog(2)
+        self.sender.failures = 20
+        enqueue_market_event(self._event("manual", ["chat"], "spin"), root=self.jobs, now=NOW)
+        processed = drain(
+            jobs_dir=self.jobs, catalog_root=self.catalog, health_path=self.health, fx=_fx(),
+            transport=self.transport, sender=self.sender, clock=ManualClock(NOW),
+            deliver=True, max_jobs=8, state_path=self.root / "buy-state.json",
+        )
+        self.assertLess(processed, 4)
+        self.assertEqual(self.transport.calls, 0)
+        self.assertEqual(self.sender.sent, [])
+        self.assertTrue((self.jobs / "deferred" / "spin.json").is_file())
+        waiting = json.loads((self.jobs / "deferred" / "spin.json").read_text(encoding="utf-8"))
+        self.assertIsNotNone(waiting.get("not_before"))
+
+    def test_different_keys_and_v1_do_not_scan_together(self) -> None:
+        if multiprocessing.current_process().name != "MainProcess":
+            return
+        self._catalog(9)
+        hold = self.root / "hold"
+        counter = self.root / "counter.txt"
+        counter.write_text("", encoding="utf-8")
+        enqueue_market_event(self._event("manual", ["a"], "key-a"), root=self.jobs, now=NOW)
+        worker = multiprocessing.Process(
+            target=_hold_child,
+            args=(str(self.jobs), str(self.catalog), str(self.health), str(counter), str(hold)),
+        )
+        worker.start()
+        deadline = time.monotonic() + 5
+        while not hold.exists() and time.monotonic() < deadline:
+            time.sleep(0.02)
+        other = build_market_event(
+            instance_id="other-instance", trigger_type="manual", requested_view="general_top",
+            recipients=["b"], event_id="key-b", now=NOW,
+        )
+        enqueue_market_event(other, root=self.jobs, now=NOW)
+        calls = {"n": 0}
+
+        def scan_fn(**_kwargs):
+            calls["n"] += 1
+            return {"status": "ok", "stores": [{"store": "jib"}], "messages_sent": 0}
+
+        from buy_opportunity import BuySignal
+        signal = BuySignal(
+            level="BUY", model_key="m", cluster_name="Model", price=100, store="regard",
+            gpu="RTX 5070 Ti", cpu=None, ram_gb=32, ssd_gb=1024, screen_inch=16,
+            score=1, confidence=1, historical_min=None, target_price=None, url=None,
+            reasons=[], rule_ids=[], over_hist_pct=None, fingerprint="busy-fp",
+            cluster_key=None, history_started_at=None,
+        )
+        job = build_job(trigger_type="buy_signal", signals=[signal], russian_deals=[], dedupe_key="busy-fp", instance_id=INSTANCE)
+        enqueue_job(job, root=self.jobs)
+        second = process_one(
+            jobs_dir=self.jobs, catalog_root=self.catalog, health_path=self.health, fx=_fx(),
+            transport=CountingTransport(), sender=FakeSender(), clock=ManualClock(NOW),
+            deliver=True, scan_fn=scan_fn, state_path=self.root / "buy-state.json",
+        )
+        self.assertIsNone(second)
+        self.assertEqual(calls["n"], 0)
+        self.assertEqual(counter.read_text(encoding="utf-8").count("1"), 1)
+        self.assertTrue((self.jobs / "pending" / "key-b.json").is_file())
+        self.assertTrue((self.jobs / "pending" / f"{job['job_id']}.json").is_file())
+        active = json.loads((self.jobs / "active_scan.json").read_text(encoding="utf-8"))
+        self.assertEqual(active["discovery_key"], discovery_key(INSTANCE))
+        hold.with_name("release").write_text("go", encoding="utf-8")
+        worker.join(8)
+        self.assertFalse(worker.is_alive())
+
+    def test_saved_result_contains_message_data(self) -> None:
+        self._catalog(2)
+        enqueue_market_event(self._event("manual", ["chat"], "render"), root=self.jobs, now=NOW)
+        self._run()
+        event = self._stored("render")
+        result = json.loads((self.jobs / "results" / f"{event['result_id']}.json").read_text(encoding="utf-8"))
+        row = result["views"]["general_top"][0]
+        self.assertTrue(row["model"])
+        self.assertTrue(row["price_thb"])
+        self.assertTrue(row["price_checked_at"])
+        self.assertTrue(row["availability_checked_at"])
+        refs = json.loads((self.jobs / "protected_refs.json").read_text(encoding="utf-8"))
+        self.assertIn(result["snapshot_id"], refs["th_snapshot_ids"])
+        self.assertIn(result["fx"]["fx_id"], refs["fx_ids"])
+        self.assertIn(result["result_id"], refs["result_ids"])
+
+    def test_recovery_after_result_does_not_repeat_http(self) -> None:
+        self._catalog(9)
+        event = self._event("manual", ["chat"], "bound")
+        enqueue_market_event(event, root=self.jobs, now=NOW)
+        (self.jobs / "processing").mkdir(parents=True, exist_ok=True)
+        (self.jobs / "pending" / "bound.json").replace(self.jobs / "processing" / "bound.json")
+        (self.jobs / "results").mkdir(parents=True, exist_ok=True)
+        (self.jobs / "results" / "bound.json").write_text(json.dumps({
+            "result_id": "bound", "scan_id": "bound", "snapshot_id": "kept",
+            "views": {"general_top": []},
+        }), encoding="utf-8")
+        scan = {
+            "scan_id": "bound", "discovery_key": discovery_key(INSTANCE),
+            "claimed_at": (NOW - timedelta(hours=2)).isoformat(),
+            "event_ids": ["bound"], "owner_pid": 1,
+        }
+        (self.jobs / "active_scan.json").write_text(json.dumps(scan), encoding="utf-8")
+        self._run()
+        self.assertEqual(self.transport.calls, 0)
+        self.assertEqual(self._stored("bound")["result_id"], "bound")
+
+    def test_live_owner_is_not_recovered(self) -> None:
+        import os
+        event = self._event("manual", ["chat"], "live")
+        enqueue_market_event(event, root=self.jobs, now=NOW)
+        (self.jobs / "processing").mkdir(parents=True, exist_ok=True)
+        (self.jobs / "pending" / "live.json").replace(self.jobs / "processing" / "live.json")
+        scan = {
+            "scan_id": "live-scan", "discovery_key": discovery_key(INSTANCE),
+            "claimed_at": (NOW - timedelta(hours=5)).isoformat(),
+            "event_ids": ["live"], "owner_pid": os.getpid(),
+        }
+        (self.jobs / "active_scan.json").write_text(json.dumps(scan), encoding="utf-8")
+        self.assertEqual(recover_market_scan(root=self.jobs, now=NOW, stale_seconds=0), [])
+        self.assertTrue((self.jobs / "active_scan.json").is_file())
+        self.assertTrue((self.jobs / "processing" / "live.json").is_file())
+
+    def test_undelivered_buy_is_not_remembered(self) -> None:
+        from buy_opportunity import BuySignal
+
+        signal = BuySignal(
+            level="BUY", model_key="m", cluster_name="Model", price=100, store="regard",
+            gpu="RTX 5070 Ti", cpu=None, ram_gb=32, ssd_gb=1024, screen_inch=16,
+            score=1, confidence=1, historical_min=None, target_price=None, url=None,
+            reasons=[], rule_ids=[], over_hist_pct=None, fingerprint="undelivered-fp",
+            cluster_key=None, history_started_at=None,
+        )
+        job = build_job(trigger_type="buy_signal", signals=[signal], russian_deals=[], dedupe_key="undelivered-fp", instance_id=INSTANCE)
+        enqueue_job(job, root=self.jobs)
+
+        def scan_fn(**_kwargs):
+            return {"status": "ok", "stores": [{"store": "jib"}], "messages_sent": 0, "messages_failed": 0}
+
+        process_one(
+            jobs_dir=self.jobs, deliver=False, scan_fn=scan_fn,
+            state_path=self.root / "buy-state.json",
+        )
+        record = {}
+        path = self.jobs / "delivered_buy.json"
+        if path.is_file():
+            record = json.loads(path.read_text(encoding="utf-8"))
+        self.assertNotIn("undelivered-fp", record.get("fingerprints") or [])
 
 
 if __name__ == "__main__":

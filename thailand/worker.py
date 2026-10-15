@@ -5,6 +5,7 @@ from __future__ import annotations
 import argparse
 import logging
 import time
+from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
 
@@ -67,10 +68,21 @@ def process_one(
     )
     if market is not None:
         return market
+    from thailand.market_events import (
+        begin_heavy_scan,
+        end_heavy_scan,
+        heavy_scan_busy,
+        release_claimed_job,
+        remember_buy_delivery,
+        v1_buy_already_sent,
+    )
+
+    wake = clock.now() if clock is not None else datetime.now(timezone.utc)
+    if heavy_scan_busy(jobs_dir, wake):
+        return None
     job = claim_next_job(root=jobs_dir)
     if job is None:
         return None
-    from thailand.market_events import remember_buy_delivery, v1_buy_already_sent
 
     if v1_buy_already_sent(job, jobs_dir):
         archived = dict(job)
@@ -78,6 +90,9 @@ def process_one(
         archived["buy_delivery"] = "already_sent"
         archive_job(archived, root=jobs_dir, failed=False)
         return archived
+    if not begin_heavy_scan(jobs_dir, wake, kind="v1"):
+        release_claimed_job(jobs_dir, job)
+        return None
 
     def _write_state(data: dict[str, Any]) -> None:
         write_worker_state(data, path=worker_state_path)
@@ -137,7 +152,7 @@ def process_one(
         )
         fatal = status == "failed" and not result.get("stores")
         path = archive_job(archived, root=jobs_dir, failed=fatal)
-        if not fatal and job.get("trigger_type") == "buy_signal":
+        if not fatal and job.get("trigger_type") == "buy_signal" and int(result.get("messages_sent") or 0) > 0:
             remember_buy_delivery(job, jobs_dir)
         try:
             _write_state(
@@ -162,6 +177,7 @@ def process_one(
             result.get("snapshot_path"),
             result.get("messages_sent"),
         )
+        end_heavy_scan(jobs_dir)
         return archived
     except Exception as exc:  # noqa: BLE001
         finished_at = utc_now_iso()
@@ -195,6 +211,7 @@ def process_one(
         logger.warning(
             "thailand worker fatal job_id=%s error=%s", job_id, type(exc).__name__
         )
+        end_heavy_scan(jobs_dir)
         return failed
 
 

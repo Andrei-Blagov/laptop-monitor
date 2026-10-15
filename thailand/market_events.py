@@ -9,15 +9,16 @@ import json
 import os
 import time
 import uuid
-from datetime import datetime, timedelta, timezone
+from datetime import date, datetime, timedelta, timezone
+from decimal import Decimal
 from pathlib import Path
 from typing import Any, Mapping
 from zoneinfo import ZoneInfo
 
-from market_contracts import moment
+from market_contracts import ComparisonPolicy, FxObservation, age_valid, moment
 from thai_catalog import REFERENCES_NAME, discovery_scope_hash
 from thailand.catalog_refresh import execute_catalog_plan
-from thailand.catalog_reuse import QUOTE_HOURS, evaluate_catalog_reuse
+from thailand.catalog_reuse import evaluate_catalog_reuse
 from thailand.job_queue import _atomic_write, _read_json, ensure_queue_dirs, jobs_root
 
 MOSCOW = ZoneInfo("Europe/Moscow")
@@ -125,12 +126,12 @@ def _lock(root: Path) -> FileLock:
 
 def _dirs(root: Path) -> None:
     ensure_queue_dirs(root)
-    for name in ("deferred", "results", "delivery"):
+    for name in ("deferred", "results", "delivery", "delivering"):
         (root / name).mkdir(parents=True, exist_ok=True)
 
 
 def _event_path(root: Path, event_id: str) -> Path | None:
-    for name in ("pending", "processing", "deferred", "delivery", "archive", "failed"):
+    for name in ("pending", "processing", "deferred", "delivery", "delivering", "archive", "failed"):
         path = root / name / f"{event_id}.json"
         if path.is_file():
             return path
@@ -153,7 +154,7 @@ def _write_event(root: Path, folder: str, event: dict[str, Any]) -> None:
 
 
 def _remove_event(root: Path, event_id: str, keep: str | None = None) -> None:
-    for name in ("pending", "processing", "deferred", "delivery", "archive", "failed"):
+    for name in ("pending", "processing", "deferred", "delivery", "delivering", "archive", "failed"):
         if name == keep:
             continue
         path = root / name / f"{event_id}.json"
@@ -195,24 +196,65 @@ def promote_due_events(*, root: Path | str, now: datetime) -> list[str]:
             due = moment(event.get("not_before"))
             if due is None or due > now:
                 continue
+            folder = "delivery" if event.get("result_id") else "pending"
             event["delivery_state"] = "pending"
-            _write_event(base, "pending", event)
+            _write_event(base, folder, event)
             (base / "deferred" / f"{event['event_id']}.json").unlink(missing_ok=True)
             moved.append(event["event_id"])
     return moved
+
+
+def _pid_alive(pid: object) -> bool:
+    """True when the process exists. Does not signal or terminate it."""
+    try:
+        number = int(pid)
+    except (TypeError, ValueError):
+        return False
+    if number <= 0:
+        return False
+    if os.name == "nt":
+        import ctypes
+        handle = ctypes.windll.kernel32.OpenProcess(0x1000, False, number)
+        if not handle:
+            return False
+        ctypes.windll.kernel32.CloseHandle(handle)
+        return True
+    try:
+        os.kill(number, 0)
+    except OSError:
+        return False
+    return True
+
+
+def _scan_live(scan: Mapping[str, Any] | None, now: datetime, stale_seconds: float) -> bool:
+    if not scan:
+        return False
+    if _pid_alive(scan.get("owner_pid")):
+        return True
+    claimed = moment(scan.get("claimed_at"))
+    if claimed is None:
+        return True
+    return (now - claimed).total_seconds() < stale_seconds
 
 
 def _active_scan(root: Path) -> dict[str, Any] | None:
     return _read_json(root / "active_scan.json")
 
 
-def _save_scan(root: Path, scan: dict[str, Any] | None) -> None:
+def _save_scan(root: Path, scan: dict[str, Any] | None, *, now: datetime | None = None, stale_seconds: float = 600) -> bool:
     path = root / "active_scan.json"
+    current = _active_scan(root)
+    if scan is not None and current and current.get("scan_id") != scan.get("scan_id"):
+        if _scan_live(current, now or datetime.now(timezone.utc), stale_seconds):
+            return False
     if scan is None:
+        if current and _pid_alive(current.get("owner_pid")) and current.get("owner_pid") != os.getpid():
+            return False
         if path.is_file():
             path.unlink()
-        return
+        return True
     _atomic_write(path, scan)
+    return True
 
 
 def recover_market_scan(*, root: Path | str, now: datetime, stale_seconds: float = 0) -> list[str]:
@@ -224,7 +266,10 @@ def recover_market_scan(*, root: Path | str, now: datetime, stale_seconds: float
         scan = _active_scan(base)
         if not scan:
             for event in _load_events(base / "processing"):
-                if event.get("result_id"):
+                stored = _load_result(base, str(event.get("subscription_scan_id") or event.get("result_id") or ""))
+                if event.get("result_id") or stored:
+                    if stored:
+                        _bind_event(event, stored, str(event.get("subscription_scan_id") or stored.get("scan_id") or ""))
                     _write_event(base, "delivery", event)
                     _remove_event(base, event["event_id"], keep="delivery")
                     continue
@@ -234,8 +279,7 @@ def recover_market_scan(*, root: Path | str, now: datetime, stale_seconds: float
                 _remove_event(base, event["event_id"], keep="pending")
                 recovered.append(event["event_id"])
             return recovered
-        claimed = moment(scan.get("claimed_at"))
-        if claimed is not None and (now - claimed).total_seconds() < stale_seconds:
+        if _scan_live(scan, now, stale_seconds):
             return recovered
         result = base / "results" / f"{scan['scan_id']}.json"
         for event_id in list(scan.get("event_ids") or []):
@@ -243,7 +287,10 @@ def recover_market_scan(*, root: Path | str, now: datetime, stale_seconds: float
             event = _read_json(path) if path else None
             if not isinstance(event, dict):
                 continue
+            stored = _read_json(result) if result.is_file() else None
             if result.is_file() or event.get("result_id"):
+                if isinstance(stored, dict):
+                    _bind_event(event, stored, str(scan["scan_id"]))
                 _write_event(base, "delivery", event)
                 _remove_event(base, event_id, keep="delivery")
             else:
@@ -275,10 +322,11 @@ def _claim_batch(base: Path, now: datetime) -> tuple[dict[str, Any] | None, list
         return None, []
     key = pending[0]["discovery_key"]
     scan = _active_scan(base)
-    if scan and scan.get("discovery_key") == key:
-        for event in pending:
-            if event.get("discovery_key") == key:
-                _subscribe(base, scan, event)
+    if _scan_live(scan, now, 600):
+        if scan and scan.get("discovery_key") == key:
+            for event in pending:
+                if event.get("discovery_key") == key:
+                    _subscribe(base, scan, event)
         return None, []
     chosen = [event for event in pending if event.get("discovery_key") == key]
     scan = {
@@ -288,11 +336,12 @@ def _claim_batch(base: Path, now: datetime) -> tuple[dict[str, Any] | None, list
         "event_ids": [event["event_id"] for event in chosen],
         "owner_pid": os.getpid(),
     }
+    if not _save_scan(base, scan, now=now):
+        return None, []
     for event in chosen:
         event["subscription_scan_id"] = scan["scan_id"]
         _write_event(base, "processing", event)
         _remove_event(base, event["event_id"], keep="processing")
-    _save_scan(base, scan)
     return scan, chosen
 
 
@@ -315,34 +364,105 @@ def _protect(catalog_root: Path, snapshot_ids: list[str]) -> None:
     _atomic_write(path, {"snapshot_ids": found})
 
 
-def _quote_time(outcome: Mapping[str, Any]) -> str | None:
+def _offer_row(offer: Mapping[str, Any]) -> dict[str, Any]:
+    return {
+        "model": offer.get("product_name") or offer.get("name"),
+        "source": offer.get("source"),
+        "external_id": offer.get("external_id"),
+        "price_thb": offer.get("price_thb") if offer.get("price_thb") is not None else offer.get("price"),
+        "price_checked_at": offer.get("price_checked_at"),
+        "availability_checked_at": offer.get("availability_checked_at"),
+        "availability_state": offer.get("availability_state"),
+    }
+
+
+def _message_views(outcome: Mapping[str, Any]) -> dict[str, list[dict[str, Any]]]:
+    """Rows a message can render without another store call."""
+    comparison = outcome.get("comparison") or {}
     rankings = outcome.get("rankings") or {}
-    for row in rankings.get("all_offers") or []:
-        checked = row.get("price_checked_at")
-        if checked:
-            return str(checked)
-    return None
+    views: dict[str, list[dict[str, Any]]] = {}
+    pairs = list(comparison.get("pairs") or [])
+    for name in ("all", "general_top", "personal_top3"):
+        if name == "all":
+            chosen = pairs
+        elif name == "general_top":
+            chosen = [pair for pair in pairs if (pair.get("ru_membership") or {}).get("in_general_top")]
+        else:
+            chosen = [pair for pair in pairs if (pair.get("ru_membership") or {}).get("in_personal_top3")]
+        rows = []
+        for pair in chosen:
+            th = pair.get("th_observation") or {}
+            ru = pair.get("ru_observation") or {}
+            rows.append({
+                **_offer_row(th),
+                "ru_price_rub": ru.get("price_rub"),
+                "ru_price_checked_at": ru.get("price_checked_at"),
+                "ru_availability_checked_at": ru.get("availability_checked_at"),
+                "saving_rub": pair.get("saving_rub"),
+                "differences": list(pair.get("conflicting_fields") or pair.get("commercial_differences") or []),
+                "comparison_status": pair.get("comparison_status"),
+            })
+        views[name] = rows
+    if not views["general_top"]:
+        for model in rankings.get("thai_top_value") or []:
+            for offer in model.get("offers") or [model]:
+                if isinstance(offer, dict):
+                    views["general_top"].append(_offer_row(offer))
+    return views
 
 
-def _purchase_is_current(result: Mapping[str, Any], now: datetime) -> bool:
-    if not result.get("purchase_current"):
+def _fx_usable(fx: Mapping[str, Any], now: datetime, policy: ComparisonPolicy) -> bool:
+    published = fx.get("published_date")
+    try:
+        published_date = date.fromisoformat(str(published)) if published else None
+    except ValueError:
+        published_date = None
+    rate = fx.get("rub_per_thb")
+    nominal = fx.get("nominal", 1)
+    observation = FxObservation(
+        fx_id=str(fx.get("fx_id") or ""),
+        rub_per_thb=Decimal(str(rate)) if rate not in (None, "") else None,
+        fetched_at=moment(fx.get("fetched_at")),
+        published_date=published_date,
+        source=str(fx.get("source") or "CBR"),
+        currency=str(fx.get("currency") or "THB"),
+        nominal=nominal if isinstance(nominal, int) and not isinstance(nominal, bool) else 0,
+        error=fx.get("error"),
+    )
+    return observation.usable(now, policy)
+
+
+def _view_is_current(result: Mapping[str, Any], view: str, now: datetime) -> bool:
+    """Current only when every shown offer, its RU side, and FX pass package D at delivery."""
+    rows = (result.get("views") or {}).get(view) or []
+    if not rows:
         return False
-    checked = moment(result.get("quote_checked_at"))
-    if checked is None:
+    policy = ComparisonPolicy()
+    fx = result.get("fx") or {}
+    if fx and not _fx_usable(fx, now, policy):
         return False
-    return now - checked <= timedelta(hours=float(QUOTE_HOURS))
+    for row in rows:
+        if not age_valid(moment(row.get("price_checked_at")), now, policy.quote_hours):
+            return False
+        if not age_valid(moment(row.get("availability_checked_at")), now, policy.quote_hours):
+            return False
+        if row.get("ru_price_checked_at") is not None and not age_valid(
+            moment(row.get("ru_price_checked_at")), now, policy.ru_quote_hours
+        ):
+            return False
+        if row.get("ru_availability_checked_at") is not None and not age_valid(
+            moment(row.get("ru_availability_checked_at")), now, policy.ru_quote_hours
+        ):
+            return False
+    return True
 
 
 def _deliver_one(sender, event: dict[str, Any], result: Mapping[str, Any], now: datetime) -> str:
-    current = _purchase_is_current(result, now)
-    if result.get("purchase_current") and not current:
-        if sender is not None:
-            sender.send(event, result, current=False, historical=True)
-        return "historical"
+    current = _view_is_current(result, str(event.get("requested_view") or "general_top"), now)
     if sender is None:
         return "skipped"
-    sender.send(event, result, current=current, historical=False)
-    return "sent"
+    sender.send(event, result, current=current, historical=not current)
+    return "sent" if current else "historical"
 
 
 def _load_result(base: Path, scan_id: str) -> dict[str, Any] | None:
@@ -350,13 +470,18 @@ def _load_result(base: Path, scan_id: str) -> dict[str, Any] | None:
     return data if isinstance(data, dict) else None
 
 
+def _bind_event(event: dict[str, Any], result: Mapping[str, Any], scan_id: str) -> None:
+    event["subscription_scan_id"] = scan_id
+    event["result_id"] = result.get("result_id")
+    event["result_comparison_id"] = result.get("result_comparison_id")
+    event["requested_ru_snapshot_id"] = result.get("ru_snapshot_id")
+    event["result_snapshot_id"] = result.get("snapshot_id")
+    event["fx_id"] = (result.get("fx") or {}).get("fx_id")
+
+
 def _stamp(base: Path, events: list[dict[str, Any]], result: Mapping[str, Any], scan_id: str) -> None:
     for event in events:
-        event["subscription_scan_id"] = scan_id
-        event["result_id"] = result.get("result_id")
-        event["result_comparison_id"] = result.get("result_comparison_id")
-        event["requested_ru_snapshot_id"] = result.get("ru_snapshot_id")
-        event["result_snapshot_id"] = result.get("snapshot_id")
+        _bind_event(event, result, scan_id)
         _write_event(base, "delivery", event)
         _remove_event(base, event["event_id"], keep="delivery")
 
@@ -382,24 +507,55 @@ def _run_plan(events, *, catalog_root, health_path, fx, russian_snapshot, transp
     return decision, outcome, passes
 
 
-def _finish_scan(base, catalog_root, scan, events, outcome, now) -> dict[str, Any]:
-    checked = _quote_time(outcome)
-    purchase_current = bool((outcome.get("rankings") or {}).get("thai_top_value"))
+def _protect_refs(base: Path, result: Mapping[str, Any]) -> None:
+    path = base / "protected_refs.json"
+    current = _read_json(path) or {}
+    refs = {
+        "th_snapshot_ids": list(current.get("th_snapshot_ids") or []),
+        "ru_snapshot_ids": list(current.get("ru_snapshot_ids") or []),
+        "fx_ids": list(current.get("fx_ids") or []),
+        "result_ids": list(current.get("result_ids") or []),
+    }
+    additions = {
+        "th_snapshot_ids": result.get("snapshot_id"),
+        "ru_snapshot_ids": result.get("ru_snapshot_id"),
+        "fx_ids": (result.get("fx") or {}).get("fx_id"),
+        "result_ids": result.get("result_id"),
+    }
+    for key, value in additions.items():
+        if value and value not in refs[key]:
+            refs[key].append(value)
+    _atomic_write(path, refs)
+
+
+def _finish_scan(base, catalog_root, scan, events, outcome, now, fx=None) -> dict[str, Any]:
+    comparison = outcome.get("comparison") or {}
+    supplied = fx if isinstance(fx, dict) else {}
     result = {
         "result_id": scan["scan_id"],
         "scan_id": scan["scan_id"],
         "snapshot_id": outcome.get("snapshot_id"),
-        "result_comparison_id": (outcome.get("comparison") or {}).get("comparison_id"),
-        "ru_snapshot_id": (outcome.get("comparison") or {}).get("ru_snapshot_id"),
+        "result_comparison_id": comparison.get("comparison_id"),
+        "ru_snapshot_id": comparison.get("ru_snapshot_id"),
+        "fx": {
+            "fx_id": supplied.get("fx_id") or comparison.get("fx_id"),
+            "fetched_at": supplied.get("fetched_at"),
+            "published_date": supplied.get("published_date"),
+            "rub_per_thb": supplied.get("rub_per_thb"),
+            "source": supplied.get("source"),
+            "currency": supplied.get("currency"),
+            "nominal": supplied.get("nominal"),
+            "error": supplied.get("error"),
+        } if supplied or comparison.get("fx_id") else {},
         "http_calls": int(outcome.get("http_calls") or 0),
         "action": outcome.get("action"),
         "status": outcome.get("status"),
-        "quote_checked_at": checked,
-        "purchase_current": purchase_current,
         "generated_at": now.isoformat(),
         "passes": outcome.get("passes"),
+        "views": _message_views(outcome),
     }
     _atomic_write(base / "results" / f"{scan['scan_id']}.json", result)
+    _protect_refs(base, result)
     if catalog_root is not None and result.get("snapshot_id"):
         _protect(Path(catalog_root), [str(result["snapshot_id"])])
     with _lock(base):
@@ -443,7 +599,8 @@ def run_market_queue(
         stale_seconds=float(config.THAILAND_JOB_STALE_PROCESSING_SECONDS),
     )
     promote_due_events(root=base, now=clock_now)
-    delivered = _retry_delivery(base, sender if deliver else None, clock_now)
+    delivery_now = clock.now() if clock is not None else (datetime.now(timezone.utc) if now is None else clock_now)
+    delivered = _retry_delivery(base, sender, delivery_now, deliver=deliver)
     if delivered is not None:
         return delivered
     with _lock(base):
@@ -474,9 +631,10 @@ def run_market_queue(
             _defer_events(base, attached or events, when, decision.get("action") or "deferred")
             _save_scan(base, None)
         return {"status": "deferred", "event_ids": [event["event_id"] for event in events], "http_calls": int(outcome.get("http_calls") or 0)}
-    result = _finish_scan(base, Path(catalog_root), scan, events, outcome, clock_now)
-    if deliver:
-        delivered = _retry_delivery(base, sender, clock_now)
+    result = _finish_scan(base, Path(catalog_root), scan, events, outcome, clock_now, fx=fx)
+    if deliver and sender is not None:
+        delivery_now = clock.now() if clock is not None else (datetime.now(timezone.utc) if now is None else clock_now)
+        delivered = _retry_delivery(base, sender, delivery_now, deliver=True)
         if delivered is not None and delivered.get("status") == "delivery_failed":
             delivered["http_calls"] = result["http_calls"]
             delivered["result_id"] = result["result_id"]
@@ -484,7 +642,36 @@ def run_market_queue(
     return {"status": result.get("status") or "completed", "event_ids": scan["event_ids"], "http_calls": result["http_calls"], "result_id": result["result_id"]}
 
 
-def _retry_delivery(base: Path, sender, now: datetime) -> dict[str, Any] | None:
+def _claim_delivery(base: Path, event_id: str) -> dict[str, Any] | None:
+    source = base / "delivery" / f"{event_id}.json"
+    destination = base / "delivering" / f"{event_id}.json"
+    try:
+        os.replace(source, destination)
+    except OSError:
+        return None
+    event = _read_json(destination)
+    if not isinstance(event, dict):
+        return None
+    event["delivery_owner"] = os.getpid()
+    _atomic_write(destination, event)
+    return event
+
+
+def _retry_delivery(base: Path, sender, now: datetime, *, deliver: bool = True) -> dict[str, Any] | None:
+    """Claim one waiting event. A failed send waits until not_before; it is not retried in this drain."""
+    if not deliver or sender is None:
+        return None
+    (base / "delivering").mkdir(parents=True, exist_ok=True)
+    with _lock(base):
+        for path in sorted((base / "delivering").glob("*.json")):
+            event = _read_json(path)
+            if not isinstance(event, dict):
+                continue
+            owner = event.get("delivery_owner")
+            if _pid_alive(owner) and owner != os.getpid():
+                continue
+            _write_event(base, "delivery", event)
+            path.unlink(missing_ok=True)
     waiting = _load_events(base / "delivery")
     if not waiting:
         return None
@@ -493,22 +680,71 @@ def _retry_delivery(base: Path, sender, now: datetime) -> dict[str, Any] | None:
         result = _load_result(base, str(event.get("subscription_scan_id") or event.get("result_id") or ""))
         if result is None:
             continue
+        with _lock(base):
+            claimed = _claim_delivery(base, str(event["event_id"]))
+        if claimed is None:
+            continue
         try:
-            state = _deliver_one(sender, event, result, now)
+            state = _deliver_one(sender, claimed, result, now)
         except Exception as exc:  # noqa: BLE001
-            event["delivery_state"] = "failed"
-            event["retry_count"] = int(event.get("retry_count") or 0) + 1
-            event["delivery_error"] = type(exc).__name__
-            _write_event(base, "delivery", event)
-            return {"status": "delivery_failed", "event_id": event["event_id"], "http_calls": 0}
-        event["delivery_state"] = "sent" if state == "sent" else "deferred"
-        event["delivered_as"] = state
-        _write_event(base, "archive", event)
-        _remove_event(base, event["event_id"], keep="archive")
-        sent_ids.append(event["event_id"])
+            claimed["delivery_state"] = "deferred"
+            claimed["retry_count"] = int(claimed.get("retry_count") or 0) + 1
+            claimed["delivery_error"] = type(exc).__name__
+            claimed["not_before"] = (now + timedelta(minutes=30)).isoformat()
+            claimed.pop("delivery_owner", None)
+            _write_event(base, "deferred", claimed)
+            (base / "delivering" / f"{claimed['event_id']}.json").unlink(missing_ok=True)
+            return {"status": "delivery_failed", "event_id": claimed["event_id"], "http_calls": 0}
+        claimed["delivery_state"] = "sent"
+        claimed["delivered_as"] = state
+        claimed.pop("delivery_owner", None)
+        _write_event(base, "archive", claimed)
+        (base / "delivering" / f"{claimed['event_id']}.json").unlink(missing_ok=True)
+        _remove_event(base, claimed["event_id"], keep="archive")
+        sent_ids.append(claimed["event_id"])
     if not sent_ids:
         return None
     return {"status": "delivered", "event_ids": sent_ids, "http_calls": 0}
+
+
+def heavy_scan_busy(root: Path | str | None, now: datetime, stale_seconds: float = 600) -> bool:
+    if root is None:
+        return False
+    base = jobs_root(root)
+    return _scan_live(_active_scan(base), now, stale_seconds)
+
+
+def begin_heavy_scan(root: Path | str, now: datetime, *, kind: str) -> bool:
+    """Take the single heavy-pass lease. A live owner is not replaced."""
+    base = jobs_root(root)
+    _dirs(base)
+    with _lock(base):
+        scan = {
+            "scan_id": f"{kind}-{uuid.uuid4()}",
+            "discovery_key": kind,
+            "claimed_at": now.isoformat(),
+            "event_ids": [],
+            "owner_pid": os.getpid(),
+        }
+        return _save_scan(base, scan, now=now)
+
+
+def end_heavy_scan(root: Path | str | None) -> None:
+    if root is None:
+        return
+    base = jobs_root(root)
+    with _lock(base):
+        current = _active_scan(base)
+        if current and current.get("owner_pid") == os.getpid():
+            _save_scan(base, None)
+
+
+def release_claimed_job(root: Path | str, job: Mapping[str, Any]) -> None:
+    base = jobs_root(root)
+    job_id = str(job.get("job_id") or "")
+    source = base / "processing" / f"{job_id}.json"
+    if source.is_file():
+        os.replace(source, base / "pending" / f"{job_id}.json")
 
 
 def v1_buy_already_sent(job: Mapping[str, Any], root: Path | str | None) -> bool:
