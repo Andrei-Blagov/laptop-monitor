@@ -215,6 +215,7 @@ class MarketTelegramTests(unittest.TestCase):
                 "unmatched_value_top": [],
                 "market_coverage_complete": False,
                 "limitations": ["inspected_coverage_incomplete"],
+                "best_pairs_by_th_variant_id": {"v-regional": "regional"},
             },
             "views": {"general_top": ["regional"], "all": ["regional"], "personal_top3": ["regional"]},
         }
@@ -239,7 +240,9 @@ class MarketTelegramTests(unittest.TestCase):
         self.assertIn("Личный TOP-3", text)
         self.assertIn("Выгодная по порогу, не сигнал BUY", text)
         self.assertIn("не значит, что данные устарели", text)
-        self.assertIn("Подтверждённая разница: 30000 ₽", text)
+        self.assertIn("Таиланд дешевле России", text)
+        self.assertIn("30000 ₽", text)
+        self.assertIn("13%", text)
         self.assertIn("jib", text)
         self.assertIn("в наличии", text)
         self.assertIn("RTX 5070 Ti", text)
@@ -260,7 +263,8 @@ class MarketTelegramTests(unittest.TestCase):
         }
         result = {
             "result_id": "fx", "scan_id": "fx", "fx": {**_fx(), "fetched_at": old},
-            "comparison": {"pairs": [pair], "market_coverage_complete": True, "limitations": []},
+            "comparison": {"pairs": [pair], "best_pairs_by_th_variant_id": {"v": "stale-fx"},
+                           "market_coverage_complete": True, "limitations": []},
             "views": {"general_top": ["stale-fx"], "all": ["stale-fx"], "personal_top3": []},
             "rankings": {"thai_top_value": []},
         }
@@ -284,10 +288,10 @@ class MarketTelegramTests(unittest.TestCase):
     def test_partial_delivery_retries_only_the_missing_part(self) -> None:
         long_name = "Модель " + ("X" * 3600)
         messages = format_market_messages(
-            {"rankings": {"thai_top_value": [{"name": long_name, "offers": [{"url": "https://example.test/long", "price": "1"}]}]},
+            {"rankings": {"thai_top_value": [{"model_id": "long", "name": long_name, "offers": [{"url": "https://example.test/long", "price": "1"}]}]},
              "comparison": {}, "fx": _fx()},
             {"requested_view": "thai_top", "recipients": ["a"]},
-            purchase_current=False, info_current=True,
+            now=NOW,
         )
         self.assertGreater(len(messages), 1)
         self.assertTrue(all(len(item["text"]) <= 4096 for item in messages))
@@ -381,6 +385,177 @@ class MarketTelegramTests(unittest.TestCase):
             })
         self.assertIn("Недостаточно прав", client.calls[0]["json"].get("text", ""))
         self.assertEqual(list(self.jobs.glob("pending/*.json")), [])
+
+    def test_compare_markets_cards_use_the_selected_pair_and_best_offer(self) -> None:
+        from tests.test_thai_catalog_reuse import _russian
+
+        observed = NOW - timedelta(hours=2)
+        offers = [_offer(f"th-{index}", f"SKU-TH-{index}", 70_000 + index, observed) for index in range(1, 6)]
+        offers.append(_offer("th-z-match", "SKU-MATCH17", 80_000, observed))
+        _publish(self.catalog, offers, observed=observed)
+        enqueue_view_refresh(chat_id=42, view="general_top", now=NOW)
+        outcome = self._run(russian_snapshot=_russian(["model-ru-17"]), sender=TextSender())
+        result = json.loads((self.jobs / "results" / f"{outcome['result_id']}.json").read_text(encoding="utf-8"))
+        pairs = result["comparison"]["pairs"]
+        confirmed = [pair for pair in pairs if pair.get("comparison_status") == "confirmed"]
+        self.assertTrue(confirmed)
+        chosen_id = next(iter(result["comparison"]["best_pairs_by_th_variant_id"].values()))
+        rest = [pair for pair in pairs if pair.get("pair_id") != chosen_id]
+        result["comparison"]["pairs"] = [*rest, next(pair for pair in pairs if pair.get("pair_id") == chosen_id)]
+        self.assertGreater(len(result["comparison"]["pairs"]), 5)
+        self.assertEqual(result["comparison"]["pairs"][-1]["pair_id"], chosen_id)
+        parts = format_market_messages(result, {"requested_view": "general_top"}, now=NOW)
+        text = "\n".join(part["text"] for part in parts)
+        chosen = result["comparison"]["pairs"][-1]
+        self.assertIn(chosen["th_observation"]["url"], text)
+        self.assertIn(f"Цена TH: {chosen['th_observation']['price']} ฿", text)
+        self.assertIn(f"Цена RU: {chosen['ru_observation']['price']} ₽", text)
+        self.assertIn("2560x1600", text)
+        row = result["rankings"]["thai_top_value"][0]
+        best = next(offer for offer in row["offers"] if offer["offer_id"] == row["best_offer_id"])
+        decoy = dict(best, source="not-the-best", url="https://example.test/decoy", offer_id="decoy")
+        row["offers"] = [decoy, *row["offers"]]
+        shown = "\n".join(part["text"] for part in format_market_messages(result, {"requested_view": "thai_top"}, now=NOW))
+        self.assertIn(best["source"], shown)
+        self.assertIn(best["url"], shown)
+        self.assertNotIn("https://example.test/decoy", shown)
+        empty = format_market_messages(
+            {"rankings": {}, "comparison": {"pairs": [], "best_pairs_by_th_variant_id": {}}},
+            {"requested_view": "general_top"}, now=NOW,
+        )
+        self.assertIn("показывать нечего", empty[0]["text"])
+
+    def test_fresh_and_stale_sections_stay_distinct(self) -> None:
+        fresh = NOW.isoformat()
+        stale = (NOW - timedelta(hours=9)).isoformat()
+        result = {
+            "fx": _fx(),
+            "rankings": {"thai_top_value": [{
+                "model_id": "fresh-top", "name": "Fresh top", "best_offer_id": "best-1",
+                "price_thb": "80000", "price_rub": "200000",
+                "offers": [{"offer_id": "best-1", "source": "jib", "url": "https://example.test/fresh-top",
+                            "price": "80000", "availability_state": "in_stock",
+                            "price_checked_at": fresh, "availability_checked_at": fresh}],
+            }]},
+            "comparison": {
+                "pairs": [{
+                    "pair_id": "old-pair", "comparison_status": "confirmed", "match_class": "EXACT",
+                    "saving_rub": "1000", "saving_pct": "1",
+                    "ru_membership": {"in_general_top": True},
+                    "th_observation": {"name": "Old", "price": "1", "source": "jib", "price_checked_at": stale,
+                                       "availability_checked_at": stale, "url": "https://example.test/old"},
+                    "ru_observation": {"price": "2", "source": "regard", "price_checked_at": stale,
+                                       "availability_checked_at": stale},
+                }],
+                "best_pairs_by_th_variant_id": {"v": "old-pair"},
+                "source_coverage": {"TH": [{"source": "advice", "state": "rate_limited"}]},
+                "market_coverage_complete": False,
+            },
+        }
+        text = "\n".join(part["text"] for part in format_market_messages(
+            result, {"requested_view": "general_top"}, now=NOW,
+        ))
+        thai = text.split("самостоятельный TOP", 1)[1].split("Россия ↔ Таиланд", 1)[0]
+        self.assertIn("остаются информационными", thai)
+        self.assertNotIn("не текущая", thai)
+        self.assertIn("Эта пара не текущая", text)
+        self.assertIn("advice: rate_limited", text)
+
+    def test_configured_sender_posts_through_mock_transport(self) -> None:
+        import httpx
+
+        self._catalog(2)
+        enqueue_view_refresh(chat_id="111", view="thai_top", now=NOW)
+        path = next((self.jobs / "pending").glob("*.json"))
+        event = json.loads(path.read_text(encoding="utf-8"))
+        event["recipients"] = ["111", "222"]
+        path.write_text(json.dumps(event), encoding="utf-8")
+        calls: list[dict] = []
+        seen_on_disk: list[list] = []
+
+        def handler(request: httpx.Request) -> httpx.Response:
+            payload = json.loads(request.content.decode("utf-8"))
+            calls.append(payload)
+            if len(calls) == 1:
+                return httpx.Response(200, json={"ok": True, "result": {"message_id": 1}})
+            stored = json.loads(next((self.jobs / "delivering").glob("*.json")).read_text(encoding="utf-8"))
+            seen_on_disk.append(list(stored.get("delivered_part_ids") or []))
+            return httpx.Response(500, json={"ok": False, "description": "fail", "error_code": 500})
+
+        transport = httpx.MockTransport(handler)
+        real_client = httpx.Client
+        with patch.object(config, "TELEGRAM_MIN_SEND_INTERVAL_SECONDS", 0), patch.object(
+            config, "get_telegram_credentials", return_value=("123:ABC", "111")
+        ), patch(
+            "telegram_sender.httpx.Client",
+            side_effect=lambda *args, **kwargs: real_client(transport=transport, timeout=kwargs.get("timeout", 30)),
+        ):
+            failed = process_one(
+                jobs_dir=self.jobs, catalog_root=self.catalog, health_path=self.health, fx=_fx(),
+                sender=None, clock=ManualClock(NOW), deliver=True, state_path=self.root / "state.json",
+            )
+        self.assertEqual(failed["status"], "delivery_failed")
+        self.assertEqual(str(calls[0]["chat_id"]), "111")
+        self.assertTrue(seen_on_disk and seen_on_disk[0])
+        self.assertTrue(any(
+            "ctrl:ptop_go" in json.dumps(call.get("reply_markup"), ensure_ascii=False) for call in calls
+        ))
+        first_part = seen_on_disk[0][0]
+        retry_calls: list[dict] = []
+
+        def retry_handler(request: httpx.Request) -> httpx.Response:
+            retry_calls.append(json.loads(request.content.decode("utf-8")))
+            return httpx.Response(200, json={"ok": True, "result": {"message_id": 2}})
+
+        retry_transport = httpx.MockTransport(retry_handler)
+        with patch.object(config, "TELEGRAM_MIN_SEND_INTERVAL_SECONDS", 0), patch.object(
+            config, "get_telegram_credentials", return_value=("123:ABC", "111")
+        ), patch(
+            "telegram_sender.httpx.Client",
+            side_effect=lambda *args, **kwargs: real_client(transport=retry_transport, timeout=kwargs.get("timeout", 30)),
+        ):
+            process_one(
+                jobs_dir=self.jobs, catalog_root=self.catalog, health_path=self.health, fx=_fx(),
+                sender=None, clock=ManualClock(NOW + timedelta(minutes=31)), deliver=True,
+                state_path=self.root / "state.json",
+            )
+        resent_ids = []
+        stored_parts = json.loads(next((self.jobs / "archive").glob("*.json")).read_text(encoding="utf-8"))
+        self.assertIn(first_part, stored_parts.get("delivered_part_ids") or [])
+        self.assertEqual(len(retry_calls), len(stored_parts["delivered_part_ids"]) - 1)
+        self.assertTrue(all(call["chat_id"] in {"111", "222"} for call in calls + retry_calls))
+        self.assertNotIn(first_part, resent_ids)
+
+    def test_deliver_false_and_flag_off_do_not_open_telegram(self) -> None:
+        self._catalog(2)
+        enqueue_view_refresh(chat_id=42, view="thai_top", now=NOW)
+        with patch("telegram_sender.httpx.Client", side_effect=AssertionError("telegram")):
+            outcome = process_one(
+                jobs_dir=self.jobs, catalog_root=self.catalog, health_path=self.health, fx=_fx(),
+                sender=None, clock=ManualClock(NOW), deliver=False, state_path=self.root / "state.json",
+            )
+        self.assertNotEqual(outcome["status"], "delivered")
+        self.flag.stop()
+        self.flag = patch.object(config, "stage22_market_telegram_enabled", return_value=False)
+        self.flag.start()
+        with patch("telegram_sender.httpx.Client", side_effect=AssertionError("telegram")):
+            process_one(
+                jobs_dir=self.jobs, catalog_root=self.catalog, health_path=self.health, fx=_fx(),
+                sender=None, clock=ManualClock(NOW), deliver=True, state_path=self.root / "state.json",
+            )
+
+    def test_buy_uses_the_configured_chat(self) -> None:
+        signal = BuySignal(
+            level="BUY", model_key="m", cluster_name="Model", price=100, store="regard",
+            gpu="RTX 5070 Ti", cpu=None, ram_gb=32, ssd_gb=1024, screen_inch=16,
+            score=1, confidence=1, historical_min=None, target_price=None, url=None,
+            reasons=[], rule_ids=[], over_hist_pct=None, fingerprint="chat-fp",
+            cluster_key=None, history_started_at=None,
+        )
+        with patch.object(config, "get_telegram_credentials", return_value=("token", "555")):
+            stored = enqueue_buy_candidate(signal, instance_id=INSTANCE, jobs_dir=self.jobs, now=NOW)
+        body = json.loads((self.jobs / "pending" / f"{stored['event_id']}.json").read_text(encoding="utf-8"))
+        self.assertEqual(body["recipients"], ["555"])
 
 
 if __name__ == "__main__":

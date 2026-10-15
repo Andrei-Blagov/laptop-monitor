@@ -124,6 +124,27 @@ class TelegramSender:
         self._last_send_at = self._monotonic()
         return result
 
+    def send_market_message(
+        self,
+        text: str,
+        *,
+        chat_id: str,
+        reply_markup: dict[str, Any] | None = None,
+    ) -> SendResult:
+        """One sendMessage to a specific recipient, with the card keyboard."""
+        payload: dict[str, Any] = {
+            "chat_id": str(chat_id),
+            "text": text,
+            "parse_mode": "HTML",
+            "disable_web_page_preview": True,
+        }
+        if reply_markup:
+            payload["reply_markup"] = reply_markup
+        self._pace()
+        result = self._do_post(payload)
+        self._last_send_at = self._monotonic()
+        return result
+
     def _do_post(self, payload: dict[str, Any]) -> SendResult:
         try:
             response = self._client.post(self.api_url, json=payload)

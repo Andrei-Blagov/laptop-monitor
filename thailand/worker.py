@@ -64,8 +64,16 @@ def process_one(
             russian_snapshot=russian_snapshot,
             russian_snapshot_root=russian_snapshot_root,
         )
-        if sender is not None:
-            sender = MarketTextSender(sender)
+        if deliver and sender is None:
+            from thailand.market_telegram import sender_from_config
+
+            sender = sender_from_config()
+        if deliver and sender is not None:
+            sender = MarketTextSender(
+                sender,
+                jobs_dir=jobs_dir,
+                now_fn=lambda: clock.now() if clock is not None else datetime.now(timezone.utc),
+            )
     ensure_queue_dirs(jobs_dir)
     recover_stale_processing(root=jobs_dir)
     from thailand.market_events import run_market_queue

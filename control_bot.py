@@ -1089,13 +1089,10 @@ def _stage22_thailand_action(client, token, chat_id, *, compare: bool) -> None:
     stored = latest_result(config.THAILAND_JOBS_DIR)
     if stored is not None:
         from datetime import datetime, timezone
-        from thailand.market_events import _delivery_flags
 
-        fresh_view = view if view in {"all", "general_top", "personal_top3"} else "general_top"
-        purchase, info = _delivery_flags(stored, fresh_view, datetime.now(timezone.utc))
         parts = format_market_messages(
             stored, {"requested_view": view, "recipients": [str(chat_id)]},
-            purchase_current=purchase, info_current=info,
+            now=datetime.now(timezone.utc),
         )
         for part in parts:
             send_message(client, token, chat_id, part["text"], with_keyboard=False, reply_markup=part.get("reply_markup"))

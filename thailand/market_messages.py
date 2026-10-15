@@ -20,107 +20,145 @@ def format_market_messages(
     result: Mapping[str, Any],
     event: Mapping[str, Any],
     *,
-    purchase_current: bool,
-    info_current: bool,
+    now,
 ) -> list[dict[str, Any]]:
-    """Cards for one requested view. Parts stay under the Telegram size limit."""
+    """Cards for one requested view. Part ids stay put when the freshness line changes."""
     view = str(event.get("requested_view") or "general_top")
-    sections = _sections(result, view, purchase_current=purchase_current, info_current=info_current)
+    cards = _cards(result, view, now)
+    if not cards:
+        cards = [("empty:0", "По сохранённому результату показывать нечего. Каталог пуст или подходящих предложений нет.")]
     parts: list[dict[str, Any]] = []
-    for name, text in sections:
-        for index, chunk in enumerate(_chunks(text)):
-            parts.append({
-                "part_id": f"{name}:{index}",
-                "text": chunk,
-                "reply_markup": None,
-            })
-    if parts:
-        parts[-1]["reply_markup"] = {
-            "inline_keyboard": [[{"text": "Обновить Таиланд", "callback_data": "ctrl:ptop_go"}]],
-        }
+    for part_id, text in cards:
+        chunks = _chunks(text)
+        for index, chunk in enumerate(chunks):
+            item_id = part_id if len(chunks) == 1 else f"{part_id}#{index}"
+            parts.append({"part_id": item_id, "text": chunk, "reply_markup": None})
+    parts[-1]["reply_markup"] = {
+        "inline_keyboard": [[{"text": "Обновить Таиланд", "callback_data": "ctrl:ptop_go"}]],
+    }
     return parts
 
 
-def _sections(result, view, *, purchase_current: bool, info_current: bool) -> list[tuple[str, str]]:
+def _cards(result: Mapping[str, Any], view: str, now) -> list[tuple[str, str]]:
     comparison = result.get("comparison") or {}
     rankings = result.get("rankings") or {}
-    blocks = {
-        "thai_top": _thai_top(rankings, result, info_current=info_current),
-        "cross": _cross(comparison, result, view, purchase_current=purchase_current, info_current=info_current),
-        "unmatched": _unmatched(comparison, info_current=info_current),
+    order = ["cross", "thai_top", "unmatched"] if view in {"general_top", "all", "personal_top3"} else ["thai_top", "cross", "unmatched"]
+    built = {
+        "thai_top": _thai_cards(rankings, result, now),
+        "cross": _cross_cards(comparison, result, view, now),
+        "unmatched": _unmatched_cards(comparison, now),
     }
-    order = ["thai_top", "cross", "unmatched"]
-    if view == "personal_top3":
-        order = ["cross", "thai_top", "unmatched"]
-    elif view in {"general_top", "all"}:
-        order = ["cross", "thai_top", "unmatched"]
-    return [(name, blocks[name]) for name in order if blocks[name]]
+    cards: list[tuple[str, str]] = []
+    for name in order:
+        cards.extend(built[name])
+    coverage = _coverage_text(comparison, result)
+    if coverage and cards:
+        cards.append(("coverage:0", coverage))
+    return cards
 
 
-def _thai_top(rankings: Mapping[str, Any], result: Mapping[str, Any], *, info_current: bool) -> str:
+def _thai_cards(rankings: Mapping[str, Any], result: Mapping[str, Any], now) -> list[tuple[str, str]]:
+    from market_contracts import ComparisonPolicy
+
     rows = list(rankings.get("thai_top_value") or [])[:5]
-    if not rows:
-        return ""
-    lines = ["Таиланд — самостоятельный TOP", _freshness_line(info_current, purchase=False)]
+    cards = []
     for index, row in enumerate(rows, start=1):
-        offer = (row.get("offers") or [{}])[0]
-        lines.append("")
-        lines.append(f"{index}. {_card_title(row.get('name') or offer.get('name'))}")
+        offer = _best_offer(row)
+        fresh = _times_fresh(offer, now, ComparisonPolicy().quote_hours)
+        lines = [f"Таиланд — самостоятельный TOP {index}. {_card_title(row.get('name') or offer.get('name'))}"]
+        if fresh:
+            lines.append("Свежие данные без российской пары остаются информационными.")
+        else:
+            lines.append("Эта карточка не текущая. Время проверки указано ниже.")
         if _personal(row) or _personal(offer):
             lines.append("Личный TOP-3: эталон, не ограничение поиска")
         lines.extend(_offer_lines(offer, row, result))
-    lines.append("")
-    lines.append(_fx_line(result))
-    lines.append(_coverage_line(result))
-    return "\n".join(line for line in lines if line is not None)
+        lines.append(_fx_line(result))
+        cards.append((f"thai:{row.get('model_id') or index}", "\n".join(lines)))
+    return cards
 
 
-def _cross(comparison, result, view, *, purchase_current: bool, info_current: bool) -> str:
-    pairs = _selected_pairs(comparison, view)
-    confirmed = [pair for pair in pairs if pair.get("comparison_status") == "confirmed"][:5]
+def _cross_cards(comparison, result, view, now) -> list[tuple[str, str]]:
+    confirmed = _confirmed_pairs(comparison, view)[:5]
+    confirmed_ids = {id(pair) for pair in confirmed}
     extras = [
         pair for pair in (comparison.get("pairs") or [])
-        if pair not in confirmed and pair.get("match_class") in {"ALTERNATIVE", "SAME_FAMILY"}
+        if id(pair) not in confirmed_ids and pair.get("match_class") in {"ALTERNATIVE", "SAME_FAMILY"}
     ][:2]
-    shown = (confirmed or pairs[:3]) + extras
-    if not shown:
-        return ""
-    lines = ["Россия ↔ Таиланд", _freshness_line(info_current, purchase=not purchase_current)]
-    for pair in shown:
+    cards = []
+    for pair in confirmed + extras:
+        purchase = _pair_purchase(pair, result, now)
+        info = _pair_info_fresh(pair, now)
         th = pair.get("th_observation") or {}
         ru = pair.get("ru_observation") or {}
-        lines.append("")
-        lines.append(_card_title(th.get("name") or "Тайское предложение"))
-        lines.append(_relation_line(pair))
+        lines = ["Россия ↔ Таиланд", _card_title(th.get("name") or "Тайское предложение"), _relation_line(pair)]
+        if info and not purchase:
+            lines.append("Текущая выгода не подтверждена. Наблюдения из-за этого не называются устаревшими.")
+        elif not info:
+            lines.append("Эта пара не текущая. Время проверки сторон указано ниже.")
         if _personal_pair(pair):
             lines.append("Личный TOP-3: эталон для этой карточки, поиск им не ограничен")
-        lines.extend(_offer_lines(th, {}, result, rub_price=ru.get("price"), rub_label="Россия"))
-        lines.append(f"Магазин RU: {ru.get('source') or ru.get('store') or 'н/д'}")
-        if ru.get("url"):
-            lines.append(f"Ссылка RU: {ru['url']}")
-        saving = _saving_line(pair, purchase_current=purchase_current)
-        if saving:
-            lines.append(saving)
-        costs = pair.get("unknown_costs") or []
-        if costs:
-            lines.append("Неизвестные расходы не равны нулю: " + ", ".join(str(item) for item in costs))
-        expenses = pair.get("confirmed_expenses") or []
-        if expenses:
-            shown_costs = ", ".join(
-                f"{item.get('label')} {item.get('amount_rub')} ₽" for item in expenses if isinstance(item, dict)
-            )
-            if shown_costs:
-                lines.append("Подтверждённые расходы: " + shown_costs)
-        diffs = list(pair.get("conflicting_fields") or []) + list(pair.get("commercial_differences") or [])
-        if diffs:
-            lines.append("Отличия: " + ", ".join(str(item) for item in diffs))
-    lines.append("")
+        lines.extend(_pair_price_lines(pair, result, purchase_current=purchase))
+        cards.append((f"pair:{pair.get('pair_id')}", "\n".join(line for line in lines if line)))
+    return cards
+
+
+def _pair_price_lines(pair: Mapping[str, Any], result: Mapping[str, Any], *, purchase_current: bool) -> list[str]:
+    th = pair.get("th_observation") or {}
+    ru = pair.get("ru_observation") or {}
+    gap = pair.get("price_gap") or {}
+    lines = [f"Магазин TH: {th.get('source') or th.get('store') or 'н/д'}"]
+    state = th.get("availability_state")
+    if state:
+        lines.append(f"Наличие TH: {_AVAILABILITY.get(str(state), state)}")
+    th_thb = th.get("price")
+    th_rub = gap.get("thai_base_rub")
+    if th_thb is not None:
+        rub = f" ({th_rub} ₽)" if th_rub not in (None, "") else ""
+        lines.append(f"Цена TH: {th_thb} ฿{rub}")
+    ru_rub = ru.get("price") if ru.get("price") is not None else gap.get("ru_price_rub")
+    if ru_rub is not None:
+        lines.append(f"Цена RU: {ru_rub} ₽")
+    lines.append(f"Магазин RU: {ru.get('source') or ru.get('store') or 'н/д'}")
+    if th.get("url"):
+        lines.append(f"Ссылка TH: {th['url']}")
+    if ru.get("url"):
+        lines.append(f"Ссылка RU: {ru['url']}")
+    resolution = _spec_value(th, "screen_resolution")
+    if resolution:
+        lines.append(f"Разрешение: {resolution}")
+    specs = _specs(th)
+    if specs:
+        lines.append(specs)
+    if th.get("price_checked_at"):
+        lines.append(f"Цена TH проверена: {th['price_checked_at']}")
+    if th.get("availability_checked_at"):
+        lines.append(f"Наличие TH проверено: {th['availability_checked_at']}")
+    if ru.get("price_checked_at"):
+        lines.append(f"Цена RU проверена: {ru['price_checked_at']}")
+    if ru.get("availability_checked_at"):
+        lines.append(f"Наличие RU проверено: {ru['availability_checked_at']}")
+    saving = _saving_line(pair, purchase_current=purchase_current)
+    if saving:
+        lines.append(saving)
+    costs = pair.get("unknown_costs") or []
+    if costs:
+        lines.append("Неизвестные расходы не равны нулю: " + ", ".join(str(item) for item in costs))
+    expenses = pair.get("confirmed_expenses") or []
+    shown_costs = ", ".join(
+        f"{item.get('label')} {item.get('amount_rub')} ₽" for item in expenses if isinstance(item, dict)
+    )
+    if shown_costs:
+        lines.append("Подтверждённые расходы: " + shown_costs)
+    diffs = list(pair.get("conflicting_fields") or []) + list(pair.get("commercial_differences") or [])
+    if diffs:
+        lines.append("Отличия: " + ", ".join(str(item) for item in diffs))
     lines.append(_fx_line(result))
-    lines.append(_coverage_line(comparison if comparison.get("limitations") or comparison.get("market_coverage_complete") is not None else result))
-    return "\n".join(line for line in lines if line)
+    return lines
 
 
-def _unmatched(comparison: Mapping[str, Any], *, info_current: bool) -> str:
+def _unmatched_cards(comparison: Mapping[str, Any], now) -> list[tuple[str, str]]:
+    del now
     rows = list(comparison.get("unmatched_value_top") or [])
     if len(rows) < 3:
         for row in comparison.get("unmatched_th") or []:
@@ -128,18 +166,14 @@ def _unmatched(comparison: Mapping[str, Any], *, info_current: bool) -> str:
                 rows.append(row)
             if len(rows) >= 5:
                 break
-    rows = rows[:5]
-    if not rows:
-        return ""
-    lines = [
-        "Таиланд без подтверждённой российской пары",
-        "Подтверждённой пары нет. Это не значит, что данные устарели или модели нет на всём рынке.",
-        _freshness_line(info_current, purchase=False),
-    ]
-    for index, row in enumerate(rows, start=1):
+    cards = []
+    for index, row in enumerate(rows[:5], start=1):
         label = "Выгодная по порогу, не сигнал BUY" if row.get("unmatched_value_candidate") else "Подходящая модель"
-        lines.append("")
-        lines.append(f"{index}. {_card_title(row.get('name'))} — {label}")
+        lines = [
+            "Таиланд без подтверждённой российской пары",
+            "Подтверждённой пары нет. Это не значит, что данные устарели или модели нет на всём рынке.",
+            f"{index}. {_card_title(row.get('name'))} — {label}",
+        ]
         if row.get("url"):
             lines.append(f"Ссылка: {row['url']}")
         if row.get("price_thb"):
@@ -152,17 +186,66 @@ def _unmatched(comparison: Mapping[str, Any], *, info_current: bool) -> str:
         lines.append(f"Почему нет пары: {reason}")
         if reason in {"limited_coverage", "not_observed"}:
             lines.append("Покрытие проверенных источников неполное. Это не доказательство отсутствия модели.")
-    return "\n".join(lines)
+        cards.append((f"unmatched:{row.get('variant_id') or row.get('model_id') or index}", "\n".join(lines)))
+    return cards
 
 
-def _selected_pairs(comparison: Mapping[str, Any], view: str) -> list[Mapping[str, Any]]:
+def _confirmed_pairs(comparison: Mapping[str, Any], view: str) -> list[Mapping[str, Any]]:
+    """D already chose the confirmed pair for each Thai variant. Do that before the card cap."""
     pairs = list(comparison.get("pairs") or [])
+    by_id = {str(pair.get("pair_id")): pair for pair in pairs}
+    chosen = []
+    for pair_id in (comparison.get("best_pairs_by_th_variant_id") or {}).values():
+        pair = by_id.get(str(pair_id))
+        if pair is not None and _pair_in_view(pair, view):
+            chosen.append(pair)
+    return chosen
+
+
+def _pair_in_view(pair: Mapping[str, Any], view: str) -> bool:
     if view == "personal_top3":
-        return [pair for pair in pairs if _personal_pair(pair)]
+        return _personal_pair(pair)
     if view == "general_top":
-        marked = [pair for pair in pairs if (pair.get("ru_membership") or {}).get("in_general_top")]
-        return marked or pairs[:5]
-    return pairs[:5]
+        return bool((pair.get("ru_membership") or {}).get("in_general_top"))
+    return True
+
+
+def _best_offer(row: Mapping[str, Any]) -> Mapping[str, Any]:
+    offers = [offer for offer in row.get("offers") or [] if isinstance(offer, dict)]
+    wanted = str(row.get("best_offer_id") or "")
+    for offer in offers:
+        if str(offer.get("offer_id") or "") == wanted:
+            return offer
+    return offers[0] if offers else {}
+
+
+def _times_fresh(offer: Mapping[str, Any], now, hours: int) -> bool:
+    from market_contracts import age_valid, moment
+
+    return age_valid(moment(offer.get("price_checked_at")), now, hours) and age_valid(
+        moment(offer.get("availability_checked_at")), now, hours
+    )
+
+
+def _pair_info_fresh(pair: Mapping[str, Any], now) -> bool:
+    from market_contracts import ComparisonPolicy
+
+    policy = ComparisonPolicy()
+    th = pair.get("th_observation") or {}
+    ru = pair.get("ru_observation") or {}
+    return _times_fresh(th, now, policy.quote_hours) and _times_fresh(ru, now, policy.ru_quote_hours)
+
+
+def _pair_purchase(pair: Mapping[str, Any], result: Mapping[str, Any], now) -> bool:
+    from market_contracts import ComparisonPolicy
+    from thailand.market_events import _fx_usable
+
+    if pair.get("comparison_status") != "confirmed" or pair.get("match_class") in {"ALTERNATIVE", "SAME_FAMILY"}:
+        return False
+    fx = result.get("fx") or {}
+    if not fx or not _fx_usable(fx, now, ComparisonPolicy()):
+        return False
+    return _pair_info_fresh(pair, now)
 
 
 def _offer_lines(offer: Mapping[str, Any], row: Mapping[str, Any], result: Mapping[str, Any], *, rub_price=None, rub_label="Ориентир") -> list[str]:
@@ -199,7 +282,10 @@ def _offer_lines(offer: Mapping[str, Any], row: Mapping[str, Any], result: Mappi
 
 def _specs(offer: Mapping[str, Any]) -> str:
     found = []
-    labels = (("gpu", "GPU"), ("cpu", "CPU"), ("ram_gb", "RAM"), ("ssd_gb", "SSD"), ("screen_inch", "Экран"))
+    labels = (
+        ("gpu", "GPU"), ("cpu", "CPU"), ("ram_gb", "RAM"), ("ssd_gb", "SSD"),
+        ("screen_inch", "Экран"), ("screen_resolution", "Разрешение"),
+    )
     for key, label in labels:
         value = _spec_value(offer, key)
         if value not in (None, ""):
@@ -237,8 +323,14 @@ def _saving_line(pair: Mapping[str, Any], *, purchase_current: bool) -> str:
         return ""
     amount = Decimal(str(saving))
     percent = pair.get("saving_pct")
-    band = _band(percent)
-    return f"Подтверждённая разница: {amount} ₽{band}"
+    if amount > 0:
+        direction = "Таиланд дешевле России"
+    elif amount < 0:
+        direction = "Россия дешевле Таиланда"
+    else:
+        direction = "Стороны совпали по сумме"
+    pct = "" if percent in (None, "") else f", {percent}%"
+    return f"Подтверждённая разница: {direction}, {abs(amount)} ₽{pct}{_band(percent)}"
 
 
 def _band(percent) -> str:
@@ -267,12 +359,32 @@ def _fx_line(result: Mapping[str, Any]) -> str:
     return f"Курс: {fx.get('rub_per_thb')} ₽ за 1 ฿, {fx.get('source') or 'CBR'}, получен {fx.get('fetched_at') or 'н/д'}."
 
 
-def _coverage_line(document: Mapping[str, Any]) -> str:
-    limits = list(document.get("limitations") or [])
-    if document.get("market_coverage_complete") is False or limits:
-        detail = ", ".join(limits) if limits else "проверены не все источники"
+def _coverage_text(comparison: Mapping[str, Any], result: Mapping[str, Any]) -> str:
+    notes = []
+    coverage = comparison.get("source_coverage") or {}
+    groups = coverage.items() if isinstance(coverage, dict) else (("TH", coverage),)
+    for side, rows in groups:
+        for row in rows or []:
+            if not isinstance(row, dict):
+                continue
+            state = str(row.get("state") or "")
+            if state in {"", "ok"}:
+                continue
+            notes.append(f"{side} {row.get('source') or row.get('store')}: {state}")
+    for row in result.get("coverage") or []:
+        if not isinstance(row, dict):
+            continue
+        state = str(row.get("state") or row.get("reason") or "")
+        if state in {"", "ok"}:
+            continue
+        notes.append(f"{row.get('source') or 'источник'}: {state}")
+    limits = list(comparison.get("limitations") or [])
+    if comparison.get("market_coverage_complete") is False or limits or notes:
+        detail = ", ".join([*notes, *limits]) or "проверены не все источники"
         return f"Покрытие неполное ({detail}). Это не минимум всего рынка и не доказательство отсутствия модели."
-    return "Покрытие относится только к проверенным подключённым источникам."
+    if notes:
+        return "Покрытие: " + ", ".join(notes)
+    return ""
 
 
 def _personal(row: Mapping[str, Any]) -> bool:
@@ -289,11 +401,18 @@ def _card_title(name: object) -> str:
 
 
 def _chunks(text: str) -> list[str]:
-    if len(text) <= MESSAGE_LIMIT:
-        return [text]
+    blocks = []
+    for block in text.split("\n\n"):
+        while len(block) > MESSAGE_LIMIT:
+            blocks.append(block[:MESSAGE_LIMIT])
+            block = block[MESSAGE_LIMIT:]
+        if block:
+            blocks.append(block)
+    if not blocks:
+        return [""]
     parts: list[str] = []
     buffer = ""
-    for block in text.split("\n\n"):
+    for block in blocks:
         piece = block if not buffer else buffer + "\n\n" + block
         if buffer and len(piece) > MESSAGE_LIMIT:
             parts.append(buffer)
@@ -302,4 +421,4 @@ def _chunks(text: str) -> list[str]:
             buffer = piece
     if buffer:
         parts.append(buffer)
-    return parts or [text[:MESSAGE_LIMIT]]
+    return parts

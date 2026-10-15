@@ -8,7 +8,7 @@ from pathlib import Path
 from typing import Any, Mapping
 
 import config
-from thailand.job_queue import jobs_root
+from thailand.job_queue import _atomic_write, jobs_root
 from thailand.market_events import build_market_event, enqueue_market_event
 from thailand.market_messages import format_market_messages
 
@@ -117,11 +117,14 @@ def enqueue_buy_candidate(
     fingerprint = str(getattr(signal, "fingerprint", "") or getattr(signal, "cluster_name", "") or "buy")
     event_id = str(uuid.uuid5(_BUY, fingerprint))
     moment = now or datetime.now(timezone.utc)
+    if recipients is None:
+        _token, chat = config.get_telegram_credentials()
+        recipients = [str(chat)] if chat else []
     event = build_market_event(
         instance_id=instance_id,
         trigger_type="buy",
         requested_view="general_top",
-        recipients=list(recipients or ["buy"]),
+        recipients=list(recipients),
         event_id=event_id,
         now=moment,
         source_ru_snapshot_id=ru_snapshot_id,
@@ -136,27 +139,55 @@ def enqueue_buy_candidate(
 
 
 class MarketTextSender:
-    """Format the stored result and skip parts already confirmed for a recipient."""
+    """Format the stored result. Each confirmed part is stored before the next send."""
 
-    def __init__(self, inner: Any) -> None:
+    def __init__(self, inner: Any, *, jobs_dir: Path | str, now_fn) -> None:
         self.inner = inner
+        self.jobs_dir = jobs_dir
+        self.now_fn = now_fn
 
     def send(self, event: dict[str, Any], result: Mapping[str, Any], *, current: bool, historical: bool, info_current: bool = False) -> None:
-        parts = format_market_messages(result, event, purchase_current=current, info_current=info_current)
+        del current, info_current
+        parts = format_market_messages(result, event, now=self.now_fn())
         done = set(event.get("delivered_part_ids") or [])
-        recipients = list(event.get("recipients") or [])
+        recipients = [str(item) for item in (event.get("recipients") or []) if str(item)]
         for part in parts:
             for recipient in recipients:
                 part_id = f"{recipient}:{part['part_id']}"
                 if part_id in done:
                     continue
-                if hasattr(self.inner, "send_text"):
-                    self.inner.send_text(
-                        event, part["text"], part_id=part_id, current=current, historical=historical,
-                        info_current=info_current, reply_markup=part.get("reply_markup"), recipient=recipient,
-                    )
-                else:
-                    self.inner.send(event, result, current=current, historical=historical, info_current=info_current)
-                    return
+                self._send_one(
+                    event, result, part, recipient=recipient, part_id=part_id, historical=historical,
+                )
                 done.add(part_id)
                 event["delivered_part_ids"] = sorted(done)
+                _persist_delivery(self.jobs_dir, event)
+
+    def _send_one(self, event, result, part, *, recipient: str, part_id: str, historical: bool) -> None:
+        if hasattr(self.inner, "send_market_message"):
+            outcome = self.inner.send_market_message(
+                part["text"], chat_id=recipient, reply_markup=part.get("reply_markup"),
+            )
+            if not getattr(outcome, "ok", False):
+                raise RuntimeError(getattr(outcome, "error", None) or "telegram_send_failed")
+            return
+        if hasattr(self.inner, "send_text"):
+            self.inner.send_text(
+                event, part["text"], part_id=part_id, current=not historical, historical=historical,
+                info_current=True, reply_markup=part.get("reply_markup"), recipient=recipient,
+            )
+            return
+        outcome = self.inner.send_message(part["text"])
+        if not getattr(outcome, "ok", False):
+            raise RuntimeError(getattr(outcome, "error", None) or "telegram_send_failed")
+
+
+def _persist_delivery(jobs_dir: Path | str, event: Mapping[str, Any]) -> None:
+    """Durable part list before the next send. A crash after HTTP and before this write can repeat that one part."""
+    base = jobs_root(jobs_dir)
+    event_id = str(event.get("event_id") or "")
+    for folder in ("delivering", "delivery"):
+        path = base / folder / f"{event_id}.json"
+        if path.is_file():
+            _atomic_write(path, dict(event))
+            return
