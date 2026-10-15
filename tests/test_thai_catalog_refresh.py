@@ -1399,7 +1399,7 @@ class CatalogRefreshTests(unittest.TestCase):
             return outcome, before, after, previous, current, calls["n"]
 
         only = [_offer("th-old", "SKUOLD17", 80_000, stale)]
-        for status in (500, 503):
+        for status in (500, 501, 502, 503, 504, 599):
             outcome, before, after, previous, _current, calls = run(
                 only, lambda _request, status=status: httpx.Response(status, text="down"),
             )
@@ -1412,7 +1412,7 @@ class CatalogRefreshTests(unittest.TestCase):
 
         def mixed_down(request: httpx.Request) -> httpx.Response:
             if request.url.path.endswith("th-a"):
-                return httpx.Response(503, text="down")
+                return httpx.Response(502, text="down")
             raise httpx.ReadTimeout("slow", request=request)
 
         pair = [_offer("th-a", "SKU-AAA017", 80_000, stale), _offer("th-b", "SKU-BBB017", 81_000, stale)]
@@ -1424,17 +1424,17 @@ class CatalogRefreshTests(unittest.TestCase):
         self.assertEqual(after, before)
         self.assertEqual(
             {row["reason"] for row in outcome["skipped_offers"]},
-            {"HTTP_503", "ReadTimeout"},
+            {"HTTP_502", "ReadTimeout"},
         )
 
-        def success_and_503(request: httpx.Request) -> httpx.Response:
+        def success_and_504(request: httpx.Request) -> httpx.Response:
             if request.url.path.endswith("th-ok"):
                 return httpx.Response(200, text=html)
-            return httpx.Response(503, text="down")
+            return httpx.Response(504, text="down")
 
         ok = _offer("th-ok", "SKUAAA017", 80_000, stale)
         bad = _offer("th-bad", "SKU-BAD017", 81_000, stale)
-        outcome, before, after, previous, current, calls = run([ok, bad], success_and_503)
+        outcome, before, after, previous, current, calls = run([ok, bad], success_and_504)
         self.assertEqual(outcome["status"], PARTIAL)
         self.assertEqual(outcome["http_calls"], 2)
         self.assertEqual(calls, 2)

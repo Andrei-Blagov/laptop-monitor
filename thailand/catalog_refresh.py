@@ -409,13 +409,36 @@ def execute_catalog_plan(
             owned_client.close()
 
 
+def _status_code(reason: str | None) -> int | None:
+    text = str(reason or "")
+    if not text.startswith("HTTP_"):
+        return None
+    digits = text.removeprefix("HTTP_")
+    return int(digits) if digits.isdigit() else None
+
+
+def _server_status(refresh: OfferRefresh) -> bool:
+    code = _status_code(refresh.reason)
+    return code is not None and 500 <= code <= 599
+
+
 def _parsed_check(refresh: OfferRefresh, kind: str) -> bool:
-    """A parsed page or a confirmed absence. A 500/503 or a network error is not one."""
-    if refresh.transport_failure or refresh.store_unavailable:
+    """A parsed page, a conflict, or a confirmed absence. A 5xx or a transport error is not one."""
+    if refresh.transport_failure or refresh.status == "failed" or _server_status(refresh):
         return False
-    if kind == "conflict" or refresh.status in {"missing", "unverified", "conflict"}:
+    if kind in {"updated", "conflict"} or refresh.status in {"missing", "unverified", "conflict"}:
         return True
     return False
+
+
+def _failed_attempt(refresh: OfferRefresh) -> bool:
+    """An attempt that produced neither a quote nor a parsed page."""
+    if refresh.status == "rate_limited" or refresh.reason in {
+        "deadline", "budget", "stopped_after_429", "retry_after",
+        "source_disabled", "circuit", "policy_disabled",
+    }:
+        return False
+    return refresh.status == "failed" or refresh.transport_failure or _server_status(refresh)
 
 
 def _reuse_or_defer(document, action, fx, russian_snapshot, now: datetime, pass_started: datetime | None = None) -> dict[str, Any]:
@@ -507,10 +530,7 @@ def _revalidate(previous, decision, root, timer: PassTiming, instance_id, health
             if when:
                 next_at.append(when)
             continue
-        if refresh.status == "failed" and not refresh.http_calls and not refresh.store_unavailable:
-            skipped.append(_skip(item, refresh.reason or "failed"))
-            continue
-        if refresh.transport_failure or refresh.store_unavailable:
+        if _failed_attempt(refresh):
             transport_failures.append(refresh.reason or "unavailable")
             skipped.append(_skip(item, refresh.reason or "unavailable"))
             errors.append(refresh.reason or "unavailable")
@@ -919,7 +939,8 @@ def _jib_point(item, *, client, timeout: float, clock: ManualClock | None) -> Of
         refresh.status = "missing"
         refresh.reason = "product_absent"
         return refresh
-    if error in {"HTTP_500", "HTTP_503"}:
+    code = _status_code(error)
+    if code is not None and code >= 500:
         refresh.status = "failed"
         refresh.reason = error
         refresh.store_unavailable = True
@@ -998,7 +1019,7 @@ def _bounded_request(item, *, client, timeout: float, clock: ManualClock | None)
         refresh.status = "missing"
         refresh.reason = "product_absent"
         return refresh
-    if response.status_code in {500, 503}:
+    if response.status_code >= 500:
         refresh.status = "failed"
         refresh.reason = f"HTTP_{response.status_code}"
         refresh.store_unavailable = True
