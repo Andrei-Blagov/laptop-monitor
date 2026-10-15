@@ -122,6 +122,29 @@ def _delivery_child(jobs: str, catalog: str, health: str, hold: str, release: st
     )
 
 
+def _publish_identity(path: str) -> None:
+    import os
+    from thailand.market_events import process_started_at
+    Path(path).write_text(json.dumps({
+        "pid": os.getpid(),
+        "started": process_started_at(os.getpid()),
+    }), encoding="utf-8")
+    time.sleep(30)
+
+
+def _hold_delivering(jobs: str, ready: str, release: str) -> None:
+    import os
+    from thailand.market_events import process_started_at
+    path = Path(jobs) / "delivering" / "held-event.json"
+    event = json.loads(path.read_text(encoding="utf-8"))
+    event["delivery_owner"] = os.getpid()
+    event["delivery_owner_started_at"] = process_started_at(os.getpid())
+    path.write_text(json.dumps(event), encoding="utf-8")
+    Path(ready).write_text("1", encoding="utf-8")
+    while not Path(release).exists():
+        time.sleep(0.02)
+
+
 def _child(jobs: str, catalog: str, health: str, counter: str) -> None:
     process_one(
         jobs_dir=jobs,
@@ -583,15 +606,117 @@ class MarketEventQueueTests(unittest.TestCase):
         enqueue_market_event(event, root=self.jobs, now=NOW)
         (self.jobs / "processing").mkdir(parents=True, exist_ok=True)
         (self.jobs / "pending" / "live.json").replace(self.jobs / "processing" / "live.json")
+        from thailand.market_events import process_started_at
         scan = {
             "scan_id": "live-scan", "discovery_key": discovery_key(INSTANCE),
             "claimed_at": (NOW - timedelta(hours=5)).isoformat(),
             "event_ids": ["live"], "owner_pid": os.getpid(),
+            "owner_started_at": process_started_at(os.getpid()),
         }
         (self.jobs / "active_scan.json").write_text(json.dumps(scan), encoding="utf-8")
         self.assertEqual(recover_market_scan(root=self.jobs, now=NOW, stale_seconds=0), [])
         self.assertTrue((self.jobs / "active_scan.json").is_file())
         self.assertTrue((self.jobs / "processing" / "live.json").is_file())
+
+    def test_reused_pid_does_not_keep_the_claim(self) -> None:
+        import os
+        event = self._event("manual", ["chat"], "reused")
+        enqueue_market_event(event, root=self.jobs, now=NOW)
+        (self.jobs / "processing").mkdir(parents=True, exist_ok=True)
+        (self.jobs / "pending" / "reused.json").replace(self.jobs / "processing" / "reused.json")
+        (self.jobs / "active_scan.json").write_text(json.dumps({
+            "scan_id": "reused-scan", "discovery_key": discovery_key(INSTANCE),
+            "claimed_at": NOW.isoformat(), "event_ids": ["reused"],
+            "owner_pid": os.getpid(), "owner_started_at": "not-this-process",
+        }), encoding="utf-8")
+        self.assertEqual(recover_market_scan(root=self.jobs, now=NOW, stale_seconds=600), ["reused"])
+        self.assertFalse((self.jobs / "active_scan.json").exists())
+        self.assertTrue((self.jobs / "pending" / "reused.json").is_file())
+
+    def test_finished_owner_is_recovered(self) -> None:
+        if multiprocessing.current_process().name != "MainProcess":
+            return
+        marker = self.root / "identity.json"
+        worker = multiprocessing.Process(target=_publish_identity, args=(str(marker),))
+        worker.start()
+        deadline = time.monotonic() + 5
+        while not marker.exists() and time.monotonic() < deadline:
+            time.sleep(0.02)
+        identity = json.loads(marker.read_text(encoding="utf-8"))
+        worker.terminate()
+        worker.join(5)
+        self.assertFalse(worker.is_alive())
+        event = self._event("manual", ["chat"], "finished-owner")
+        enqueue_market_event(event, root=self.jobs, now=NOW)
+        (self.jobs / "processing").mkdir(parents=True, exist_ok=True)
+        (self.jobs / "pending" / "finished-owner.json").replace(self.jobs / "processing" / "finished-owner.json")
+        (self.jobs / "active_scan.json").write_text(json.dumps({
+            "scan_id": "finished-scan", "discovery_key": discovery_key(INSTANCE),
+            "claimed_at": NOW.isoformat(), "event_ids": ["finished-owner"],
+            "owner_pid": identity["pid"], "owner_started_at": identity["started"],
+        }), encoding="utf-8")
+        self.assertEqual(recover_market_scan(root=self.jobs, now=NOW, stale_seconds=0), ["finished-owner"])
+        self.assertTrue((self.jobs / "pending" / "finished-owner.json").is_file())
+
+    def test_reused_delivery_pid_is_not_left_in_delivering(self) -> None:
+        import os
+        fresh = NOW.isoformat()
+        (self.jobs / "results").mkdir(parents=True)
+        (self.jobs / "delivering").mkdir(parents=True)
+        (self.jobs / "results" / "again.json").write_text(json.dumps({
+            "result_id": "again", "scan_id": "again", "fx": {**_fx(), "fetched_at": fresh},
+            "comparison": {"pairs": [_pair("again-pair", th_availability=fresh, ru_price=fresh, checked=fresh)]},
+            "views": {"general_top": ["again-pair"], "all": ["again-pair"], "personal_top3": []},
+        }), encoding="utf-8")
+        event = self._event("manual", ["chat"], "again-event")
+        event["subscription_scan_id"] = "again"
+        event["result_id"] = "again"
+        event["delivery_owner"] = os.getpid()
+        event["delivery_owner_started_at"] = "not-this-process"
+        (self.jobs / "delivering" / "again-event.json").write_text(json.dumps(event), encoding="utf-8")
+        process_one(
+            jobs_dir=self.jobs, catalog_root=self.catalog, health_path=self.health,
+            sender=self.sender, clock=ManualClock(NOW), deliver=True, state_path=self.root / "buy-state.json",
+        )
+        self.assertEqual(self.sender.sent[0]["event_id"], "again-event")
+        self.assertFalse((self.jobs / "delivering" / "again-event.json").exists())
+
+    def test_live_delivery_owner_is_not_stolen(self) -> None:
+        if multiprocessing.current_process().name != "MainProcess":
+            return
+        fresh = NOW.isoformat()
+        (self.jobs / "results").mkdir(parents=True)
+        (self.jobs / "delivering").mkdir(parents=True)
+        (self.jobs / "results" / "held.json").write_text(json.dumps({
+            "result_id": "held", "scan_id": "held", "fx": {**_fx(), "fetched_at": fresh},
+            "comparison": {"pairs": [_pair("held-pair", th_availability=fresh, ru_price=fresh, checked=fresh)]},
+            "views": {"general_top": ["held-pair"], "all": ["held-pair"], "personal_top3": []},
+        }), encoding="utf-8")
+        event = self._event("manual", ["chat"], "held-event")
+        event["subscription_scan_id"] = "held"
+        event["result_id"] = "held"
+        (self.jobs / "delivering" / "held-event.json").write_text(json.dumps(event), encoding="utf-8")
+        ready = self.root / "delivery-ready"
+        release = self.root / "delivery-release"
+        worker = multiprocessing.Process(target=_hold_delivering, args=(str(self.jobs), str(ready), str(release)))
+        worker.start()
+        deadline = time.monotonic() + 5
+        while not ready.exists() and time.monotonic() < deadline:
+            time.sleep(0.02)
+        process_one(
+            jobs_dir=self.jobs, catalog_root=self.catalog, health_path=self.health,
+            sender=self.sender, clock=ManualClock(NOW), deliver=True, state_path=self.root / "buy-state.json",
+        )
+        self.assertEqual(self.sender.sent, [])
+        self.assertTrue((self.jobs / "delivering" / "held-event.json").is_file())
+        release.write_text("go", encoding="utf-8")
+        worker.join(5)
+        self.assertFalse(worker.is_alive())
+        process_one(
+            jobs_dir=self.jobs, catalog_root=self.catalog, health_path=self.health,
+            sender=self.sender, clock=ManualClock(NOW), deliver=True, state_path=self.root / "buy-state.json",
+        )
+        self.assertEqual(self.sender.sent[0]["event_id"], "held-event")
 
     def test_undelivered_buy_is_not_remembered(self) -> None:
         from buy_opportunity import BuySignal

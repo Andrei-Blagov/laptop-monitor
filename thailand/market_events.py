@@ -204,37 +204,92 @@ def promote_due_events(*, root: Path | str, now: datetime) -> list[str]:
     return moved
 
 
-def _pid_alive(pid: object) -> bool:
-    """True when the process exists. Does not signal or terminate it."""
+def process_started_at(pid: object) -> str | None:
+    """Start token of this process image. None when that image is gone.
+
+    The PID number is not the token: the kernel can give it to a later process.
+    """
     try:
         number = int(pid)
     except (TypeError, ValueError):
-        return False
+        return None
     if number <= 0:
-        return False
+        return None
     if os.name == "nt":
-        import ctypes
-        handle = ctypes.windll.kernel32.OpenProcess(0x1000, False, number)
-        if not handle:
-            return False
-        ctypes.windll.kernel32.CloseHandle(handle)
-        return True
+        return _windows_started_at(number)
+    return _linux_started_at(number)
+
+
+def _linux_started_at(pid: int) -> str | None:
     try:
-        os.kill(number, 0)
+        raw = Path(f"/proc/{pid}/stat").read_text(encoding="utf-8")
     except OSError:
+        return None
+    end = raw.rfind(")")
+    if end < 0:
+        return None
+    fields = raw[end + 2 :].split()
+    if len(fields) < 20:
+        return None
+    if fields[0] == "Z":
+        return None
+    return fields[19]
+
+
+def _windows_started_at(pid: int) -> str | None:
+    import ctypes
+    from ctypes import wintypes
+
+    kernel = ctypes.windll.kernel32
+
+    class _FileTime(ctypes.Structure):
+        _fields_ = [("low", wintypes.DWORD), ("high", wintypes.DWORD)]
+
+    handle = kernel.OpenProcess(0x1000, False, pid)
+    if not handle:
+        return None
+    try:
+        created = _FileTime()
+        unused = _FileTime()
+        if not kernel.GetProcessTimes(
+            handle, ctypes.byref(created), ctypes.byref(unused), ctypes.byref(unused), ctypes.byref(unused)
+        ):
+            return None
+        code = wintypes.DWORD()
+        if not kernel.GetExitCodeProcess(handle, ctypes.byref(code)) or code.value != 259:
+            return None
+        return str((int(created.high) << 32) | int(created.low))
+    finally:
+        kernel.CloseHandle(handle)
+
+
+def _owner_live(record: Mapping[str, Any] | None, *, pid_field: str = "owner_pid", started_field: str = "owner_started_at") -> bool:
+    if not record:
         return False
-    return True
+    started = record.get(started_field)
+    if started in (None, ""):
+        return False
+    return process_started_at(record.get(pid_field)) == str(started)
+
+
+def _owner_is_self(record: Mapping[str, Any] | None, *, pid_field: str = "owner_pid", started_field: str = "owner_started_at") -> bool:
+    if not record:
+        return False
+    try:
+        same_pid = int(record.get(pid_field)) == os.getpid()
+    except (TypeError, ValueError):
+        return False
+    return same_pid and _owner_live(record, pid_field=pid_field, started_field=started_field)
+
+
+def _stamp_owner(record: dict[str, Any], *, pid_field: str = "owner_pid", started_field: str = "owner_started_at") -> None:
+    record[pid_field] = os.getpid()
+    record[started_field] = process_started_at(os.getpid())
 
 
 def _scan_live(scan: Mapping[str, Any] | None, now: datetime, stale_seconds: float) -> bool:
-    if not scan:
-        return False
-    if _pid_alive(scan.get("owner_pid")):
-        return True
-    claimed = moment(scan.get("claimed_at"))
-    if claimed is None:
-        return True
-    return (now - claimed).total_seconds() < stale_seconds
+    del now, stale_seconds
+    return _owner_live(scan)
 
 
 def _active_scan(root: Path) -> dict[str, Any] | None:
@@ -248,7 +303,7 @@ def _save_scan(root: Path, scan: dict[str, Any] | None, *, now: datetime | None 
         if _scan_live(current, now or datetime.now(timezone.utc), stale_seconds):
             return False
     if scan is None:
-        if current and _pid_alive(current.get("owner_pid")) and current.get("owner_pid") != os.getpid():
+        if current and _owner_live(current) and not _owner_is_self(current):
             return False
         if path.is_file():
             path.unlink()
@@ -343,8 +398,8 @@ def _claim_batch(base: Path, now: datetime) -> tuple[dict[str, Any] | None, list
         "discovery_key": key,
         "claimed_at": now.isoformat(),
         "event_ids": [event["event_id"] for event in chosen],
-        "owner_pid": os.getpid(),
     }
+    _stamp_owner(scan)
     if not _save_scan(base, scan, now=now):
         return None, []
     for event in chosen:
@@ -642,7 +697,7 @@ def _claim_delivery(base: Path, event_id: str) -> dict[str, Any] | None:
     event = _read_json(destination)
     if not isinstance(event, dict):
         return None
-    event["delivery_owner"] = os.getpid()
+    _stamp_owner(event, pid_field="delivery_owner", started_field="delivery_owner_started_at")
     _atomic_write(destination, event)
     return event
 
@@ -663,8 +718,9 @@ def _retry_delivery(base: Path, sender, *, clock=None, fallback: datetime | None
             event = _read_json(path)
             if not isinstance(event, dict):
                 continue
-            owner = event.get("delivery_owner")
-            if _pid_alive(owner) and owner != os.getpid():
+            if _owner_live(event, pid_field="delivery_owner", started_field="delivery_owner_started_at") and not _owner_is_self(
+                event, pid_field="delivery_owner", started_field="delivery_owner_started_at"
+            ):
                 continue
             _write_event(base, "delivery", event)
             path.unlink(missing_ok=True)
@@ -689,12 +745,14 @@ def _retry_delivery(base: Path, sender, *, clock=None, fallback: datetime | None
             claimed["delivery_error"] = type(exc).__name__
             claimed["not_before"] = (now + timedelta(minutes=30)).isoformat()
             claimed.pop("delivery_owner", None)
+            claimed.pop("delivery_owner_started_at", None)
             _write_event(base, "deferred", claimed)
             (base / "delivering" / f"{claimed['event_id']}.json").unlink(missing_ok=True)
             return {"status": "delivery_failed", "event_id": claimed["event_id"], "http_calls": 0}
         claimed["delivery_state"] = "sent"
         claimed["delivered_as"] = state
         claimed.pop("delivery_owner", None)
+        claimed.pop("delivery_owner_started_at", None)
         _write_event(base, "archive", claimed)
         (base / "delivering" / f"{claimed['event_id']}.json").unlink(missing_ok=True)
         _remove_event(base, claimed["event_id"], keep="archive")
@@ -721,8 +779,8 @@ def begin_heavy_scan(root: Path | str, now: datetime, *, kind: str) -> bool:
             "discovery_key": kind,
             "claimed_at": now.isoformat(),
             "event_ids": [],
-            "owner_pid": os.getpid(),
         }
+        _stamp_owner(scan)
         return _save_scan(base, scan, now=now)
 
 
@@ -732,7 +790,7 @@ def end_heavy_scan(root: Path | str | None) -> None:
     base = jobs_root(root)
     with _lock(base):
         current = _active_scan(base)
-        if current and current.get("owner_pid") == os.getpid():
+        if _owner_is_self(current):
             _save_scan(base, None)
 
 
