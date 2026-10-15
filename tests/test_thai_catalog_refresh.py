@@ -135,6 +135,7 @@ class CatalogRefreshTests(unittest.TestCase):
                 decision, snapshot_root=root, now=NOW, instance_id="c22-test",
                 health_path=self.health_path, fx=_fx("2.8"), russian_snapshot=_russian(),
                 transport=BombTransport(),
+                clock=__import__("thailand.catalog_refresh", fromlist=["ManualClock"]).ManualClock(NOW),
             )
             self.assertEqual(decision["action"], REUSE)
             self.assertEqual(outcome["status"], COMPLETED)
@@ -337,16 +338,17 @@ class CatalogRefreshTests(unittest.TestCase):
             atomic_write_json(self.health_path, {"version": 1, "stores": {"jib": {
                 "disabled_until": until, "consecutive_failures": 3,
             }}})
+            frozen = __import__("thailand.catalog_refresh", fromlist=["ManualClock"]).ManualClock(NOW)
             blocked = execute_catalog_plan(
                 decision, snapshot_root=root, now=NOW, instance_id="c22-test",
-                health_path=self.health_path, transport=BombTransport(),
+                health_path=self.health_path, transport=BombTransport(), clock=frozen,
             )
             atomic_write_json(self.health_path, {"version": 1, "stores": {"jib": {
                 "rate_limit_until": until,
             }}})
             limited = execute_catalog_plan(
                 decision, snapshot_root=root, now=NOW, instance_id="c22-test",
-                health_path=self.health_path, transport=BombTransport(),
+                health_path=self.health_path, transport=BombTransport(), clock=frozen,
             )
         self.assertEqual(blocked["status"], DEFERRED)
         self.assertEqual(blocked["http_calls"], 0)
@@ -532,6 +534,7 @@ class CatalogRefreshTests(unittest.TestCase):
             outcome = execute_catalog_plan(
                 decision, snapshot_root=root, now=NOW, instance_id="c22-test",
                 health_path=self.health_path, transport=Flip(),
+                clock=__import__("thailand.catalog_refresh", fromlist=["ManualClock"]).ManualClock(NOW),
             )
         self.assertEqual(outcome["http_calls"], 1)
         self.assertEqual([row["external_id"] for row in outcome["skipped_offers"]], ["th-b"])
@@ -844,6 +847,283 @@ class CatalogRefreshTests(unittest.TestCase):
         self.assertEqual(until, (NOW + timedelta(hours=1)).isoformat())
         self.assertEqual(outcome["next_allowed_at"], (NOW + timedelta(hours=1)).isoformat())
         client.close()
+
+    def test_default_call_opens_and_closes_its_own_client(self) -> None:
+        import httpx
+
+        stale = NOW - timedelta(hours=9)
+        calls: list[str] = []
+        closed: list[bool] = []
+        real_client = httpx.Client
+
+        def handler(request: httpx.Request) -> httpx.Response:
+            calls.append(str(request.url))
+            return httpx.Response(429, headers={"Retry-After": "30"}, text="later")
+
+        def factory(*args, **kwargs):
+            kwargs["transport"] = httpx.MockTransport(handler)
+            client = real_client(*args, **kwargs)
+            original_close = client.close
+
+            def close():
+                closed.append(True)
+                original_close()
+
+            client.close = close
+            return client
+
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            _publish(root, [_offer("th-old", "SKUOLD17", 80_000, stale)], observed=stale)
+            decision = self._decision(root)
+            with patch("thailand.catalog_refresh.httpx.Client", factory):
+                outcome = execute_catalog_plan(
+                    decision, snapshot_root=root, now=NOW, instance_id="c22-test", health_path=self.health_path,
+                )
+        self.assertEqual(decision["action"], REVALIDATE)
+        self.assertEqual(len(calls), 1)
+        self.assertEqual(outcome["http_calls"], 1)
+        self.assertEqual(closed, [True])
+
+    def test_reuse_does_not_construct_a_client(self) -> None:
+        observed = NOW - timedelta(hours=1)
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            _publish(root, [_offer("th-fresh", "SKU-FRESH17", 80_000, observed)], observed=observed)
+            decision = self._decision(root, fx=_fx())
+
+            def factory(*_args, **_kwargs):
+                raise AssertionError("REUSE opened an HTTP client")
+
+            with patch("thailand.catalog_refresh.httpx.Client", factory):
+                outcome = execute_catalog_plan(
+                    decision, snapshot_root=root, now=NOW, instance_id="c22-test", health_path=self.health_path,
+                )
+        self.assertEqual(decision["action"], REUSE)
+        self.assertEqual(outcome["status"], COMPLETED)
+        self.assertEqual(outcome["http_calls"], 0)
+
+    def test_wall_clock_deadline_stops_the_next_request(self) -> None:
+        import httpx
+        import time
+
+        stale = NOW - timedelta(hours=9)
+        calls: list[str] = []
+
+        def handler(_request: httpx.Request) -> httpx.Response:
+            calls.append("hit")
+            time.sleep(0.2)
+            return httpx.Response(200, text="<html><body>salePrice: 1 qty = 1 " + (" " * 80) + "</body></html>")
+
+        client = httpx.Client(transport=httpx.MockTransport(handler), follow_redirects=False)
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            _publish(root, [
+                _offer("th-a", "SKU-AAA017", 80_000, stale),
+                _offer("th-b", "SKU-BBB017", 81_000, stale),
+            ], observed=stale)
+            decision = self._decision(root)
+            outcome = execute_catalog_plan(
+                decision, snapshot_root=root, now=NOW, instance_id="c22-test",
+                health_path=self.health_path,
+                transport=LiveCatalogTransport(client=client),
+                overall_timeout_seconds=0.05,
+            )
+        self.assertEqual(calls, ["hit"])
+        self.assertEqual(outcome["http_calls"], 1)
+        client.close()
+
+    def test_one_source_budget_is_shared_by_its_offers(self) -> None:
+        import httpx
+
+        stale = NOW - timedelta(hours=9)
+        calls: list[str] = []
+
+        def handler(request: httpx.Request) -> httpx.Response:
+            calls.append(str(request.url))
+            return httpx.Response(200, text="<html><body>ok " + (" " * 80) + "</body></html>")
+
+        client = httpx.Client(transport=httpx.MockTransport(handler), follow_redirects=False)
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            _publish(root, [
+                _offer("th-a", "SKU-AAA017", 80_000, stale),
+                _offer("th-b", "SKU-BBB017", 81_000, stale),
+            ], observed=stale)
+            decision = self._decision(root)
+            execute_catalog_plan(
+                decision, snapshot_root=root, now=NOW, instance_id="c22-test",
+                health_path=self.health_path,
+                transport=LiveCatalogTransport(client=client, request_budget=1),
+                clock=__import__("thailand.catalog_refresh", fromlist=["ManualClock"]).ManualClock(NOW),
+            )
+        self.assertEqual(len(calls), 1)
+        client.close()
+
+    def test_read_timeout_is_counted_and_recorded(self) -> None:
+        import httpx
+        from thailand.source_health import load_health
+
+        stale = NOW - timedelta(hours=9)
+
+        def handler(request: httpx.Request) -> httpx.Response:
+            raise httpx.ReadTimeout("slow", request=request)
+
+        client = httpx.Client(transport=httpx.MockTransport(handler), follow_redirects=False)
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            _publish(root, [_offer("th-old", "SKUOLD17", 80_000, stale)], observed=stale)
+            decision = self._decision(root)
+            outcome = execute_catalog_plan(
+                decision, snapshot_root=root, now=NOW, instance_id="c22-test",
+                health_path=self.health_path,
+                transport=LiveCatalogTransport(client=client, request_budget=1),
+                clock=__import__("thailand.catalog_refresh", fromlist=["ManualClock"]).ManualClock(NOW),
+            )
+        self.assertEqual(outcome["http_calls"], 1)
+        self.assertEqual(load_health(self.health_path)["stores"]["jib"]["last_error_code"], "ReadTimeout")
+        client.close()
+
+    def test_redirect_consumes_budget(self) -> None:
+        import httpx
+
+        stale = NOW - timedelta(hours=9)
+        calls: list[str] = []
+
+        def handler(request: httpx.Request) -> httpx.Response:
+            calls.append(str(request.url))
+            if request.url.path.endswith("/next"):
+                return httpx.Response(200, text="ok")
+            return httpx.Response(302, headers={"Location": "/next"})
+
+        client = httpx.Client(transport=httpx.MockTransport(handler), follow_redirects=True)
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            _publish(root, [_offer("th-old", "SKUOLD17", 80_000, stale)], observed=stale)
+            decision = self._decision(root)
+            execute_catalog_plan(
+                decision, snapshot_root=root, now=NOW, instance_id="c22-test",
+                health_path=self.health_path,
+                transport=LiveCatalogTransport(client=client, request_budget=1),
+                clock=__import__("thailand.catalog_refresh", fromlist=["ManualClock"]).ManualClock(NOW),
+            )
+        self.assertEqual(len(calls), 1)
+        client.close()
+
+    def test_publication_keeps_the_observation_time(self) -> None:
+        from thailand.catalog_refresh import ManualClock
+
+        observed = NOW - timedelta(hours=2)
+        clock = ManualClock(NOW)
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            _publish(root, [_offer("th-old", "SKU-OLD017", 90_000, observed)], observed=observed)
+            decision = self._decision(root)
+            decision["action"] = DISCOVER
+            decision["refresh_allowed"] = True
+            decision["allowed_sources"] = ["jib"]
+
+            class KeptTime:
+                def discover_source(self, source, *, now):
+                    del now
+                    offer = _offer("th-new", "SKU-NEW017", 70_000, observed, store=source)
+                    offer.collected_at = observed
+                    result = _result([offer], store=source)
+                    result.request_count = 1
+                    clock.advance(timedelta(hours=1))
+                    return result
+
+            outcome = execute_catalog_plan(
+                decision, snapshot_root=root, now=NOW, instance_id="c22-test",
+                health_path=self.health_path, transport=KeptTime(), clock=clock,
+            )
+            saved = load_thai_catalog(root, expected_instance_id="c22-test")
+            again = load_thai_catalog(root, expected_instance_id="c22-test")
+        fresh = next(row for row in saved["offers"] if row["external_id"] == "th-new")
+        self.assertEqual(fresh["price_checked_at"], observed.isoformat())
+        self.assertEqual(again["offers"], saved["offers"])
+        self.assertNotEqual(fresh["price_checked_at"], outcome["published_at"])
+
+    def test_partial_discover_keeps_the_other_variant(self) -> None:
+        observed = NOW - timedelta(hours=2)
+        first = _offer("same", "SKU-SAME17", 80_000, observed)
+        second = _offer("same", "SKU-SAME17", 81_000, observed)
+        first.variant_id = "color-a"
+        second.variant_id = "color-b"
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            _publish(root, [first, second], observed=observed)
+            original = load_thai_catalog(root, expected_instance_id="c22-test")
+            kept_at = next(row["price_checked_at"] for row in original["offers"] if row["variant_id"] == "color-b")
+            decision = self._decision(root)
+            decision["action"] = DISCOVER
+            decision["refresh_allowed"] = True
+            decision["allowed_sources"] = ["jib"]
+
+            class OneVariant:
+                def discover_source(self, source, *, now):
+                    offer = _offer("same", "SKU-SAME17", 70_000, now, store=source)
+                    offer.variant_id = "color-a"
+                    result = _result([offer], store=source)
+                    result.ok = False
+                    result.error_code = "RATE_LIMITED"
+                    result.discovery_rate_limited = True
+                    result.request_count = 1
+                    return result
+
+            execute_catalog_plan(
+                decision, snapshot_root=root, now=NOW, instance_id="c22-test",
+                health_path=self.health_path, transport=OneVariant(),
+                clock=__import__("thailand.catalog_refresh", fromlist=["ManualClock"]).ManualClock(NOW),
+            )
+            saved = load_thai_catalog(root, expected_instance_id="c22-test")
+        variants = {row["variant_id"]: row for row in saved["offers"] if row["external_id"] == "same"}
+        self.assertIn("color-b", variants)
+        self.assertEqual(variants["color-b"]["price_checked_at"], kept_at)
+        self.assertEqual(variants["color-b"]["price_thb"], 81_000)
+
+    def test_disabled_source_does_not_inherit_old_ok(self) -> None:
+        import hashlib
+        import json
+        from thai_catalog import SNAPSHOT_DIRNAME
+
+        observed = NOW - timedelta(hours=2)
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            _publish(root, [_offer("th-old", "SKU-OLD017", 80_000, observed)], observed=observed)
+            document = load_thai_catalog(root, expected_instance_id="c22-test")
+            for row in document["source_coverage"]:
+                if row["source"] == "banana":
+                    row["enabled"] = True
+                    row["policy_disabled"] = False
+                    row["state"] = "ok"
+                    row["status"] = "ok"
+            path = root / SNAPSHOT_DIRNAME / f"{document['snapshot_id']}.json"
+            atomic_write_json(path, document)
+            latest = json.loads((root / "latest.json").read_text(encoding="utf-8"))
+            latest["sha256"] = hashlib.sha256(path.read_bytes()).hexdigest()
+            atomic_write_json(root / "latest.json", latest)
+            decision = self._decision(root)
+            decision["action"] = DISCOVER
+            decision["refresh_allowed"] = True
+            decision["allowed_sources"] = ["advice"]
+
+            class Empty:
+                def discover_source(self, source, *, now):
+                    result = _result([], store=source)
+                    result.request_count = 1
+                    return result
+
+            execute_catalog_plan(
+                decision, snapshot_root=root, now=NOW, instance_id="c22-test",
+                health_path=self.health_path, transport=Empty(),
+                clock=__import__("thailand.catalog_refresh", fromlist=["ManualClock"]).ManualClock(NOW),
+            )
+            saved = load_thai_catalog(root, expected_instance_id="c22-test")
+        banana = next(row for row in saved["source_coverage"] if row["source"] == "banana")
+        self.assertFalse(banana["enabled"])
+        self.assertTrue(banana["policy_disabled"])
+        self.assertNotEqual(banana["state"], "ok")
 
 
 if __name__ == "__main__":

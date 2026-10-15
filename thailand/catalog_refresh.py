@@ -18,7 +18,7 @@ from datetime import datetime, timedelta, timezone
 from email.utils import parsedate_to_datetime
 from pathlib import Path
 from typing import Any, Mapping, Sequence
-from urllib.parse import quote
+from urllib.parse import quote, urljoin
 
 import httpx
 
@@ -95,24 +95,49 @@ class ManualClock:
         self.instant = self.instant + delta
 
 
+class PassTiming:
+    """UTC instants for observations. Deadline uses monotonic time unless a test clock is injected."""
+
+    def __init__(self, clock: ManualClock | None, timeout: float, started_utc: datetime) -> None:
+        self.clock = clock
+        self.timeout = timeout
+        self.started_utc = started_utc
+        self.started_mono = time.monotonic()
+
+    def now(self) -> datetime:
+        if self.clock is not None:
+            return self.clock.now()
+        return datetime.now(timezone.utc)
+
+    def expired(self) -> bool:
+        if self.clock is not None:
+            return self.now() >= self.started_utc + timedelta(seconds=self.timeout)
+        return time.monotonic() - self.started_mono >= self.timeout
+
+    def remaining(self) -> float:
+        if self.clock is not None:
+            left = (self.started_utc + timedelta(seconds=self.timeout) - self.now()).total_seconds()
+        else:
+            left = self.timeout - (time.monotonic() - self.started_mono)
+        return max(0.0, left)
+
+
 class GuardedClient:
-    """Check enabled, health, deadline, and budget before every real HTTP call."""
+    """One shared budget per source. Every attempt, including a redirect hop, is counted before I/O."""
 
     def __init__(
         self,
         inner: httpx.Client,
         *,
         source: str,
-        clock: ManualClock,
+        timing: PassTiming,
         health_path,
-        deadline_at: datetime,
         budget: int,
     ) -> None:
         self.inner = inner
         self.source = source
-        self.clock = clock
+        self.timing = timing
         self.health_path = health_path
-        self.deadline_at = deadline_at
         self.budget = budget
         self.http_calls = 0
         self.successes = 0
@@ -122,48 +147,91 @@ class GuardedClient:
         self.retry_after_seconds: int | None = None
 
     def get(self, url, **kwargs):
+        current = url
+        kwargs = dict(kwargs)
+        kwargs.pop("follow_redirects", None)
+        for _hop in range(5):
+            response = self._once(current, kwargs)
+            if response.status_code not in {301, 302, 303, 307, 308}:
+                return response
+            location = response.headers.get("location") or response.headers.get("Location")
+            if not location:
+                return response
+            current = urljoin(str(current), location)
+        return response
+
+    def _once(self, url, kwargs):
         reason = self._block_reason()
         if reason:
             self.blocked_reason = self.blocked_reason or reason
             return httpx.Response(429, headers={"X-Block-Reason": reason})
-        response = self.inner.get(url, **kwargs)
         self.http_calls += 1
-        now = self.clock.now()
+        timeout = self.timing.remaining()
+        requested = kwargs.get("timeout")
+        if requested is not None:
+            try:
+                timeout = min(timeout, float(requested))
+            except (TypeError, ValueError):
+                pass
+        now = self.timing.now()
+        if timeout <= 0:
+            self.blocked_reason = "deadline"
+            self._record(ok=False, error_code="TIMEOUT", now=now)
+            return httpx.Response(429, headers={"X-Block-Reason": "deadline"})
+        request = {key: value for key, value in kwargs.items() if key != "timeout"}
+        try:
+            parameters = inspect.signature(self.inner.get).parameters
+        except (TypeError, ValueError):
+            parameters = {}
+        accepts_any = any(getattr(item, "kind", None) == inspect.Parameter.VAR_KEYWORD for item in parameters.values())
+        if accepts_any or "follow_redirects" in parameters:
+            request["follow_redirects"] = False
+        try:
+            response = self.inner.get(url, timeout=timeout, **request)
+        except (httpx.TimeoutException, httpx.TransportError) as exc:
+            self._record(ok=False, error_code=type(exc).__name__, now=self.timing.now())
+            raise
+        now = self.timing.now()
         if response.status_code == 429:
             self.real_429 = True
             self.stopped = True
             self.retry_after_seconds = _retry_after_value(response.headers.get("Retry-After"), now)
-            record_observation(
-                self.source, ok=False, error_code=RATE_LIMITED,
-                retry_after_seconds=self.retry_after_seconds, now=now, path=self.health_path,
-            )
+            self._record(ok=False, error_code=RATE_LIMITED, now=now, retry_after_seconds=self.retry_after_seconds)
             return response
         if response.status_code >= 400:
-            record_observation(
-                self.source, ok=False, error_code=f"HTTP_{response.status_code}",
-                now=now, path=self.health_path,
-            )
+            self._record(ok=False, error_code=f"HTTP_{response.status_code}", now=now)
             return response
-        self.successes += 1
-        record_observation(self.source, ok=True, offer_count=0, now=now, path=self.health_path)
+        if response.status_code not in {301, 302, 303, 307, 308}:
+            self.successes += 1
+            self._record(ok=True, error_code=None, now=now)
         return response
 
     def close(self) -> None:
         return None
+
+    def _record(self, *, ok: bool, error_code: str | None, now: datetime, retry_after_seconds: int | None = None) -> None:
+        record_observation(
+            self.source,
+            ok=ok,
+            error_code=error_code,
+            retry_after_seconds=retry_after_seconds,
+            now=now,
+            path=self.health_path,
+        )
 
     def _block_reason(self) -> str | None:
         if self.stopped or self.real_429:
             return "stopped_after_429"
         if not _source_enabled(self.source):
             return "source_disabled"
-        if self.clock.now() >= self.deadline_at:
+        if self.timing.expired():
             return "deadline"
         if self.budget <= 0 or self.http_calls >= self.budget:
             return "budget"
         block, _when = _source_block(
             self.source,
             {"enabled": True, "policy_disabled": False, "state": "ok"},
-            self.clock.now(),
+            self.timing.now(),
             self.health_path,
         )
         if block:
@@ -194,7 +262,8 @@ class LiveCatalogTransport:
         self.deadline_at: datetime | None = None
         self.fx_rate = None
         self.calls: list[tuple[str, str, str | None]] = []
-        self.guards: list[GuardedClient] = []
+        self.guards: dict[str, GuardedClient] = {}
+        self.timing: PassTiming | None = None
 
     def refresh_offer(self, item: Mapping[str, Any], *, mode: str, now: datetime, clock: ManualClock | None = None) -> OfferRefresh:
         del now
@@ -204,7 +273,7 @@ class LiveCatalogTransport:
         if source in POLICY_DISABLED_SOURCES or mode == "refused":
             return _skipped(item, "source_disabled", coverage="disabled source was not requested")
         guard = self._guard(source)
-        active = clock or self.clock
+        active = clock or self.timing or self.clock
         if mode == "point" and source in POINT_CHECK_SOURCES:
             return _jib_point(item, client=guard, timeout=self.timeout, clock=active)
         if mode == "bounded" and source in BOUNDED_SOURCE_REFRESH_SOURCES:
@@ -231,17 +300,19 @@ class LiveCatalogTransport:
         return _finish_guarded_result(result, guard)
 
     def _guard(self, source: str) -> GuardedClient:
-        if self.client is None or self.clock is None or self.deadline_at is None:
-            raise ThaiCatalogError("live transport requires a client, clock, and deadline")
+        existing = self.guards.get(source)
+        if existing is not None:
+            return existing
+        if self.client is None or self.timing is None:
+            raise ThaiCatalogError("live transport requires a client and pass timing")
         guard = GuardedClient(
             self.client,
             source=source,
-            clock=self.clock,
+            timing=self.timing,
             health_path=self.health_path,
-            deadline_at=self.deadline_at,
             budget=self.request_budget,
         )
-        self.guards.append(guard)
+        self.guards[source] = guard
         return guard
 
 
@@ -260,10 +331,8 @@ def execute_catalog_plan(
     clock: ManualClock | None = None,
 ) -> dict[str, Any]:
     """Run one reuse decision. Returns the orchestration result and does not notify."""
-    timer = clock or ManualClock(_clock(now))
-    pass_started = timer.now()
+    started_utc = clock.now() if clock is not None else _clock(now)
     root = Path(snapshot_root)
-    actor = transport or LiveCatalogTransport()
     action = str(decision.get("action") or "")
     try:
         previous = load_thai_catalog(root, expected_instance_id=instance_id)
@@ -271,40 +340,53 @@ def execute_catalog_plan(
         if action != "DISCOVER":
             return _outcome(
                 FAILED, action=action, errors=[f"catalog_unusable:{type(exc).__name__}"],
-                detail=str(exc), pass_started_at=pass_started.isoformat(),
+                detail=str(exc), pass_started_at=started_utc.isoformat(),
             )
         previous = None
     bound = decision.get("snapshot_id")
     if previous is not None and bound and bound != previous.get("snapshot_id"):
+        probe = clock or ManualClock(started_utc)
         return _refuse_stale_decision(
-            root, previous, timer, instance_id, health_path, russian_snapshot, fx, pass_started,
+            root, previous, probe, instance_id, health_path, russian_snapshot, fx, started_utc,
         )
     if action in {"REUSE", "DEFERRED"} or not decision.get("refresh_allowed"):
-        return _reuse_or_defer(previous, action, fx, russian_snapshot, timer.now(), pass_started)
+        observed = clock.now() if clock is not None else datetime.now(timezone.utc)
+        return _reuse_or_defer(previous, action, fx, russian_snapshot, observed, started_utc)
     timeout = float(
         overall_timeout_seconds
         if overall_timeout_seconds is not None
         else config.THAILAND_OVERALL_TIMEOUT_SECONDS
     )
+    timing = PassTiming(clock, timeout, started_utc)
+    owned_client = None
+    actor = transport
+    if actor is None:
+        owned_client = httpx.Client(follow_redirects=False)
+        actor = LiveCatalogTransport(client=owned_client)
     if isinstance(actor, LiveCatalogTransport):
-        actor.clock = timer
+        actor.clock = clock
+        actor.timing = timing
         actor.health_path = health_path
-        actor.deadline_at = pass_started + timedelta(seconds=timeout)
-        actor.fx_rate = _fx_rate(fx, pass_started)
-    if action == "REVALIDATE":
-        return _revalidate(
-            previous, decision, root, timer, instance_id, health_path, russian_snapshot, fx,
-            actor, publish_barrier, timeout, pass_started,
+        actor.deadline_at = started_utc + timedelta(seconds=timeout)
+        actor.fx_rate = _fx_rate(fx, started_utc)
+    try:
+        if action == "REVALIDATE":
+            return _revalidate(
+                previous, decision, root, timing, instance_id, health_path, russian_snapshot, fx,
+                actor, publish_barrier, timeout, started_utc,
+            )
+        if action == "DISCOVER":
+            return _discover(
+                previous, decision, root, timing, instance_id, health_path, russian_snapshot, fx,
+                actor, publish_barrier, timeout, started_utc,
+            )
+        return _outcome(
+            FAILED, action=action, errors=[f"unknown_action:{action}"],
+            snapshot_id=_id(previous), pass_started_at=started_utc.isoformat(),
         )
-    if action == "DISCOVER":
-        return _discover(
-            previous, decision, root, timer, instance_id, health_path, russian_snapshot, fx,
-            actor, publish_barrier, timeout, pass_started,
-        )
-    return _outcome(
-        FAILED, action=action, errors=[f"unknown_action:{action}"],
-        snapshot_id=_id(previous), pass_started_at=pass_started.isoformat(),
-    )
+    finally:
+        if owned_client is not None:
+            owned_client.close()
 
 
 def _reuse_or_defer(document, action, fx, russian_snapshot, now: datetime, pass_started: datetime | None = None) -> dict[str, Any]:
@@ -349,14 +431,14 @@ def _refuse_stale_decision(root, previous, timer, instance_id, health_path, russ
     )
 
 
-def _call_refresh(transport, item, mode: str, timer: ManualClock) -> OfferRefresh:
+def _call_refresh(transport, item, mode: str, timer: PassTiming) -> OfferRefresh:
     kwargs: dict[str, Any] = {"mode": mode, "now": timer.now()}
     if "clock" in inspect.signature(transport.refresh_offer).parameters:
         kwargs["clock"] = timer
     return transport.refresh_offer(item, **kwargs)
 
 
-def _revalidate(previous, decision, root, timer: ManualClock, instance_id, health_path, russian, fx, transport, barrier, timeout, pass_started):
+def _revalidate(previous, decision, root, timer: PassTiming, instance_id, health_path, russian, fx, transport, barrier, timeout, pass_started):
     del instance_id
     if previous is None:
         return _outcome(FAILED, action="REVALIDATE", errors=["catalog_missing"], pass_started_at=pass_started.isoformat())
@@ -364,10 +446,10 @@ def _revalidate(previous, decision, root, timer: ManualClock, instance_id, healt
     updated, skipped, errors, http_calls, next_at = [], [], [], 0, []
     stopped: set[str] = set()
     coverage_rows = {row.get("source"): row for row in previous.get("source_coverage") or []}
-    deadline = pass_started + timedelta(seconds=timeout)
+    del timeout
     for item in decision.get("revalidate_offers") or []:
         source = str(item.get("source") or "")
-        if timer.now() >= deadline:
+        if timer.expired():
             skipped.append(_skip(item, "deadline"))
             continue
         if source in stopped:
@@ -442,7 +524,7 @@ def _revalidate(previous, decision, root, timer: ManualClock, instance_id, healt
     )
 
 
-def _discover(previous, decision, root, timer: ManualClock, instance_id, health_path, russian, fx, transport, barrier, timeout, pass_started):
+def _discover(previous, decision, root, timer: PassTiming, instance_id, health_path, russian, fx, transport, barrier, timeout, pass_started):
     allowed = []
     skipped = []
     next_at = []
@@ -467,13 +549,13 @@ def _discover(previous, decision, root, timer: ManualClock, instance_id, health_
     results: list[StoreScanResult] = []
     http_calls = 0
     errors = []
-    deadline = pass_started + timedelta(seconds=timeout)
+    del timeout
     for adapter in get_thailand_adapters():
         if adapter.slug in allowed:
             continue
         results.append(_placeholder(adapter, timer.now(), health_path))
     for source in allowed:
-        if timer.now() >= deadline:
+        if timer.expired():
             skipped.append({"source": source, "reason": "deadline"})
             results.append(StoreScanResult(store=source, ok=False, error_code="TIMEOUT", technical_detail="deadline", collection_mode="skipped"))
             continue
@@ -491,7 +573,6 @@ def _discover(previous, decision, root, timer: ManualClock, instance_id, health_
             errors.append(f"{source}:{type(exc).__name__}")
             results.append(StoreScanResult(store=source, ok=False, error=type(exc).__name__, error_code="HTTP_ERROR", collection_mode="failed"))
             continue
-        _stamp_response_time(result, timer.now())
         results.append(result)
         http_calls += _request_count(result)
         if _rate_limited(result):
@@ -765,13 +846,15 @@ def _jib_point(item, *, client, timeout: float, clock: ManualClock | None) -> Of
     from thailand.jib import fetch_read_product
 
     owns = client is None
-    http = client or httpx.Client(follow_redirects=True, timeout=timeout)
+    http = client or httpx.Client(follow_redirects=False, timeout=timeout)
+    before = getattr(http, "http_calls", None)
     try:
         detail = fetch_read_product(http, str(item.get("external_id") or ""), timeout=timeout)
     finally:
         if owns:
             http.close()
-    calls = getattr(http, "http_calls", 1)
+    after = getattr(http, "http_calls", None)
+    calls = (after - before) if before is not None and after is not None else 1
     refresh = _base(item, coverage="point_check:jib_read_product", http_calls=calls)
     refresh.retry_after_seconds = getattr(http, "retry_after_seconds", None)
     error = str(detail.get("error") or "")
@@ -826,18 +909,22 @@ def _bounded_request(item, *, client, timeout: float, clock: ManualClock | None)
             coverage="itcity has no single-product request; broad search was not started",
         )
     owns = client is None
-    http = client or httpx.Client(follow_redirects=True, timeout=timeout)
+    http = client or httpx.Client(follow_redirects=False, timeout=timeout)
+    before = getattr(http, "http_calls", None)
     try:
         response = http.get(url, timeout=timeout)
     except Exception as exc:  # noqa: BLE001
-        refresh = _base(item, coverage=coverage, http_calls=1)
+        after = getattr(http, "http_calls", None)
+        used = (after - before) if before is not None and after is not None else 1
+        refresh = _base(item, coverage=coverage, http_calls=used)
         refresh.status = "failed"
         refresh.reason = type(exc).__name__
         return refresh
     finally:
         if owns:
             http.close()
-    calls = getattr(http, "http_calls", 1)
+    after = getattr(http, "http_calls", None)
+    calls = (after - before) if before is not None and after is not None else 1
     refresh = _base(item, coverage=coverage, http_calls=calls)
     refresh.retry_after_seconds = getattr(http, "retry_after_seconds", None) or _retry_after(response, clock.now() if clock else None)
     if getattr(http, "blocked_reason", None) and not getattr(http, "real_429", False):
@@ -994,9 +1081,42 @@ def _finish_guarded_result(result: StoreScanResult, guard: GuardedClient) -> Sto
     return result
 
 
-def _stamp_response_time(result: StoreScanResult, response_at: datetime) -> None:
-    for offer in list(result.offers or []) + list(result.unverified_candidates or []):
-        offer.collected_at = response_at
+def _offer_identity(row: Mapping[str, Any]) -> tuple:
+    return (row.get("source"), row.get("external_id"), row.get("variant_id"))
+
+
+def _policy_row(source: str, *, disabled: bool, skipped: bool = False) -> dict[str, Any]:
+    if disabled:
+        return {
+            "source": source,
+            "store": source,
+            "enabled": False,
+            "policy_disabled": True,
+            "state": "deferred",
+            "status": "deferred",
+            "checked_at": None,
+            "latest_attempt_at": None,
+            "request_count": 0,
+            "completed_keys": [],
+            "not_completed_keys": [],
+            "limitations": ["policy_disabled"],
+            "retry_after_seconds": None,
+        }
+    return {
+        "source": source,
+        "store": source,
+        "enabled": True,
+        "policy_disabled": False,
+        "state": "skipped" if skipped else "failed",
+        "status": "skipped" if skipped else "failed",
+        "checked_at": None,
+        "latest_attempt_at": None,
+        "request_count": 0,
+        "completed_keys": [],
+        "not_completed_keys": [],
+        "limitations": ["not_attempted"],
+        "retry_after_seconds": None,
+    }
 
 
 def _attempt_kind(result: StoreScanResult) -> str:
@@ -1061,9 +1181,9 @@ def _merge_discover(previous: Mapping[str, Any], results: Sequence[StoreScanResu
         if kind == "checked":
             merged.extend(fresh)
         elif kind == "partial":
-            seen_ids = {row.get("external_id") for row in fresh}
+            seen_ids = {_offer_identity(row) for row in fresh}
             merged.extend(fresh)
-            merged.extend(row for row in previous_rows if row.get("external_id") not in seen_ids)
+            merged.extend(row for row in previous_rows if _offer_identity(row) not in seen_ids)
         else:
             merged.extend(previous_rows)
     for source, rows in old_by_source.items():
@@ -1073,13 +1193,15 @@ def _merge_discover(previous: Mapping[str, Any], results: Sequence[StoreScanResu
     document["variants"], document["conflicts"] = _variants(merged)
     document["exclusions"] = _diagnostics(merged)
     document["raw_observations"] = [_raw_observation(offer) for offer in merged]
-    prev_cov = {row.get("source"): row for row in previous.get("source_coverage") or []}
     coverage = []
     for row in document.get("source_coverage") or []:
         source = row.get("source")
         kind = kinds.get(source, "not_attempted")
-        if kind in {"not_attempted", "disabled"} and source in prev_cov:
-            coverage.append(dict(prev_cov[source]))
+        if kind == "disabled":
+            coverage.append(_policy_row(str(source), disabled=True))
+            continue
+        if kind == "not_attempted":
+            coverage.append(_policy_row(str(source), disabled=False, skipped=True))
             continue
         updated = dict(row)
         if kind == "failed":
