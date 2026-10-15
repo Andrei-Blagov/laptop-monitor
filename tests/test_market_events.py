@@ -27,12 +27,29 @@ from tests.test_thai_catalog_reuse import NOW, _fx, _offer, _publish
 INSTANCE = "c22-test"
 
 
+def _pair(pair_id: str, *, th_availability: str, ru_price: str, checked: str | None = None) -> dict:
+    fresh = checked or th_availability
+    return {
+        "pair_id": pair_id,
+        "comparison_status": "confirmed",
+        "th_observation": {
+            "price": "80000", "price_checked_at": fresh, "availability_checked_at": th_availability,
+            "name": "ASUS ROG", "url": "https://example.test/th", "specs": {"gpu": {"value": "RTX 5070 Ti"}},
+        },
+        "ru_observation": {
+            "price": "250000", "price_checked_at": ru_price, "availability_checked_at": fresh,
+            "name": "ASUS ROG", "url": "https://example.test/ru", "specs": {"gpu": {"value": "RTX 5070 Ti"}},
+        },
+        "saving_rub": "1000", "conflicting_fields": [], "commercial_differences": [], "confirmed_expenses": [],
+    }
+
+
 class FakeSender:
     def __init__(self, failures: int = 0) -> None:
         self.failures = failures
         self.sent: list[dict] = []
 
-    def send(self, event, result, *, current: bool, historical: bool) -> None:
+    def send(self, event, result, *, current: bool, historical: bool, info_current: bool = False) -> None:
         if self.failures:
             self.failures -= 1
             raise RuntimeError("delivery")
@@ -41,6 +58,7 @@ class FakeSender:
             "recipients": list(event["recipients"]),
             "current": current,
             "historical": historical,
+            "info_current": info_current,
             "view": event["requested_view"],
         })
 
@@ -89,7 +107,7 @@ def _hold_child(jobs: str, catalog: str, health: str, counter: str, hold: str) -
 
 def _delivery_child(jobs: str, catalog: str, health: str, hold: str, release: str, log: str) -> None:
     class _Slow:
-        def send(self, event, result, *, current: bool, historical: bool) -> None:
+        def send(self, event, result, *, current: bool, historical: bool, info_current: bool = False) -> None:
             del result, current, historical
             Path(hold).write_text("sending", encoding="utf-8")
             while not Path(release).exists():
@@ -265,15 +283,13 @@ class MarketEventQueueTests(unittest.TestCase):
         stale = (NOW - timedelta(hours=9)).isoformat()
         result = {
             "result_id": "scan-old", "scan_id": "scan-old", "snapshot_id": "snap-old",
-            "quote_checked_at": fresh, "purchase_current": True,
-            "all_offers": [{"price_checked_at": fresh}],
             "fx": {**_fx(), "fetched_at": fresh},
-            "views": {"general_top": [
-                {"model": "shown", "price_thb": "70000", "price_checked_at": fresh, "availability_checked_at": stale},
-                {"model": "ru-side", "price_thb": "70000", "price_checked_at": fresh,
-                 "availability_checked_at": fresh, "ru_price_checked_at": stale},
+            "comparison": {"pairs": [
+                _pair("stale-avail", th_availability=stale, ru_price=fresh),
+                _pair("stale-ru", th_availability=fresh, ru_price=stale),
             ]},
-            "http_calls": 0, "generated_at": stale,
+            "views": {"general_top": ["stale-avail", "stale-ru"], "all": ["stale-avail", "stale-ru"], "personal_top3": []},
+            "http_calls": 0,
         }
         (self.jobs / "results" / "scan-old.json").write_text(json.dumps(result), encoding="utf-8")
         event = self._event("buy", ["chat"], "stale-buy")
@@ -530,15 +546,15 @@ class MarketEventQueueTests(unittest.TestCase):
         self._run()
         event = self._stored("render")
         result = json.loads((self.jobs / "results" / f"{event['result_id']}.json").read_text(encoding="utf-8"))
-        row = result["views"]["general_top"][0]
-        self.assertTrue(row["model"])
+        model_id = result["views"]["general_top"][0]
+        row = next(item for item in result["rankings"]["thai_top_value"] if item["model_id"] == model_id)
+        self.assertTrue(row["name"])
         self.assertTrue(row["price_thb"])
-        self.assertTrue(row["price_checked_at"])
-        self.assertTrue(row["availability_checked_at"])
-        refs = json.loads((self.jobs / "protected_refs.json").read_text(encoding="utf-8"))
-        self.assertIn(result["snapshot_id"], refs["th_snapshot_ids"])
-        self.assertIn(result["fx"]["fx_id"], refs["fx_ids"])
-        self.assertIn(result["result_id"], refs["result_ids"])
+        self.assertTrue(row["offers"][0]["price"])
+        self.assertTrue(row["offers"][0]["price_checked_at"])
+        refs = json.loads((self.catalog / REFERENCES_NAME).read_text(encoding="utf-8"))
+        self.assertIn(result["snapshot_id"], refs["snapshot_ids"])
+        self.assertTrue((self.jobs / "results" / f"{result['result_id']}.json").is_file())
 
     def test_recovery_after_result_does_not_repeat_http(self) -> None:
         self._catalog(9)
@@ -602,6 +618,188 @@ class MarketEventQueueTests(unittest.TestCase):
         if path.is_file():
             record = json.loads(path.read_text(encoding="utf-8"))
         self.assertNotIn("undelivered-fp", record.get("fingerprints") or [])
+
+    def test_worker_stores_the_full_comparison(self) -> None:
+        from decimal import Decimal
+        from market_snapshot import retain_russian_market_snapshots
+        from tests.test_thai_catalog_reuse import _russian
+
+        observed = NOW - timedelta(hours=2)
+        _publish(self.catalog, [_offer("th-match", "SKU-MATCH17", 80_000, observed)], observed=observed)
+        russian = _russian(["model-ru-17"])
+        ru_root = self.root / "ru"
+        (ru_root / "snapshots").mkdir(parents=True)
+        (ru_root / "snapshots" / f"{russian['snapshot_id']}.json").write_text(json.dumps(russian), encoding="utf-8")
+        (ru_root / "latest.json").write_text(json.dumps({"snapshot_id": russian["snapshot_id"]}), encoding="utf-8")
+        enqueue_market_event(self._event("manual", ["chat"], "full"), root=self.jobs, now=NOW)
+        outcome = process_one(
+            jobs_dir=self.jobs, catalog_root=self.catalog, health_path=self.health, fx=_fx(),
+            russian_snapshot=russian, russian_snapshot_root=ru_root, transport=self.transport,
+            sender=self.sender, clock=ManualClock(NOW), deliver=True, state_path=self.root / "buy-state.json",
+        )
+        self.assertEqual(outcome["http_calls"], 0)
+        self.assertEqual(self.transport.calls, 0)
+        result = json.loads((self.jobs / "results" / f"{outcome['result_id']}.json").read_text(encoding="utf-8"))
+        pair_id = result["views"]["general_top"][0]
+        pair = next(item for item in result["comparison"]["pairs"] if item["pair_id"] == pair_id)
+        self.assertEqual(Decimal(pair["ru_observation"]["price"]), Decimal(250_000))
+        self.assertEqual(Decimal(pair["th_observation"]["price"]), Decimal(80_000))
+        self.assertIn("specs", pair["ru_observation"])
+        self.assertTrue(pair["th_observation"]["url"])
+        self.assertIn("confirmed_expenses", pair)
+        self.assertIn("commercial_differences", pair)
+        self.assertIn("unmatched_th", result["comparison"])
+        self.assertIn("source_coverage", result["comparison"])
+        self.assertTrue(result["rankings"]["thai_top_value"])
+        self.assertEqual(self.sender.sent[0]["current"], True)
+        (self.catalog / "snapshots" / "newer-th.json").write_text("{}", encoding="utf-8")
+        (self.catalog / "snapshots" / "unreferenced.json").write_text("{}", encoding="utf-8")
+        (self.catalog / "latest.json").write_text(json.dumps({"snapshot_id": "newer-th"}), encoding="utf-8")
+        (ru_root / "snapshots" / "newer-ru.json").write_text("{}", encoding="utf-8")
+        (ru_root / "snapshots" / "unreferenced-ru.json").write_text("{}", encoding="utf-8")
+        (ru_root / "latest.json").write_text(json.dumps({"snapshot_id": "newer-ru"}), encoding="utf-8")
+        self.assertIn("unreferenced", retain_thai_catalogs(self.catalog))
+        self.assertIn("unreferenced-ru", retain_russian_market_snapshots(ru_root))
+        self.assertTrue((self.catalog / "snapshots" / f"{result['snapshot_id']}.json").is_file())
+        self.assertTrue((ru_root / "snapshots" / f"{result['ru_snapshot_id']}.json").is_file())
+        self.assertTrue((self.jobs / "results" / f"{result['result_id']}.json").is_file())
+
+    def test_recovery_keeps_snapshot_references(self) -> None:
+        from market_snapshot import retain_russian_market_snapshots
+
+        self._catalog(9)
+        th_id = json.loads((self.catalog / "latest.json").read_text(encoding="utf-8"))["snapshot_id"]
+        ru_root = self.root / "ru"
+        (ru_root / "snapshots").mkdir(parents=True)
+        (ru_root / "snapshots" / "ru-kept.json").write_text("{}", encoding="utf-8")
+        (ru_root / "latest.json").write_text(json.dumps({"snapshot_id": "ru-kept"}), encoding="utf-8")
+        event = self._event("manual", ["chat"], "bound-refs")
+        enqueue_market_event(event, root=self.jobs, now=NOW)
+        (self.jobs / "processing").mkdir(parents=True, exist_ok=True)
+        (self.jobs / "pending" / "bound-refs.json").replace(self.jobs / "processing" / "bound-refs.json")
+        (self.jobs / "results").mkdir(parents=True, exist_ok=True)
+        (self.jobs / "results" / "bound-refs.json").write_text(json.dumps({
+            "result_id": "bound-refs", "scan_id": "bound-refs", "snapshot_id": th_id, "ru_snapshot_id": "ru-kept",
+            "views": {"general_top": []},
+        }), encoding="utf-8")
+        (self.jobs / "active_scan.json").write_text(json.dumps({
+            "scan_id": "bound-refs", "discovery_key": discovery_key(INSTANCE),
+            "claimed_at": (NOW - timedelta(hours=2)).isoformat(), "event_ids": ["bound-refs"], "owner_pid": 1,
+        }), encoding="utf-8")
+        process_one(
+            jobs_dir=self.jobs, catalog_root=self.catalog, health_path=self.health,
+            russian_snapshot_root=ru_root, transport=self.transport, sender=None,
+            clock=ManualClock(NOW), deliver=False, state_path=self.root / "buy-state.json",
+        )
+        self.assertEqual(self.transport.calls, 0)
+        th_refs = json.loads((self.catalog / REFERENCES_NAME).read_text(encoding="utf-8"))
+        ru_refs = json.loads((ru_root / REFERENCES_NAME).read_text(encoding="utf-8"))
+        self.assertIn(th_id, th_refs["snapshot_ids"])
+        self.assertIn("ru-kept", ru_refs["snapshot_ids"])
+        (self.catalog / "snapshots" / "newer-th.json").write_text("{}", encoding="utf-8")
+        (self.catalog / "snapshots" / "drop-th.json").write_text("{}", encoding="utf-8")
+        (self.catalog / "latest.json").write_text(json.dumps({"snapshot_id": "newer-th"}), encoding="utf-8")
+        (ru_root / "snapshots" / "drop-ru.json").write_text("{}", encoding="utf-8")
+        (ru_root / "latest.json").write_text(json.dumps({"snapshot_id": "newer-ru"}), encoding="utf-8")
+        (ru_root / "snapshots" / "newer-ru.json").write_text("{}", encoding="utf-8")
+        self.assertIn("drop-th", retain_thai_catalogs(self.catalog))
+        self.assertIn("drop-ru", retain_russian_market_snapshots(ru_root))
+        self.assertTrue((self.catalog / "snapshots" / f"{th_id}.json").is_file())
+        self.assertTrue((ru_root / "snapshots" / "ru-kept.json").is_file())
+        self.assertTrue((self.jobs / "results" / "bound-refs.json").is_file())
+
+    def test_default_jobs_dir_serves_v2_and_releases_v1(self) -> None:
+        import config
+        from unittest.mock import patch
+        from thailand.job_queue import jobs_root
+
+        self._catalog(2)
+        with patch.object(config, "THAILAND_JOBS_DIR", str(self.jobs)):
+            enqueue_market_event(self._event("manual", ["chat"], "default-v2"), root=jobs_root(), now=NOW)
+            outcome = process_one(
+                catalog_root=self.catalog, health_path=self.health, fx=_fx(), transport=self.transport,
+                sender=self.sender, clock=ManualClock(NOW), deliver=True, state_path=self.root / "buy-state.json",
+            )
+            self.assertEqual(outcome["http_calls"], 0)
+            self.assertTrue((self.jobs / "archive" / "default-v2.json").is_file())
+            calls = {"n": 0}
+
+            def scan_fn(**_kwargs):
+                calls["n"] += 1
+                return {"status": "ok", "stores": [{"store": "jib"}], "messages_sent": 0}
+
+            for index in (1, 2):
+                job = build_job(
+                    trigger_type="manual_check", signals=[], russian_deals=[],
+                    dedupe_key=f"v1-{index}", instance_id=INSTANCE,
+                )
+                enqueue_job(job, root=jobs_root())
+                finished = process_one(scan_fn=scan_fn, deliver=False, state_path=self.root / "buy-state.json")
+                self.assertEqual(finished["status"], "ok")
+                self.assertFalse((jobs_root() / "active_scan.json").exists())
+            self.assertEqual(calls["n"], 2)
+
+    def test_second_send_uses_the_later_clock(self) -> None:
+        fresh = NOW.isoformat()
+
+        class _Clock:
+            def __init__(self) -> None:
+                self.current = NOW
+
+            def now(self) -> datetime:
+                return self.current
+
+        class _Sender:
+            def __init__(self, clock: _Clock) -> None:
+                self.clock = clock
+                self.sent: list[dict] = []
+
+            def send(self, event, result, *, current: bool, historical: bool, info_current: bool = False) -> None:
+                del result
+                self.sent.append({"event_id": event["event_id"], "current": current, "info_current": info_current})
+                self.clock.current = NOW + timedelta(hours=9)
+
+        (self.jobs / "results").mkdir(parents=True)
+        (self.jobs / "delivery").mkdir(parents=True)
+        pair = _pair("moving", th_availability=fresh, ru_price=fresh, checked=fresh)
+        (self.jobs / "results" / "moving.json").write_text(json.dumps({
+            "result_id": "moving", "scan_id": "moving", "fx": {**_fx(), "fetched_at": fresh},
+            "comparison": {"pairs": [pair]},
+            "views": {"general_top": ["moving"], "all": ["moving"], "personal_top3": []},
+        }), encoding="utf-8")
+        for event_id in ("send-1", "send-2"):
+            event = self._event("manual", ["chat"], event_id)
+            event["subscription_scan_id"] = "moving"
+            event["result_id"] = "moving"
+            (self.jobs / "delivery" / f"{event_id}.json").write_text(json.dumps(event), encoding="utf-8")
+        sender = _Sender(_Clock())
+        process_one(
+            jobs_dir=self.jobs, catalog_root=self.catalog, health_path=self.health,
+            sender=sender, clock=sender.clock, deliver=True, state_path=self.root / "buy-state.json",
+        )
+        self.assertEqual([row["current"] for row in sender.sent], [True, False])
+        self.assertEqual(sender.sent[1]["info_current"], False)
+
+    def test_missing_fx_is_not_a_current_purchase(self) -> None:
+        fresh = NOW.isoformat()
+        (self.jobs / "results").mkdir(parents=True)
+        (self.jobs / "delivery").mkdir(parents=True)
+        pair = _pair("no-fx", th_availability=fresh, ru_price=fresh, checked=fresh)
+        (self.jobs / "results" / "no-fx.json").write_text(json.dumps({
+            "result_id": "no-fx", "scan_id": "no-fx", "fx": {},
+            "comparison": {"pairs": [pair]},
+            "views": {"general_top": ["no-fx"], "all": ["no-fx"], "personal_top3": []},
+        }), encoding="utf-8")
+        event = self._event("manual", ["chat"], "no-fx-event")
+        event["subscription_scan_id"] = "no-fx"
+        event["result_id"] = "no-fx"
+        (self.jobs / "delivery" / "no-fx-event.json").write_text(json.dumps(event), encoding="utf-8")
+        process_one(
+            jobs_dir=self.jobs, catalog_root=self.catalog, health_path=self.health,
+            sender=self.sender, clock=ManualClock(NOW), deliver=True, state_path=self.root / "buy-state.json",
+        )
+        self.assertEqual(self.sender.sent[0]["current"], False)
+        self.assertEqual(self.sender.sent[0]["info_current"], True)
 
 
 if __name__ == "__main__":

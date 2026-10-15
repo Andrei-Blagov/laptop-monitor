@@ -17,6 +17,7 @@ from thailand.job_queue import (
     archive_job,
     claim_next_job,
     ensure_queue_dirs,
+    jobs_root,
     pending_count,
     recover_stale_processing,
     write_worker_state,
@@ -47,10 +48,12 @@ def process_one(
     health_path: Path | str | None = None,
     fx: dict[str, Any] | None = None,
     russian_snapshot: dict[str, Any] | None = None,
+    russian_snapshot_root: Path | str | None = None,
     transport: Any = None,
     sender: Any = None,
     clock: Any = None,
 ) -> dict[str, Any] | None:
+    jobs_dir = jobs_root(jobs_dir)
     ensure_queue_dirs(jobs_dir)
     recover_stale_processing(root=jobs_dir)
     from thailand.market_events import run_market_queue
@@ -61,6 +64,7 @@ def process_one(
         health_path=health_path,
         fx=fx,
         russian_snapshot=russian_snapshot,
+        russian_snapshot_root=russian_snapshot_root,
         transport=transport,
         sender=sender,
         clock=clock,
@@ -228,11 +232,13 @@ def drain(
     health_path: Path | str | None = None,
     fx: dict[str, Any] | None = None,
     russian_snapshot: dict[str, Any] | None = None,
+    russian_snapshot_root: Path | str | None = None,
     transport: Any = None,
     sender: Any = None,
     clock: Any = None,
 ) -> int:
     """Process pending jobs sequentially until empty. Returns processed count."""
+    jobs_dir = jobs_root(jobs_dir)
     ensure_queue_dirs(jobs_dir)
     recover_stale_processing(root=jobs_dir)
     n = 0
@@ -250,6 +256,7 @@ def drain(
             health_path=health_path,
             fx=fx,
             russian_snapshot=russian_snapshot,
+            russian_snapshot_root=russian_snapshot_root,
             transport=transport,
             sender=sender,
             clock=clock,

@@ -257,7 +257,14 @@ def _save_scan(root: Path, scan: dict[str, Any] | None, *, now: datetime | None 
     return True
 
 
-def recover_market_scan(*, root: Path | str, now: datetime, stale_seconds: float = 0) -> list[str]:
+def recover_market_scan(
+    *,
+    root: Path | str,
+    now: datetime,
+    stale_seconds: float = 0,
+    catalog_root: Path | str | None = None,
+    russian_snapshot_root: Path | str | None = None,
+) -> list[str]:
     """Return a crashed claim to pending when it has no stored result."""
     base = jobs_root(root)
     _dirs(base)
@@ -270,6 +277,7 @@ def recover_market_scan(*, root: Path | str, now: datetime, stale_seconds: float
                 if event.get("result_id") or stored:
                     if stored:
                         _bind_event(event, stored, str(event.get("subscription_scan_id") or stored.get("scan_id") or ""))
+                        _protect_linked(stored, catalog_root, russian_snapshot_root)
                     _write_event(base, "delivery", event)
                     _remove_event(base, event["event_id"], keep="delivery")
                     continue
@@ -291,6 +299,7 @@ def recover_market_scan(*, root: Path | str, now: datetime, stale_seconds: float
             if result.is_file() or event.get("result_id"):
                 if isinstance(stored, dict):
                     _bind_event(event, stored, str(scan["scan_id"]))
+                    _protect_linked(stored, catalog_root, russian_snapshot_root)
                 _write_event(base, "delivery", event)
                 _remove_event(base, event_id, keep="delivery")
             else:
@@ -364,51 +373,19 @@ def _protect(catalog_root: Path, snapshot_ids: list[str]) -> None:
     _atomic_write(path, {"snapshot_ids": found})
 
 
-def _offer_row(offer: Mapping[str, Any]) -> dict[str, Any]:
-    return {
-        "model": offer.get("product_name") or offer.get("name"),
-        "source": offer.get("source"),
-        "external_id": offer.get("external_id"),
-        "price_thb": offer.get("price_thb") if offer.get("price_thb") is not None else offer.get("price"),
-        "price_checked_at": offer.get("price_checked_at"),
-        "availability_checked_at": offer.get("availability_checked_at"),
-        "availability_state": offer.get("availability_state"),
-    }
-
-
-def _message_views(outcome: Mapping[str, Any]) -> dict[str, list[dict[str, Any]]]:
-    """Rows a message can render without another store call."""
+def _view_refs(outcome: Mapping[str, Any]) -> dict[str, list[str]]:
+    """Point each view at rows already stored on the D result."""
     comparison = outcome.get("comparison") or {}
+    if comparison.get("pairs"):
+        from cross_market_comparison import comparison_view
+
+        return {name: [str(pair["pair_id"]) for pair in comparison_view(comparison, name)] for name in ("all", "general_top", "personal_top3")}
     rankings = outcome.get("rankings") or {}
-    views: dict[str, list[dict[str, Any]]] = {}
-    pairs = list(comparison.get("pairs") or [])
-    for name in ("all", "general_top", "personal_top3"):
-        if name == "all":
-            chosen = pairs
-        elif name == "general_top":
-            chosen = [pair for pair in pairs if (pair.get("ru_membership") or {}).get("in_general_top")]
-        else:
-            chosen = [pair for pair in pairs if (pair.get("ru_membership") or {}).get("in_personal_top3")]
-        rows = []
-        for pair in chosen:
-            th = pair.get("th_observation") or {}
-            ru = pair.get("ru_observation") or {}
-            rows.append({
-                **_offer_row(th),
-                "ru_price_rub": ru.get("price_rub"),
-                "ru_price_checked_at": ru.get("price_checked_at"),
-                "ru_availability_checked_at": ru.get("availability_checked_at"),
-                "saving_rub": pair.get("saving_rub"),
-                "differences": list(pair.get("conflicting_fields") or pair.get("commercial_differences") or []),
-                "comparison_status": pair.get("comparison_status"),
-            })
-        views[name] = rows
-    if not views["general_top"]:
-        for model in rankings.get("thai_top_value") or []:
-            for offer in model.get("offers") or [model]:
-                if isinstance(offer, dict):
-                    views["general_top"].append(_offer_row(offer))
-    return views
+    return {
+        "all": [str(row["model_id"]) for row in rankings.get("eligible_models") or [] if row.get("model_id")],
+        "general_top": [str(row["model_id"]) for row in rankings.get("thai_top_value") or [] if row.get("model_id")],
+        "personal_top3": [],
+    }
 
 
 def _fx_usable(fx: Mapping[str, Any], now: datetime, policy: ComparisonPolicy) -> bool:
@@ -432,37 +409,62 @@ def _fx_usable(fx: Mapping[str, Any], now: datetime, policy: ComparisonPolicy) -
     return observation.usable(now, policy)
 
 
-def _view_is_current(result: Mapping[str, Any], view: str, now: datetime) -> bool:
-    """Current only when every shown offer, its RU side, and FX pass package D at delivery."""
-    rows = (result.get("views") or {}).get(view) or []
-    if not rows:
-        return False
+def _observation_fresh(offer: Mapping[str, Any], now: datetime, hours: int) -> bool:
+    return age_valid(moment(offer.get("price_checked_at")), now, hours) and age_valid(
+        moment(offer.get("availability_checked_at")), now, hours
+    )
+
+
+def _shown_pairs(result: Mapping[str, Any], view: str) -> list[Mapping[str, Any]]:
+    wanted = {str(item) for item in (result.get("views") or {}).get(view) or []}
+    return [pair for pair in ((result.get("comparison") or {}).get("pairs") or []) if str(pair.get("pair_id")) in wanted]
+
+
+def _shown_models(result: Mapping[str, Any], view: str) -> list[Mapping[str, Any]]:
+    wanted = {str(item) for item in (result.get("views") or {}).get(view) or []}
+    rankings = result.get("rankings") or {}
+    found = []
+    seen: set[str] = set()
+    for row in list(rankings.get("eligible_models") or []) + list(rankings.get("thai_top_value") or []):
+        model_id = str(row.get("model_id") or "")
+        if model_id in wanted and model_id not in seen:
+            seen.add(model_id)
+            found.append(row)
+    return found
+
+
+def _delivery_flags(result: Mapping[str, Any], view: str, now: datetime) -> tuple[bool, bool]:
+    """Informational freshness is separate from permission to show a current RUB saving."""
     policy = ComparisonPolicy()
-    fx = result.get("fx") or {}
-    if fx and not _fx_usable(fx, now, policy):
-        return False
-    for row in rows:
-        if not age_valid(moment(row.get("price_checked_at")), now, policy.quote_hours):
-            return False
-        if not age_valid(moment(row.get("availability_checked_at")), now, policy.quote_hours):
-            return False
-        if row.get("ru_price_checked_at") is not None and not age_valid(
-            moment(row.get("ru_price_checked_at")), now, policy.ru_quote_hours
-        ):
-            return False
-        if row.get("ru_availability_checked_at") is not None and not age_valid(
-            moment(row.get("ru_availability_checked_at")), now, policy.ru_quote_hours
-        ):
-            return False
-    return True
+    pairs = _shown_pairs(result, view)
+    if pairs:
+        info = all(
+            _observation_fresh(pair.get("th_observation") or {}, now, policy.quote_hours)
+            and _observation_fresh(pair.get("ru_observation") or {}, now, policy.ru_quote_hours)
+            for pair in pairs
+        )
+        fx = result.get("fx") or {}
+        purchase = bool(fx) and _fx_usable(fx, now, policy) and all(
+            pair.get("comparison_status") == "confirmed"
+            and _observation_fresh(pair.get("th_observation") or {}, now, policy.quote_hours)
+            and _observation_fresh(pair.get("ru_observation") or {}, now, policy.ru_quote_hours)
+            for pair in pairs
+        )
+        return purchase, info
+    models = _shown_models(result, view)
+    info = bool(models) and all(
+        all(_observation_fresh(offer, now, policy.quote_hours) for offer in (row.get("offers") or []) if isinstance(offer, dict))
+        for row in models
+    )
+    return False, info
 
 
 def _deliver_one(sender, event: dict[str, Any], result: Mapping[str, Any], now: datetime) -> str:
-    current = _view_is_current(result, str(event.get("requested_view") or "general_top"), now)
+    purchase, info = _delivery_flags(result, str(event.get("requested_view") or "general_top"), now)
     if sender is None:
         return "skipped"
-    sender.send(event, result, current=current, historical=not current)
-    return "sent" if current else "historical"
+    sender.send(event, result, current=purchase, historical=not purchase, info_current=info)
+    return "sent" if purchase else "historical"
 
 
 def _load_result(base: Path, scan_id: str) -> dict[str, Any] | None:
@@ -507,28 +509,15 @@ def _run_plan(events, *, catalog_root, health_path, fx, russian_snapshot, transp
     return decision, outcome, passes
 
 
-def _protect_refs(base: Path, result: Mapping[str, Any]) -> None:
-    path = base / "protected_refs.json"
-    current = _read_json(path) or {}
-    refs = {
-        "th_snapshot_ids": list(current.get("th_snapshot_ids") or []),
-        "ru_snapshot_ids": list(current.get("ru_snapshot_ids") or []),
-        "fx_ids": list(current.get("fx_ids") or []),
-        "result_ids": list(current.get("result_ids") or []),
-    }
-    additions = {
-        "th_snapshot_ids": result.get("snapshot_id"),
-        "ru_snapshot_ids": result.get("ru_snapshot_id"),
-        "fx_ids": (result.get("fx") or {}).get("fx_id"),
-        "result_ids": result.get("result_id"),
-    }
-    for key, value in additions.items():
-        if value and value not in refs[key]:
-            refs[key].append(value)
-    _atomic_write(path, refs)
+def _protect_linked(result: Mapping[str, Any], catalog_root, russian_snapshot_root) -> None:
+    """Write the ids that Thai and Russian retention actually read."""
+    if catalog_root is not None and result.get("snapshot_id"):
+        _protect(Path(catalog_root), [str(result["snapshot_id"])])
+    if russian_snapshot_root is not None and result.get("ru_snapshot_id"):
+        _protect(Path(russian_snapshot_root), [str(result["ru_snapshot_id"])])
 
 
-def _finish_scan(base, catalog_root, scan, events, outcome, now, fx=None) -> dict[str, Any]:
+def _finish_scan(base, catalog_root, scan, events, outcome, now, fx=None, russian_snapshot_root=None) -> dict[str, Any]:
     comparison = outcome.get("comparison") or {}
     supplied = fx if isinstance(fx, dict) else {}
     result = {
@@ -552,12 +541,12 @@ def _finish_scan(base, catalog_root, scan, events, outcome, now, fx=None) -> dic
         "status": outcome.get("status"),
         "generated_at": now.isoformat(),
         "passes": outcome.get("passes"),
-        "views": _message_views(outcome),
+        "rankings": outcome.get("rankings"),
+        "comparison": comparison or None,
+        "views": _view_refs(outcome),
     }
     _atomic_write(base / "results" / f"{scan['scan_id']}.json", result)
-    _protect_refs(base, result)
-    if catalog_root is not None and result.get("snapshot_id"):
-        _protect(Path(catalog_root), [str(result["snapshot_id"])])
+    _protect_linked(result, catalog_root, russian_snapshot_root)
     with _lock(base):
         current = _active_scan(base) or scan
         ids = list(dict.fromkeys([*scan.get("event_ids", []), *current.get("event_ids", [])]))
@@ -579,6 +568,7 @@ def run_market_queue(
     health_path: Path | str | None = None,
     fx: Mapping[str, Any] | None = None,
     russian_snapshot: Mapping[str, Any] | None = None,
+    russian_snapshot_root: Path | str | None = None,
     transport: Any = None,
     sender: Any = None,
     clock: Any = None,
@@ -586,8 +576,6 @@ def run_market_queue(
     now: datetime | None = None,
 ) -> dict[str, Any] | None:
     """One worker wake: promote due events, run at most one pass, deliver stored results."""
-    if jobs_dir is None:
-        return None
     base = jobs_root(jobs_dir)
     if not base.exists():
         return None
@@ -597,10 +585,10 @@ def run_market_queue(
     recover_market_scan(
         root=base, now=clock_now,
         stale_seconds=float(config.THAILAND_JOB_STALE_PROCESSING_SECONDS),
+        catalog_root=catalog_root, russian_snapshot_root=russian_snapshot_root,
     )
     promote_due_events(root=base, now=clock_now)
-    delivery_now = clock.now() if clock is not None else (datetime.now(timezone.utc) if now is None else clock_now)
-    delivered = _retry_delivery(base, sender, delivery_now, deliver=deliver)
+    delivered = _retry_delivery(base, sender, clock=clock, fallback=now, deliver=deliver)
     if delivered is not None:
         return delivered
     with _lock(base):
@@ -631,10 +619,12 @@ def run_market_queue(
             _defer_events(base, attached or events, when, decision.get("action") or "deferred")
             _save_scan(base, None)
         return {"status": "deferred", "event_ids": [event["event_id"] for event in events], "http_calls": int(outcome.get("http_calls") or 0)}
-    result = _finish_scan(base, Path(catalog_root), scan, events, outcome, clock_now, fx=fx)
+    result = _finish_scan(
+        base, Path(catalog_root), scan, events, outcome, clock_now, fx=fx,
+        russian_snapshot_root=russian_snapshot_root,
+    )
     if deliver and sender is not None:
-        delivery_now = clock.now() if clock is not None else (datetime.now(timezone.utc) if now is None else clock_now)
-        delivered = _retry_delivery(base, sender, delivery_now, deliver=True)
+        delivered = _retry_delivery(base, sender, clock=clock, fallback=now, deliver=True)
         if delivered is not None and delivered.get("status") == "delivery_failed":
             delivered["http_calls"] = result["http_calls"]
             delivered["result_id"] = result["result_id"]
@@ -657,7 +647,13 @@ def _claim_delivery(base: Path, event_id: str) -> dict[str, Any] | None:
     return event
 
 
-def _retry_delivery(base: Path, sender, now: datetime, *, deliver: bool = True) -> dict[str, Any] | None:
+def _send_moment(clock, fallback: datetime | None) -> datetime:
+    if clock is not None:
+        return clock.now()
+    return fallback if fallback is not None else datetime.now(timezone.utc)
+
+
+def _retry_delivery(base: Path, sender, *, clock=None, fallback: datetime | None = None, deliver: bool = True) -> dict[str, Any] | None:
     """Claim one waiting event. A failed send waits until not_before; it is not retried in this drain."""
     if not deliver or sender is None:
         return None
@@ -684,6 +680,7 @@ def _retry_delivery(base: Path, sender, now: datetime, *, deliver: bool = True) 
             claimed = _claim_delivery(base, str(event["event_id"]))
         if claimed is None:
             continue
+        now = _send_moment(clock, fallback)
         try:
             state = _deliver_one(sender, claimed, result, now)
         except Exception as exc:  # noqa: BLE001
