@@ -5,6 +5,7 @@ from __future__ import annotations
 import argparse
 import logging
 import time
+from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
 
@@ -16,6 +17,7 @@ from thailand.job_queue import (
     archive_job,
     claim_next_job,
     ensure_queue_dirs,
+    jobs_root,
     pending_count,
     recover_stale_processing,
     write_worker_state,
@@ -42,11 +44,58 @@ def process_one(
     deliver: bool = True,
     scan_fn=None,
     worker_state_path: Path | str | None = None,
+    catalog_root: Path | str | None = None,
+    health_path: Path | str | None = None,
+    fx: dict[str, Any] | None = None,
+    russian_snapshot: dict[str, Any] | None = None,
+    russian_snapshot_root: Path | str | None = None,
+    transport: Any = None,
+    sender: Any = None,
+    clock: Any = None,
 ) -> dict[str, Any] | None:
+    jobs_dir = jobs_root(jobs_dir)
     ensure_queue_dirs(jobs_dir)
     recover_stale_processing(root=jobs_dir)
+    from thailand.market_events import run_market_queue
+
+    market = run_market_queue(
+        jobs_dir=jobs_dir,
+        catalog_root=catalog_root,
+        health_path=health_path,
+        fx=fx,
+        russian_snapshot=russian_snapshot,
+        russian_snapshot_root=russian_snapshot_root,
+        transport=transport,
+        sender=sender,
+        clock=clock,
+        deliver=deliver,
+    )
+    if market is not None:
+        return market
+    from thailand.market_events import (
+        begin_heavy_scan,
+        end_heavy_scan,
+        heavy_scan_busy,
+        release_claimed_job,
+        remember_buy_delivery,
+        v1_buy_already_sent,
+    )
+
+    wake = clock.now() if clock is not None else datetime.now(timezone.utc)
+    if heavy_scan_busy(jobs_dir, wake):
+        return None
     job = claim_next_job(root=jobs_dir)
     if job is None:
+        return None
+
+    if v1_buy_already_sent(job, jobs_dir):
+        archived = dict(job)
+        archived["status"] = "archived"
+        archived["buy_delivery"] = "already_sent"
+        archive_job(archived, root=jobs_dir, failed=False)
+        return archived
+    if not begin_heavy_scan(jobs_dir, wake, kind="v1"):
+        release_claimed_job(jobs_dir, job)
         return None
 
     def _write_state(data: dict[str, Any]) -> None:
@@ -107,6 +156,8 @@ def process_one(
         )
         fatal = status == "failed" and not result.get("stores")
         path = archive_job(archived, root=jobs_dir, failed=fatal)
+        if not fatal and job.get("trigger_type") == "buy_signal" and int(result.get("messages_sent") or 0) > 0:
+            remember_buy_delivery(job, jobs_dir)
         try:
             _write_state(
                 {
@@ -130,6 +181,7 @@ def process_one(
             result.get("snapshot_path"),
             result.get("messages_sent"),
         )
+        end_heavy_scan(jobs_dir)
         return archived
     except Exception as exc:  # noqa: BLE001
         finished_at = utc_now_iso()
@@ -163,6 +215,7 @@ def process_one(
         logger.warning(
             "thailand worker fatal job_id=%s error=%s", job_id, type(exc).__name__
         )
+        end_heavy_scan(jobs_dir)
         return failed
 
 
@@ -175,8 +228,17 @@ def drain(
     scan_fn=None,
     max_jobs: int | None = None,
     worker_state_path: Path | str | None = None,
+    catalog_root: Path | str | None = None,
+    health_path: Path | str | None = None,
+    fx: dict[str, Any] | None = None,
+    russian_snapshot: dict[str, Any] | None = None,
+    russian_snapshot_root: Path | str | None = None,
+    transport: Any = None,
+    sender: Any = None,
+    clock: Any = None,
 ) -> int:
     """Process pending jobs sequentially until empty. Returns processed count."""
+    jobs_dir = jobs_root(jobs_dir)
     ensure_queue_dirs(jobs_dir)
     recover_stale_processing(root=jobs_dir)
     n = 0
@@ -190,6 +252,14 @@ def drain(
             deliver=deliver,
             scan_fn=scan_fn,
             worker_state_path=worker_state_path,
+            catalog_root=catalog_root,
+            health_path=health_path,
+            fx=fx,
+            russian_snapshot=russian_snapshot,
+            russian_snapshot_root=russian_snapshot_root,
+            transport=transport,
+            sender=sender,
+            clock=clock,
         )
         if result is None:
             break
