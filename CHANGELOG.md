@@ -2,6 +2,16 @@
 
 ## Unreleased
 
+## 0.11.0 — 2026-10-17
+
+Stage 2.2 shared Russian and Thailand market runtime, integrated from the accepted A–F2 chain.
+
+- One Russian snapshot and Thai catalogue feed evidence-based regional comparison and an independent Thailand TOP, including offers without a confirmed Russian pair. Personal TOP-3 stays a reference, not the general search boundary
+- Daily, manual and BUY events share one queue, catalogue reuse/selected refresh, cross-container scan and delivery leases, crash recovery and durable delivery-part receipts
+- Telegram reads stored results and keeps price, exchange-rate age, stock, evidence gaps and source coverage explicit. Prepared daily/retry units use the same queue; the market flag remains off by default
+- The server acceptance used the original candidate image and an independently pinned host correction for Docker config/manifest identity. A release image is built separately from this versioned source
+- A crash after Telegram HTTP success but before the durable ACK can still repeat that final part; absolute exactly-once delivery is not claimed
+
 ## 0.10.2 — 2026-10-14
 
 Thailand discovery searches by GPU and manufacturer line, not only by a known SKU.
