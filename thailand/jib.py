@@ -16,6 +16,7 @@ from stores.common import extract_specs_from_name
 from thailand.models import StoreScanResult, ThailandOffer
 from thailand.specs_parse import (
     exclude_non_target_gpu,
+    is_non_laptop_listing,
     extract_brand,
     extract_mpn_candidates,
     gpu_from_explicit_text,
@@ -118,7 +119,7 @@ def parse_suggestion_discovery(
         if not title or not eid or eid in seen:
             continue
         # Desktop VGA cards etc.
-        if exclude_non_target_gpu(title) and not gpu_from_explicit_text(title):
+        if is_non_laptop_listing(title) or (exclude_non_target_gpu(title) and not gpu_from_explicit_text(title)):
             continue
         specs = specs_from_text(title, catalog_gpu=search_context_gpu, apply_catalog_gpu=False)
         title_evidence = {

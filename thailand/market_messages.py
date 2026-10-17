@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 from decimal import Decimal
+from zoneinfo import ZoneInfo
 from typing import Any, Mapping
 
 MESSAGE_LIMIT = 3500
@@ -264,16 +265,16 @@ def _pair_price_lines(pair: Mapping[str, Any], result: Mapping[str, Any], *, pur
     if specs:
         lines.append(specs)
     if th.get("price_checked_at"):
-        lines.append(f"Цена TH проверена: {th['price_checked_at']}")
+        lines.append(f"Цена TH проверена: {_display_time(th['price_checked_at'])}")
     if th.get("availability_checked_at"):
-        lines.append(f"Наличие TH проверено: {th['availability_checked_at']}")
+        lines.append(f"Наличие TH проверено: {_display_time(th['availability_checked_at'])}")
     if ru.get("price_checked_at"):
-        lines.append(f"Цена RU проверена: {ru['price_checked_at']}")
+        lines.append(f"Цена RU проверена: {_display_time(ru['price_checked_at'])}")
     if ru.get("availability_checked_at"):
-        lines.append(f"Наличие RU проверено: {ru['availability_checked_at']}")
+        lines.append(f"Наличие RU проверено: {_display_time(ru['availability_checked_at'])}")
     costs = pair.get("unknown_costs") or []
     if costs:
-        lines.append("Неизвестные расходы не равны нулю: " + ", ".join(str(item) for item in costs))
+        lines.append("Неизвестные расходы не равны нулю: " + ", ".join(dict.fromkeys({"travel":"поездка", "customs":"таможенные платежи", "fx_spread":"обменный курс банка", "payment_fees":"комиссии оплаты"}.get(str(item), str(item) if any("А" <= ch <= "я" or ch in "Ёё" for ch in str(item)) else "дополнительные расходы") for item in costs)))
     expenses = pair.get("confirmed_expenses") or []
     shown_costs = ", ".join(
         f"{item.get('label')} {item.get('amount_rub')} ₽" for item in expenses if isinstance(item, dict)
@@ -282,7 +283,8 @@ def _pair_price_lines(pair: Mapping[str, Any], result: Mapping[str, Any], *, pur
         lines.append("Подтверждённые расходы: " + shown_costs)
     diffs = list(pair.get("conflicting_fields") or []) + list(pair.get("commercial_differences") or [])
     if diffs:
-        lines.append("Отличия: " + ", ".join(str(item) for item in diffs))
+        labels = {"cpu":"процессор", "gpu":"видеокарта", "ram_gb":"оперативная память", "ssd_gb":"накопитель", "screen_inch":"диагональ", "screen_resolution":"разрешение экрана", "gpu_vram_gb":"видеопамять", "gpu_tgp_w":"мощность видеокарты", "screen_refresh_hz":"частота экрана", "panel_type":"тип матрицы", "os":"операционная система", "keyboard":"клавиатура", "warranty":"гарантия", "manufacturer_generation":"поколение", "manufacturer_family":"семейство"}
+        lines.append("Отличия: " + ", ".join(dict.fromkeys(labels.get(str(item), str(item) if any("А" <= ch <= "я" or ch in "Ёё" for ch in str(item)) else "дополнительные параметры") for item in diffs)))
     lines.append(_fx_line(result))
     return lines
 
@@ -305,7 +307,11 @@ def _unmatched_cards(comparison: Mapping[str, Any], result: Mapping[str, Any]) -
         ]
         lines.extend(_offer_lines(offer, row, result))
         reason = row.get("reason") or "not_observed"
-        lines.append(f"Почему нет пары: {reason}")
+        reason_text = {"not_observed": "в проверенном российском каталоге нет подтверждённого сопоставления",
+                       "limited_coverage": "проверено недостаточно российских источников",
+                       "conflict": "подтверждённые характеристики различаются",
+                       "incomplete": "не хватает подтверждённых характеристик"}.get(str(reason), "данных для сравнения недостаточно")
+        lines.append(f"Почему нет пары: {reason_text}")
         if reason in {"limited_coverage", "not_observed"}:
             lines.append("Покрытие проверенных источников неполное. Это не доказательство отсутствия модели.")
         card_id = f"unmatched:{row.get('variant_id') or row.get('model_id') or offer.get('offer_id') or index}"
@@ -412,10 +418,10 @@ def _offer_lines(offer: Mapping[str, Any], row: Mapping[str, Any], result: Mappi
         lines.append(specs)
     checked = offer.get("price_checked_at") or row.get("price_checked_at")
     if checked:
-        lines.append(f"Цена проверена: {checked}")
+        lines.append(f"Цена проверена: {_display_time(checked)}")
     available = offer.get("availability_checked_at")
     if available:
-        lines.append(f"Наличие проверено: {available}")
+        lines.append(f"Наличие проверено: {_display_time(available)}")
     return lines
 
 
@@ -428,7 +434,7 @@ def _specs(offer: Mapping[str, Any]) -> str:
     for key, label in labels:
         value = _spec_value(offer, key)
         if value not in (None, ""):
-            found.append(f"{label} {value}")
+            found.append(f"{label} {value}" + (" ГБ" if key in {"ram_gb", "ssd_gb"} else ("″" if key == "screen_inch" else "")))
     return ", ".join(found)
 
 
@@ -491,11 +497,17 @@ def _freshness_line(info_current: bool, *, purchase: bool) -> str:
     return "Информационные данные можно показывать. Отсутствие пары само по себе не делает их устаревшими."
 
 
+def _display_time(value) -> str:
+    from market_contracts import moment
+    parsed = moment(value)
+    return parsed.astimezone(ZoneInfo("Europe/Moscow")).strftime("%d.%m.%Y %H:%M МСК") if parsed else "время не подтверждено"
+
+
 def _fx_line(result: Mapping[str, Any]) -> str:
     fx = result.get("fx") or {}
     if not fx or not fx.get("rub_per_thb"):
         return "Курс для текущего RUB-сравнения отсутствует."
-    return f"Курс: {fx.get('rub_per_thb')} ₽ за 1 ฿, {fx.get('source') or 'CBR'}, получен {fx.get('fetched_at') or 'н/д'}."
+    return f"Курс: {fx.get('rub_per_thb')} ₽ за 1 ฿, {fx.get('source') or 'CBR'}, получен {_display_time(fx.get('fetched_at'))}."
 
 
 def _coverage_text(comparison: Mapping[str, Any], result: Mapping[str, Any]) -> str:
@@ -517,11 +529,20 @@ def _coverage_text(comparison: Mapping[str, Any], result: Mapping[str, Any]) -> 
         for row in rows or []:
             if isinstance(row, dict):
                 _coverage_note(row, add)
-    limits = [str(item) for item in (comparison.get("limitations") or [])]
+    limits = ["проверены не все источники" for item in (comparison.get("limitations") or [])]
+    summary = comparison.get("ru_input_summary") or {}
+    ru_empty = summary.get("offer_count") == 0 and (comparison.get("data_freshness") or {}).get("ru_current") is True
+    prefix = ""
+    if ru_empty:
+        counts = summary.get("exclusion_reasons") or {}
+        labels = {"stale_observation": "не прошли проверку свежести", "store_stale": "источник устарел", "price_over_cap": "дороже лимита", "not_available": "нет в наличии", "not_eligible": "не прошли требования к характеристикам"}
+        causes = "; ".join(f"{labels.get(key, 'данные не подтверждены')}: {count}" for key, count in sorted(counts.items()))
+        prefix = "Российское сравнение сейчас недоступно: в свежий каталог не прошло ни одного предложения."
+        if causes: prefix += " Причины: " + causes + "."
     if not notes and not limits and comparison.get("market_coverage_complete") is not False:
-        return ""
-    detail = ", ".join([*notes, *limits]) or "проверены не все источники"
-    return f"Покрытие неполное ({detail}). Это не минимум всего рынка и не доказательство отсутствия модели."
+        return prefix
+    detail = ", ".join(dict.fromkeys([*notes, *limits])) or "проверены не все источники"
+    return (prefix + "\n" if prefix else "") + f"Покрытие неполное ({detail}). Это не минимум всего рынка и не доказательство отсутствия модели."
 
 
 def _coverage_note(row: Mapping[str, Any], add) -> None:
@@ -530,19 +551,20 @@ def _coverage_note(row: Mapping[str, Any], add) -> None:
     limitations = [str(item) for item in (row.get("limitations") or [])]
     if state in {"", "ok"} and "not_attempted" not in limitations and "rate_limited" not in limitations:
         return
-    if state == "deferred" and row.get("policy_disabled"):
+    if row.get("policy_disabled") or row.get("enabled") is False:
+        add(source, "отключён политикой")
         return
     if state == "429" or "rate_limited" in limitations or state == "rate_limited":
-        add(source, "429")
+        add(source, "магазин ограничил запросы; часть поиска не завершена")
         return
     if state == "partial" or any(item.startswith("partial") for item in limitations):
-        add(source, "partial")
+        add(source, "проверено частично")
         return
     if "not_attempted" in limitations or state in {"failed", "skipped"}:
-        add(source, "не проверен")
+        add(source, "попытка завершилась со сбоем" if state == "failed" else "не проверен")
         return
     if state not in {"", "ok"}:
-        add(source, state)
+        add(source, {"deferred": "проверка отложена", "stale": "наблюдение устарело", "disabled": "отключён"}.get(state, "данные не подтверждены"))
 
 
 def _personal(row: Mapping[str, Any]) -> bool:

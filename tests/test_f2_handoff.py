@@ -98,7 +98,7 @@ class HandoffRegressions(unittest.TestCase):
         result = {"status": "partial", "coverage": [{"source": "jib", "state": "429"}]}
         event = {"requested_view": "general_top", "recipients": ["42"]}
         parts = list(iter_market_sends(result, event, lambda: NOW))
-        self.assertIn("jib: 429", "\n".join(p["text"] for p in parts))
+        self.assertIn("jib: магазин ограничил запросы", "\n".join(p["text"] for p in parts))
         self.assertIn("не доказательство", parts[0]["text"])
 
     def test_failure_message_is_split_without_losing_reasons(self):

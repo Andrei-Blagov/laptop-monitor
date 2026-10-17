@@ -15,3 +15,5 @@ class Product:
     checked_at: datetime
     # Optional extras: member_price, availability_status, promo_price, etc.
     metadata: dict[str, Any] = field(default_factory=dict)
+    # Separate successful quote observation from the availability observation.
+    price_checked_at: datetime | None = None

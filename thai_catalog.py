@@ -243,7 +243,11 @@ def as_comparison_snapshot(document: Mapping[str, Any]):
     """Adapter into the package D core. The document is not rewritten."""
     from market_contracts import thai_snapshot
 
-    return thai_snapshot(document)
+    from thailand.specs_parse import is_non_laptop_listing
+    cleaned = dict(document)
+    cleaned["offers"] = [row for row in document.get("offers", ())
+                         if not is_non_laptop_listing(str(row.get("name") or row.get("product_name") or ""))]
+    return thai_snapshot(cleaned)
 
 
 def rankings_from_catalog(document: Mapping[str, Any], fx: Mapping[str, Any] | None, *, now: datetime) -> dict[str, Any]:
@@ -266,7 +270,15 @@ def comparison_from_catalog(
 
     ru = russian_snapshot(russian) if russian is not None else None
     rate = fx_observation(fx) if fx is not None else None
-    return compare_markets(as_comparison_snapshot(document), ru, rate, now=_utc(now))
+    comparison = compare_markets(as_comparison_snapshot(document), ru, rate, now=_utc(now))
+    from collections import Counter
+    comparison["ru_input_summary"] = {
+        "offer_count": len(russian.get("offers") or []),
+        "model_count": len(russian.get("models") or []),
+        "exclusion_reasons": dict(Counter(str(row.get("reason") or "unknown")
+                                          for row in russian.get("exclusions") or [])),
+    } if russian is not None else None
+    return comparison
 
 
 def _offers(store_results: Sequence[StoreScanResult], *, now: datetime) -> list[dict[str, Any]]:
@@ -274,6 +286,9 @@ def _offers(store_results: Sequence[StoreScanResult], *, now: datetime) -> list[
     seen: set[str] = set()
     for result in store_results:
         for offer in list(result.offers) + list(result.unverified_candidates or []):
+            from thailand.specs_parse import is_non_laptop_listing
+            if is_non_laptop_listing(offer.name):
+                continue
             record = _offer_record(offer, result, now=now, candidate=offer in (result.unverified_candidates or []))
             if record["offer_id"] in seen:
                 continue

@@ -49,6 +49,30 @@ _BRANDS = (
 )
 
 
+def is_non_laptop_listing(text: str) -> bool:
+    """Explicit component identity wins over a target GPU mentioned in its name."""
+    return bool(re.search(r"\bVGA\b|การ์ดแสดงผล|การ์ดจอ|GRAPHICS\s*CARD|DESKTOP\s*(?:GPU|PC)|\bMAINBOARD\b", text, re.I)) or is_accessory_listing(text)
+
+
+def own_ssd_gb(text: str) -> int | None:
+    """Read the storage field, never a RAM/upgrade number adjacent to 'SSD'."""
+    patterns = (
+        r"(?:SSD|STORAGE|HARD\s*(?:DRIVE|DISK))\s*[:=\-]?\s*(\d+(?:[.,]\d+)?)\s*(TB|GB)",
+        r"(?<![\d.])(\d+(?:[.,]\d+)?)\s*(TB|GB)\s*(?:SSD|NVME)",
+    )
+    for index, pattern in enumerate(patterns):
+        for match in re.finditer(pattern, text, re.I):
+            before = text[max(0, match.start()-35):match.start()]
+            if re.search(r"(?:UP\s*TO|MAX(?:IMUM)?)\s*[:=\-]?\s*$", before, re.I) or (index == 1 and re.search(r"(?:RAM|MEMORY|DDR\d*)\s*[:=\-]?\s*$", before, re.I)):
+                continue
+            amount = float(match.group(1).replace(',', '.'))
+            gb = int(amount * 1024) if match.group(2).upper() == 'TB' else int(amount)
+            # A suffix-only 32/64/96 GB is ambiguous after flattened RAM prose.
+            if gb > 0 and (index == 0 or gb >= 128):
+                return gb
+    return None
+
+
 def is_target_laptop_gpu(gpu: str | None, *extra: str | None) -> bool:
     """Only RTX 5070 Ti / RTX 5080 laptop GPUs."""
     key = canonical_gpu(gpu)
