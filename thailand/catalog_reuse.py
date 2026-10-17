@@ -12,7 +12,7 @@ from typing import Any, Mapping
 
 from market_contracts import age_valid, moment
 from thai_catalog import ThaiCatalogError, discovery_scope_hash, load_thai_catalog
-from thailand.source_health import skip_reason
+from thailand.source_health import load_health, skip_reason
 
 REUSE = "REUSE"
 REVALIDATE = "REVALIDATE"
@@ -51,6 +51,8 @@ def evaluate_catalog_reuse(
             DISCOVER,
             reasons=[f"catalog_unusable:{type(exc).__name__}"],
             discover_reasons=[str(exc)],
+            clock=clock,
+            health_path=health_path,
         )
     stored_scope = str(document.get("discovery_scope_hash") or "")
     if stored_scope != requested_scope:
@@ -99,6 +101,9 @@ def evaluate_catalog_reuse(
             warnings=warnings,
             rankings=rankings,
             comparison=comparison,
+            document=document,
+            clock=clock,
+            health_path=health_path,
         )
     action = REVALIDATE if open_items else DEFERRED
     rankings, comparison = _views(document, fx, russian_snapshot, clock)
@@ -114,6 +119,9 @@ def evaluate_catalog_reuse(
         deferred_offers=blocked,
         rankings=rankings,
         comparison=comparison,
+        document=document,
+        clock=clock,
+        health_path=health_path,
     )
 
 
@@ -149,6 +157,9 @@ def _stale_offers(document: Mapping[str, Any], now: datetime) -> list[dict[str, 
             "reason": "+".join(reasons),
             "price_checked_at": offer.get("price_checked_at"),
             "availability_checked_at": offer.get("availability_checked_at"),
+            "sku": offer.get("sku"),
+            "manufacturer_part_number": offer.get("manufacturer_part_number"),
+            "gpu": ((offer.get("specs") or {}).get("gpu") or {}).get("value"),
         })
     return found
 
@@ -173,17 +184,29 @@ def _defer_or(action: str, document, now: datetime, health_path) -> str:
     return action
 
 
+def _health_until(source: str, field: str, health_path) -> str | None:
+    entry = ((load_health(health_path).get("stores") or {}).get(source) or {})
+    parsed = moment(entry.get(field))
+    return parsed.isoformat() if parsed is not None else None
+
+
 def _source_block(source: str, row: Mapping[str, Any] | None, now: datetime, health_path) -> tuple[str | None, str | None]:
-    if health_path is not None:
-        reason = skip_reason(source, now=now, path=health_path)
-        if reason == "circuit":
-            return "circuit", None
-        if reason == "rate_limit":
-            return "retry_after", None
-    if not row or row.get("policy_disabled"):
-        return None, None
-    if row.get("state") == "deferred":
-        return "circuit", None
+    """Block a source before it can be placed on the allowed request list.
+
+    ``health_path=None`` reads the standard source-health file. An omitted path
+    is not permission to ignore a circuit breaker or Retry-After.
+    """
+    reason = skip_reason(source, now=now, path=health_path)
+    if reason == "circuit":
+        return "circuit", _health_until(source, "disabled_until", health_path)
+    if reason == "rate_limit":
+        return "retry_after", _health_until(source, "rate_limit_until", health_path)
+    if row is None:
+        return "source_unknown", None
+    if row.get("policy_disabled") or row.get("enabled") is False:
+        return "policy_disabled", None
+    # An old snapshot can still say deferred after the health window has expired.
+    # The live health file above is the authority; a stale deferred row is not.
     retry = row.get("retry_after_seconds")
     checked = moment(row.get("latest_attempt_at") or row.get("checked_at"))
     if isinstance(retry, int) and not isinstance(retry, bool) and retry > 0 and checked is not None:
@@ -191,6 +214,43 @@ def _source_block(source: str, row: Mapping[str, Any] | None, now: datetime, hea
         if now < nxt:
             return "retry_after", nxt.isoformat()
     return None, None
+
+
+def _enabled_adapters(now: datetime, health_path) -> list[str]:
+    from thailand.registry import get_thailand_adapters
+
+    allowed = []
+    for adapter in get_thailand_adapters():
+        if not adapter.enabled:
+            continue
+        row = {"source": adapter.slug, "enabled": True, "policy_disabled": False, "state": "ok"}
+        if _source_block(adapter.slug, row, now, health_path)[0]:
+            continue
+        allowed.append(adapter.slug)
+    return allowed
+
+
+def _allowed_sources(action: str, document, offers: list[dict], now: datetime | None, health_path) -> list[str]:
+    if action == REVALIDATE:
+        found: list[str] = []
+        for item in offers:
+            source = str(item.get("source") or "")
+            if source and source not in found:
+                found.append(source)
+        return found
+    if action != DISCOVER or now is None:
+        return []
+    if document is None:
+        return _enabled_adapters(now, health_path)
+    found = []
+    for row in document.get("source_coverage") or []:
+        source = str(row.get("source") or "")
+        if not source or source in found:
+            continue
+        if _source_block(source, row, now, health_path)[0]:
+            continue
+        found.append(source)
+    return found
 
 
 def _coverage_warnings(document: Mapping[str, Any]) -> list[str]:
@@ -220,16 +280,27 @@ def _result(
 ) -> dict[str, Any]:
     if action == DISCOVER and document is not None and clock is not None:
         action = _defer_or(DISCOVER, document, clock, health_path)
+    offers = list(revalidate_offers or [])
+    allowed = _allowed_sources(action, document, offers, clock, health_path) if http_planned else []
+    if action in {REVALIDATE, DISCOVER} and not allowed:
+        action = DEFERRED
+        if "no_allowed_network_sources" not in reasons:
+            reasons = [*reasons, "no_allowed_network_sources"]
+        offers = []
+        allowed = []
+    if action not in {REVALIDATE, DISCOVER}:
+        allowed = []
     return {
         "action": action,
         "reasons": reasons,
         "discover_reasons": discover_reasons or [],
         "warnings": warnings or [],
-        "revalidate_offers": revalidate_offers or [],
+        "revalidate_offers": offers if action == REVALIDATE else [],
         "deferred_offers": deferred_offers or [],
+        "allowed_sources": allowed,
         "snapshot_id": snapshot_id,
         "rankings": rankings,
         "comparison": comparison,
         "http_calls": 0,
-        "refresh_allowed": action in {REVALIDATE, DISCOVER} and http_planned,
+        "refresh_allowed": action in {REVALIDATE, DISCOVER} and bool(allowed),
     }
