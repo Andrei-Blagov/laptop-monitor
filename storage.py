@@ -964,7 +964,7 @@ def upsert_product(conn: sqlite3.Connection, product: Product) -> tuple[str, boo
             product_id,
             product.price,
             product.available,
-            checked_at,
+            price_checked_at or checked_at,
         )
         return "inserted", False
 
@@ -1004,7 +1004,7 @@ def upsert_product(conn: sqlite3.Connection, product: Product) -> tuple[str, boo
             product_id,
             product.price,
             product.available,
-            checked_at,
+            price_checked_at or checked_at,
         )
         history_changed = True
     else:
@@ -1015,7 +1015,7 @@ def upsert_product(conn: sqlite3.Connection, product: Product) -> tuple[str, boo
                 product_id,
                 product.price,
                 product.available,
-                checked_at,
+                (price_checked_at or checked_at) if last_price != product.price else checked_at,
             )
             history_changed = True
 

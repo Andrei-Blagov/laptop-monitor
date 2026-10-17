@@ -59,6 +59,12 @@ class PriceObservation(unittest.TestCase):
         save_products([replace(self.product,price_checked_at=NOW)],self.db)
         row,history=self.row_history();self.assertEqual(row['last_checked_at'],self.old.isoformat())
         self.assertEqual(_price_checked_at(row,history,row['price']),NOW.isoformat());self.assertEqual(_observation_state(row,history,NOW),'stale')
+    def test_price_change_uses_own_price_clock_without_refreshing_stock(self):
+        save_products([replace(self.product,price=249000,price_checked_at=NOW)],self.db)
+        row,history=self.row_history()
+        self.assertEqual(_price_changed_at(history),NOW.isoformat())
+        self.assertEqual(row['last_checked_at'],self.old.isoformat())
+        self.assertEqual(_observation_state(row,history,NOW),'stale')
     def test_old_schema_clock_uses_own_observation_not_history_or_pipeline(self):
         row,history=self.row_history();row.pop('price_checked_at');row['last_checked_at']=NOW.isoformat()
         self.assertEqual(_price_checked_at(row,history,row['price']),NOW.isoformat())
