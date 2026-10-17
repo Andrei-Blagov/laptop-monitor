@@ -1,12 +1,13 @@
 from __future__ import annotations
 
+import hashlib
 import json
 import sqlite3
 from contextlib import contextmanager
 from dataclasses import dataclass
 from datetime import datetime, timezone
 from pathlib import Path
-from typing import Iterator, Iterable, Sequence
+from typing import Iterator, Iterable, Mapping, Sequence
 
 from models import Product
 
@@ -20,6 +21,21 @@ class SaveStats:
     updated: int = 0
     price_changes: int = 0
     total_products: int = 0
+
+
+class MarketReadError(RuntimeError):
+    """Consistent Russian catalog read failed; callers must not publish a snapshot."""
+
+
+@dataclass(frozen=True)
+class MarketRows:
+    """One SQLite read of the Russian catalog inputs."""
+
+    products: tuple[dict, ...]
+    identifiers: tuple[dict, ...]
+    latest_store_runs: dict[str, dict]
+    price_history: dict[int, tuple[dict, ...]]
+    generation: str
 
 
 def _iso(dt: datetime) -> str:
@@ -1177,6 +1193,69 @@ def get_price_history_for_products_readonly(
         return {}
     finally:
         conn.close()
+
+
+def market_rows_generation(
+    products: Sequence[Mapping],
+    identifiers: Sequence[Mapping],
+    latest_store_runs: Mapping[str, Mapping],
+    price_history: Mapping[int, Sequence[Mapping]],
+) -> str:
+    """Content hash of one catalog read. Independent of connection-local PRAGMA values."""
+    payload = {
+        "products": sorted(
+            (dict(row) for row in products),
+            key=lambda row: (str(row.get("store")), str(row.get("external_id")), int(row.get("id") or 0)),
+        ),
+        "identifiers": sorted(
+            (dict(row) for row in identifiers),
+            key=lambda row: (
+                int(row.get("product_id") or 0),
+                str(row.get("identifier_type") or ""),
+                str(row.get("normalized_value") or ""),
+                int(row.get("id") or 0),
+            ),
+        ),
+        "store_runs": {key: dict(latest_store_runs[key]) for key in sorted(latest_store_runs)},
+        "price_history": [
+            {"product_id": int(product_id), "rows": [dict(row) for row in price_history[product_id]]}
+            for product_id in sorted(price_history)
+        ],
+    }
+    raw = json.dumps(payload, ensure_ascii=False, sort_keys=True, separators=(",", ":"), default=str)
+    return hashlib.sha256(raw.encode("utf-8")).hexdigest()
+
+
+def read_market_rows_consistent(db_path: Path | str) -> MarketRows:
+    """Read products, identifiers, store runs, and price history in one read transaction."""
+    path = Path(db_path)
+    if not path.exists():
+        raise MarketReadError(f"DB not found: {path}")
+    uri = path.resolve().as_uri() + "?mode=ro"
+    conn = sqlite3.connect(uri, uri=True, isolation_level=None)
+    conn.row_factory = sqlite3.Row
+    try:
+        conn.execute("BEGIN")
+        try:
+            products = tuple(_fetch_all_products(conn))
+            identifiers = tuple(get_product_identifiers(conn))
+            runs = {key: dict(value) for key, value in get_latest_store_runs(conn).items()}
+            history_lists = get_price_history_for_products(conn, [int(row["id"]) for row in products])
+            history = {int(product_id): tuple(rows) for product_id, rows in history_lists.items()}
+        finally:
+            conn.execute("ROLLBACK")
+    except sqlite3.Error as exc:
+        raise MarketReadError(str(exc)) from exc
+    finally:
+        conn.close()
+    generation = market_rows_generation(products, identifiers, runs, history)
+    return MarketRows(
+        products=products,
+        identifiers=identifiers,
+        latest_store_runs=runs,
+        price_history=history,
+        generation=generation,
+    )
 
 
 def get_previous_price(
