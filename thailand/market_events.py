@@ -6,6 +6,7 @@ compatible subscriber. Delivery retries do not call stores.
 from __future__ import annotations
 
 import json
+import hashlib
 import os
 import time
 import uuid
@@ -30,6 +31,122 @@ SEPARATE_REASONS = frozenset({
     "source_disabled", "circuit", "policy_disabled", "product_absent",
     "price_and_availability_unconfirmed",
 })
+
+
+_LEASES: dict[str, dict[str, Any]] = {}
+
+
+def _lease_key(path: Path) -> str:
+    return str(path.resolve())
+
+
+def _forget_inherited_leases() -> None:
+    # Closing an inherited descriptor does not unlock the parent's flock.
+    # LOCK_UN here would unlock the shared open-file description in both.
+    for state in _LEASES.values():
+        state["handle"].close()
+    _LEASES.clear()
+
+
+if hasattr(os, "register_at_fork"):
+    os.register_at_fork(after_in_child=_forget_inherited_leases)
+
+
+class VolumeLease:
+    """Exclusive lock on the shared queue volume.
+
+    The kernel releases it when the holding process dies, including a process
+    in another container. A local ``/proc`` lookup cannot see that process.
+    """
+
+    def __init__(self, path: Path) -> None:
+        self.path = path
+        self._fh = None
+        self._counted = False
+        self._owner_pid = None
+
+    def try_acquire(self) -> bool:
+        key = _lease_key(self.path)
+        state = _LEASES.get(key)
+        if self._counted and self._owner_pid == os.getpid() and state and state["pid"] == os.getpid():
+            return True
+        self._counted = False
+        if state:
+            state["count"] += 1
+            self._counted = True
+            self._owner_pid = os.getpid()
+            return True
+        self.path.parent.mkdir(parents=True, exist_ok=True)
+        if not self.path.exists() or self.path.stat().st_size == 0:
+            self.path.write_bytes(b"\0")
+        self._fh = open(self.path, "r+b")
+        self._fh.seek(0)
+        try:
+            if os.name == "nt":
+                import msvcrt
+                msvcrt.locking(self._fh.fileno(), msvcrt.LK_NBLCK, 1)
+            else:
+                import fcntl
+                fcntl.flock(self._fh.fileno(), fcntl.LOCK_EX | fcntl.LOCK_NB)
+        except OSError:
+            self._fh.close()
+            self._fh = None
+            return False
+        _LEASES[key] = {"handle": self._fh, "count": 1, "pid": os.getpid()}
+        self._counted = True
+        self._owner_pid = os.getpid()
+        return True
+
+    def release(self) -> None:
+        if not self._counted or self._owner_pid != os.getpid():
+            return
+        key = _lease_key(self.path)
+        state = _LEASES.get(key)
+        self._counted = False
+        if state is None or state["pid"] != os.getpid():
+            self._fh = None
+            return
+        left = state["count"] - 1
+        if left > 0:
+            state["count"] = left
+            self._fh = None
+            return
+        _LEASES.pop(key, None)
+        self._fh = state["handle"]
+        try:
+            if os.name == "nt":
+                import msvcrt
+                self._fh.seek(0)
+                msvcrt.locking(self._fh.fileno(), msvcrt.LK_UNLCK, 1)
+            else:
+                import fcntl
+                fcntl.flock(self._fh.fileno(), fcntl.LOCK_UN)
+        except OSError:
+            pass
+        self._fh.close()
+        self._fh = None
+
+
+def _lease_path(base: Path, name: str) -> Path:
+    return base / name
+
+
+def scan_lease_live(path: Path) -> bool:
+    """True while this process or another container still holds the scan lease."""
+    if _lease_key(path) in _LEASES:
+        return True
+    return lease_held_by_other(path)
+
+
+def lease_held_by_other(path: Path) -> bool:
+    """True when a different process, possibly in another container, holds ``path``."""
+    if _lease_key(path) in _LEASES:
+        return False
+    probe = VolumeLease(path)
+    if probe.try_acquire():
+        probe.release()
+        return False
+    return True
 
 
 class FileLock:
@@ -126,7 +243,7 @@ def _lock(root: Path) -> FileLock:
 
 def _dirs(root: Path) -> None:
     ensure_queue_dirs(root)
-    for name in ("deferred", "results", "delivery", "delivering"):
+    for name in ("deferred", "results", "delivery", "delivering", "receipts"):
         (root / name).mkdir(parents=True, exist_ok=True)
 
 
@@ -174,7 +291,8 @@ def enqueue_market_event(event: Mapping[str, Any], *, root: Path | str, now: dat
             return {"ok": True, "duplicate": True, "event_id": body["event_id"], "path": str(existing)}
         scan = _active_scan(base)
         due = moment(body.get("not_before"))
-        if scan and scan.get("discovery_key") == body.get("discovery_key") and (due is None or due <= clock):
+        live = scan is not None and scan_lease_live(_lease_path(base, "scan.lease"))
+        if live and scan.get("discovery_key") == body.get("discovery_key") and (due is None or due <= clock):
             _subscribe(base, scan, body)
             return {"ok": True, "duplicate": False, "event_id": body["event_id"], "status": "subscribed", "scan_id": scan["scan_id"]}
         folder = "deferred" if due is not None and due > clock else "pending"
@@ -287,9 +405,10 @@ def _stamp_owner(record: dict[str, Any], *, pid_field: str = "owner_pid", starte
     record[started_field] = process_started_at(os.getpid())
 
 
-def _scan_live(scan: Mapping[str, Any] | None, now: datetime, stale_seconds: float) -> bool:
-    del now, stale_seconds
-    return _owner_live(scan)
+def _scan_live(base: Path, scan: Mapping[str, Any] | None, now: datetime, stale_seconds: float) -> bool:
+    """A scan is live only while its lease is held. ``/proc`` is not shared by containers."""
+    del scan, now, stale_seconds
+    return lease_held_by_other(_lease_path(base, "scan.lease"))
 
 
 def _active_scan(root: Path) -> dict[str, Any] | None:
@@ -300,10 +419,10 @@ def _save_scan(root: Path, scan: dict[str, Any] | None, *, now: datetime | None 
     path = root / "active_scan.json"
     current = _active_scan(root)
     if scan is not None and current and current.get("scan_id") != scan.get("scan_id"):
-        if _scan_live(current, now or datetime.now(timezone.utc), stale_seconds):
+        if _scan_live(root, current, now or datetime.now(timezone.utc), stale_seconds):
             return False
     if scan is None:
-        if current and _owner_live(current) and not _owner_is_self(current):
+        if current and _scan_live(root, current, now or datetime.now(timezone.utc), stale_seconds):
             return False
         if path.is_file():
             path.unlink()
@@ -342,7 +461,7 @@ def recover_market_scan(
                 _remove_event(base, event["event_id"], keep="pending")
                 recovered.append(event["event_id"])
             return recovered
-        if _scan_live(scan, now, stale_seconds):
+        if _scan_live(base, scan, now, stale_seconds):
             return recovered
         result = base / "results" / f"{scan['scan_id']}.json"
         for event_id in list(scan.get("event_ids") or []):
@@ -386,7 +505,7 @@ def _claim_batch(base: Path, now: datetime) -> tuple[dict[str, Any] | None, list
         return None, []
     key = pending[0]["discovery_key"]
     scan = _active_scan(base)
-    if _scan_live(scan, now, 600):
+    if _scan_live(base, scan, now, 600):
         if scan and scan.get("discovery_key") == key:
             for event in pending:
                 if event.get("discovery_key") == key:
@@ -599,6 +718,7 @@ def _finish_scan(base, catalog_root, scan, events, outcome, now, fx=None, russia
         "rankings": outcome.get("rankings"),
         "comparison": comparison or None,
         "coverage": list(outcome.get("coverage") or []),
+        "errors": list(outcome.get("errors") or []),
         "views": _view_refs(outcome),
     }
     _atomic_write(base / "results" / f"{scan['scan_id']}.json", result)
@@ -637,6 +757,40 @@ def run_market_queue(
         return None
     _dirs(base)
     clock_now = now or (clock.now() if clock is not None else datetime.now(timezone.utc))
+    import config
+    scan_lease_path = _lease_path(base, "scan.lease")
+    if lease_held_by_other(scan_lease_path):
+        with _lock(base):
+            scan = _active_scan(base)
+            if scan:
+                for event in _load_events(base / "pending"):
+                    if event.get("discovery_key") == scan.get("discovery_key"):
+                        _subscribe(base, scan, event)
+        return _retry_delivery(base, sender, clock=clock, fallback=now, deliver=deliver)
+    scan_lease = VolumeLease(scan_lease_path)
+    if not scan_lease.try_acquire():
+        with _lock(base):
+            scan = _active_scan(base)
+            if scan:
+                for event in _load_events(base / "pending"):
+                    if event.get("discovery_key") == scan.get("discovery_key"):
+                        _subscribe(base, scan, event)
+        return _retry_delivery(base, sender, clock=clock, fallback=now, deliver=deliver)
+    try:
+        return _run_market_queue_locked(
+            base, catalog_root=catalog_root, health_path=health_path, fx=fx,
+            russian_snapshot=russian_snapshot, russian_snapshot_root=russian_snapshot_root,
+            transport=transport, sender=sender, clock=clock, deliver=deliver,
+            now=now, clock_now=clock_now,
+        )
+    finally:
+        scan_lease.release()
+
+
+def _run_market_queue_locked(
+    base, *, catalog_root, health_path, fx, russian_snapshot, russian_snapshot_root,
+    transport, sender, clock, deliver, now, clock_now,
+):
     import config
     recover_market_scan(
         root=base, now=clock_now,
@@ -710,54 +864,105 @@ def _send_moment(clock, fallback: datetime | None) -> datetime:
 
 
 def _retry_delivery(base: Path, sender, *, clock=None, fallback: datetime | None = None, deliver: bool = True) -> dict[str, Any] | None:
-    """Claim one waiting event. A failed send waits until not_before; it is not retried in this drain."""
+    """Deliver stored results. A live delivery lease in any container is not stolen."""
     if not deliver or sender is None:
         return None
+    path = _lease_path(base, "delivery.lease")
+    if lease_held_by_other(path):
+        return None
+    lease = VolumeLease(path)
+    if not lease.try_acquire():
+        return None
+    try:
+        return _retry_delivery_locked(base, sender, clock=clock, fallback=fallback)
+    finally:
+        lease.release()
+
+
+def _retry_delivery_locked(base: Path, sender, *, clock=None, fallback: datetime | None = None) -> dict[str, Any] | None:
+    """Claim waiting events. One view is sent once to each recipient, and every event is kept."""
     (base / "delivering").mkdir(parents=True, exist_ok=True)
     with _lock(base):
         for path in sorted((base / "delivering").glob("*.json")):
             event = _read_json(path)
             if not isinstance(event, dict):
                 continue
-            if _owner_live(event, pid_field="delivery_owner", started_field="delivery_owner_started_at") and not _owner_is_self(
-                event, pid_field="delivery_owner", started_field="delivery_owner_started_at"
-            ):
-                continue
             _write_event(base, "delivery", event)
             path.unlink(missing_ok=True)
     waiting = _load_events(base / "delivery")
     if not waiting:
         return None
-    sent_ids = []
+    groups: dict[tuple[str, str], list[dict[str, Any]]] = {}
     for event in waiting:
-        result = _load_result(base, str(event.get("subscription_scan_id") or event.get("result_id") or ""))
-        if result is None:
+        result_id = str(event.get("subscription_scan_id") or event.get("result_id") or "")
+        if _load_result(base, result_id) is None:
             continue
-        with _lock(base):
-            claimed = _claim_delivery(base, str(event["event_id"]))
-        if claimed is None:
+        view = str(event.get("requested_view") or "general_top")
+        groups.setdefault((result_id, view), []).append(event)
+    sent_ids = []
+    for (result_id, view), events in groups.items():
+        result = _load_result(base, result_id)
+        receipt_id = hashlib.sha256(json.dumps([result_id, view]).encode()).hexdigest()
+        receipt = _read_json(base / "receipts" / f"{receipt_id}.json") or {}
+        claimed = []
+        for event in events:
+            with _lock(base):
+                one = _claim_delivery(base, str(event["event_id"]))
+            if one is not None:
+                claimed.append(one)
+        if not claimed or result is None:
             continue
+        recipients = []
+        done = []
+        seen_ids: set[str] = set()
+        for record in receipt.get("delivered_part_ids") or []:
+            if isinstance(record, dict) and record.get("id"):
+                seen_ids.add(str(record["id"]))
+                done.append(record)
+        for event in claimed:
+            for recipient in event.get("recipients") or []:
+                text = str(recipient).strip()
+                if text and text not in recipients:
+                    recipients.append(text)
+            for record in event.get("delivered_part_ids") or []:
+                ident = record.get("id") if isinstance(record, dict) else str(record)
+                if ident and ident not in seen_ids:
+                    seen_ids.add(str(ident))
+                    done.append(record if isinstance(record, dict) else {"id": str(record), "text": ""})
+        primary = claimed[0]
+        outgoing = dict(primary)
+        outgoing["recipients"] = recipients
+        outgoing["requested_view"] = view
+        outgoing["delivered_part_ids"] = done
+        outgoing["_delivery_receipt_id"] = receipt_id
         now = _send_moment(clock, fallback)
         try:
-            state = _deliver_one(sender, claimed, result, now)
+            state = _deliver_one(sender, outgoing, result, now)
         except Exception as exc:  # noqa: BLE001
-            claimed["delivery_state"] = "deferred"
-            claimed["retry_count"] = int(claimed.get("retry_count") or 0) + 1
-            claimed["delivery_error"] = type(exc).__name__
-            claimed["not_before"] = (now + timedelta(minutes=30)).isoformat()
-            claimed.pop("delivery_owner", None)
-            claimed.pop("delivery_owner_started_at", None)
-            _write_event(base, "deferred", claimed)
-            (base / "delivering" / f"{claimed['event_id']}.json").unlink(missing_ok=True)
-            return {"status": "delivery_failed", "event_id": claimed["event_id"], "http_calls": 0}
-        claimed["delivery_state"] = "sent"
-        claimed["delivered_as"] = state
-        claimed.pop("delivery_owner", None)
-        claimed.pop("delivery_owner_started_at", None)
-        _write_event(base, "archive", claimed)
-        (base / "delivering" / f"{claimed['event_id']}.json").unlink(missing_ok=True)
-        _remove_event(base, claimed["event_id"], keep="archive")
-        sent_ids.append(claimed["event_id"])
+            for event in claimed:
+                event["delivered_part_ids"] = outgoing.get("delivered_part_ids")
+                event["delivery_state"] = "deferred"
+                event["retry_count"] = int(event.get("retry_count") or 0) + 1
+                event["delivery_error"] = type(exc).__name__
+                event["not_before"] = (now + timedelta(minutes=30)).isoformat()
+                event.pop("delivery_owner", None)
+                event.pop("delivery_owner_started_at", None)
+                _write_event(base, "deferred", event)
+                (base / "delivering" / f"{event['event_id']}.json").unlink(missing_ok=True)
+            return {"status": "delivery_failed", "event_id": primary["event_id"], "http_calls": 0}
+        _atomic_write(base / "receipts" / f"{receipt_id}.json", {
+            "delivered_part_ids": outgoing.get("delivered_part_ids") or [],
+        })
+        for event in claimed:
+            event["delivered_part_ids"] = outgoing.get("delivered_part_ids")
+            event["delivery_state"] = "sent"
+            event["delivered_as"] = state
+            event.pop("delivery_owner", None)
+            event.pop("delivery_owner_started_at", None)
+            _write_event(base, "archive", event)
+            (base / "delivering" / f"{event['event_id']}.json").unlink(missing_ok=True)
+            _remove_event(base, event["event_id"], keep="archive")
+            sent_ids.append(event["event_id"])
     if not sent_ids:
         return None
     return {"status": "delivered", "event_ids": sent_ids, "http_calls": 0}
@@ -767,13 +972,22 @@ def heavy_scan_busy(root: Path | str | None, now: datetime, stale_seconds: float
     if root is None:
         return False
     base = jobs_root(root)
-    return _scan_live(_active_scan(base), now, stale_seconds)
+    return _scan_live(base, _active_scan(base), now, stale_seconds)
+
+
+_OPEN_LEASES: dict[str, VolumeLease] = {}
 
 
 def begin_heavy_scan(root: Path | str, now: datetime, *, kind: str) -> bool:
     """Take the single heavy-pass lease. A live owner is not replaced."""
     base = jobs_root(root)
     _dirs(base)
+    path = _lease_path(base, "scan.lease")
+    if lease_held_by_other(path):
+        return False
+    lease = VolumeLease(path)
+    if not lease.try_acquire():
+        return False
     with _lock(base):
         scan = {
             "scan_id": f"{kind}-{uuid.uuid4()}",
@@ -782,7 +996,11 @@ def begin_heavy_scan(root: Path | str, now: datetime, *, kind: str) -> bool:
             "event_ids": [],
         }
         _stamp_owner(scan)
-        return _save_scan(base, scan, now=now)
+        if not _save_scan(base, scan, now=now):
+            lease.release()
+            return False
+    _OPEN_LEASES[str(path)] = lease
+    return True
 
 
 def end_heavy_scan(root: Path | str | None) -> None:
@@ -791,8 +1009,11 @@ def end_heavy_scan(root: Path | str | None) -> None:
     base = jobs_root(root)
     with _lock(base):
         current = _active_scan(base)
-        if _owner_is_self(current):
+        if current is None or _owner_is_self(current) or not lease_held_by_other(_lease_path(base, "scan.lease")):
             _save_scan(base, None)
+    lease = _OPEN_LEASES.pop(str(_lease_path(base, "scan.lease")), None)
+    if lease is not None:
+        lease.release()
 
 
 def release_claimed_job(root: Path | str, job: Mapping[str, Any]) -> None:

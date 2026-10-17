@@ -27,6 +27,17 @@ from tests.test_thai_catalog_reuse import NOW, _fx, _offer, _publish
 INSTANCE = "c22-test"
 
 
+def _hold_scan_lease(path: str, ready, release) -> None:
+    from thailand.market_events import VolumeLease
+
+    lease = VolumeLease(Path(path))
+    if not lease.try_acquire():
+        return
+    ready.set()
+    release.wait(10)
+    lease.release()
+
+
 def _pair(pair_id: str, *, th_availability: str, ru_price: str, checked: str | None = None) -> dict:
     fresh = checked or th_availability
     return {
@@ -133,16 +144,14 @@ def _publish_identity(path: str) -> None:
 
 
 def _hold_delivering(jobs: str, ready: str, release: str) -> None:
-    import os
-    from thailand.market_events import process_started_at
-    path = Path(jobs) / "delivering" / "held-event.json"
-    event = json.loads(path.read_text(encoding="utf-8"))
-    event["delivery_owner"] = os.getpid()
-    event["delivery_owner_started_at"] = process_started_at(os.getpid())
-    path.write_text(json.dumps(event), encoding="utf-8")
+    from thailand.market_events import VolumeLease
+    lease = VolumeLease(Path(jobs) / "delivery.lease")
+    if not lease.try_acquire():
+        return
     Path(ready).write_text("1", encoding="utf-8")
     while not Path(release).exists():
         time.sleep(0.02)
+    lease.release()
 
 
 def _child(jobs: str, catalog: str, health: str, counter: str) -> None:
@@ -228,7 +237,8 @@ class MarketEventQueueTests(unittest.TestCase):
         self.assertEqual(len({row["result_id"] for row in stored}), 1)
         self.assertEqual([row["recipients"] for row in stored], [["daily-chat"], ["manual-chat"], ["buy-chat"]])
         self.assertEqual(stored[2]["source_ru_snapshot_id"], "ru-buy")
-        self.assertEqual({row["event_id"] for row in self.sender.sent}, {row["event_id"] for row in stored})
+        self.assertTrue(all(row.get("delivery_state") == "sent" for row in stored))
+        self.assertEqual(self.sender.sent[0]["recipients"], ["daily-chat", "manual-chat", "buy-chat"])
 
     def test_same_event_id_is_not_duplicated(self) -> None:
         self._catalog(2)
@@ -606,17 +616,27 @@ class MarketEventQueueTests(unittest.TestCase):
         enqueue_market_event(event, root=self.jobs, now=NOW)
         (self.jobs / "processing").mkdir(parents=True, exist_ok=True)
         (self.jobs / "pending" / "live.json").replace(self.jobs / "processing" / "live.json")
-        from thailand.market_events import process_started_at
         scan = {
             "scan_id": "live-scan", "discovery_key": discovery_key(INSTANCE),
             "claimed_at": (NOW - timedelta(hours=5)).isoformat(),
             "event_ids": ["live"], "owner_pid": os.getpid(),
-            "owner_started_at": process_started_at(os.getpid()),
+            "owner_started_at": "held-by-lease",
         }
         (self.jobs / "active_scan.json").write_text(json.dumps(scan), encoding="utf-8")
-        self.assertEqual(recover_market_scan(root=self.jobs, now=NOW, stale_seconds=0), [])
-        self.assertTrue((self.jobs / "active_scan.json").is_file())
-        self.assertTrue((self.jobs / "processing" / "live.json").is_file())
+        ready = multiprocessing.Event()
+        release = multiprocessing.Event()
+        holder = multiprocessing.Process(
+            target=_hold_scan_lease, args=(str(self.jobs / "scan.lease"), ready, release),
+        )
+        holder.start()
+        self.assertTrue(ready.wait(5))
+        try:
+            self.assertEqual(recover_market_scan(root=self.jobs, now=NOW, stale_seconds=0), [])
+            self.assertTrue((self.jobs / "active_scan.json").is_file())
+            self.assertTrue((self.jobs / "processing" / "live.json").is_file())
+        finally:
+            release.set()
+            holder.join(5)
 
     def test_reused_pid_does_not_keep_the_claim(self) -> None:
         import os
@@ -902,8 +922,8 @@ class MarketEventQueueTests(unittest.TestCase):
             jobs_dir=self.jobs, catalog_root=self.catalog, health_path=self.health,
             sender=sender, clock=sender.clock, deliver=True, state_path=self.root / "buy-state.json",
         )
-        self.assertEqual([row["current"] for row in sender.sent], [True, False])
-        self.assertEqual(sender.sent[1]["info_current"], False)
+        self.assertEqual([row["current"] for row in sender.sent], [True])
+        self.assertEqual({path.stem for path in (self.jobs / "archive").glob("*.json")}, {"send-1", "send-2"})
 
     def test_missing_fx_is_not_a_current_purchase(self) -> None:
         fresh = NOW.isoformat()

@@ -77,6 +77,10 @@ SYSTEMD_UNITS = (
     "laptop-monitor-thailand.service",
     "laptop-monitor-personal-top.service",
     "laptop-monitor-personal-top.timer",
+    "laptop-monitor-market-daily.service",
+    "laptop-monitor-market-daily.timer",
+    "laptop-monitor-market-retry.service",
+    "laptop-monitor-market-retry.timer",
     "n8n-watchdog.service",
     "n8n-watchdog.timer",
 )

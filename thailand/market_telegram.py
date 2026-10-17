@@ -170,7 +170,7 @@ class MarketTextSender:
         for part in iter_market_sends(result, event, self.now_fn):
             if _part_already_sent(part["part_id"], part["text"], done):
                 continue
-            historical = "#state:" in part["part_id"] and not part["part_id"].endswith("#state:current")
+            historical = part.get("state") in {"historical", "info"}
             self._send_one(
                 event, result, part, recipient=part["recipient"], part_id=part["part_id"],
                 historical=historical,
@@ -232,6 +232,11 @@ def _part_already_sent(part_id: str, text: str, records: list[dict[str, str]]) -
 def _persist_delivery(jobs_dir: Path | str, event: Mapping[str, Any]) -> None:
     """Durable part list before the next send. A crash after HTTP and before this write can repeat that one part."""
     base = jobs_root(jobs_dir)
+    receipt_id = event.get("_delivery_receipt_id")
+    if receipt_id:
+        _atomic_write(base / "receipts" / f"{receipt_id}.json", {
+            "delivered_part_ids": event.get("delivered_part_ids") or [],
+        })
     event_id = str(event.get("event_id") or "")
     for folder in ("delivering", "delivery"):
         path = base / folder / f"{event_id}.json"

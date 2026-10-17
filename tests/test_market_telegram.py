@@ -170,8 +170,10 @@ class MarketTelegramTests(unittest.TestCase):
             ), root=self.jobs, now=NOW)
         outcome = self._run()
         self.assertEqual(outcome["http_calls"], 0)
-        self.assertEqual(len({item["event_id"] for item in self.sender.sent}), 3)
-        self.assertEqual(len({item["text"] for item in self.sender.sent}), len(self.sender.sent) // 3 or 1)
+        self.assertEqual({item["recipient"] for item in self.sender.sent}, {"daily", "manual", "buy"})
+        archived = list((self.jobs / "archive").glob("*.json"))
+        self.assertEqual({path.stem for path in archived}, {"daily-1", "manual-1", "buy-1"})
+        self.assertEqual(len({item["text"] for item in self.sender.sent}), 1)
 
     def test_regional_and_unmatched_cards_keep_their_meaning(self) -> None:
         fresh = NOW.isoformat()
@@ -283,8 +285,8 @@ class MarketTelegramTests(unittest.TestCase):
         (self.jobs / "delivery" / "fx-event.json").write_text(json.dumps(event), encoding="utf-8")
         self._run()
         text = "\n".join(item["text"] for item in self.sender.sent)
-        state = next(item for item in self.sender.sent if "#state:" in item["part_id"])
-        self.assertFalse(state["current"])
+        self.assertTrue(self.sender.sent)
+        self.assertTrue(all(not item["current"] for item in self.sender.sent))
         self.assertIn("Текущая выгода не подтверждена", text)
         self.assertIn(fresh, text)
         self.assertNotIn("Наблюдение не текущее", text)
@@ -348,10 +350,10 @@ class MarketTelegramTests(unittest.TestCase):
             reasons=[], rule_ids=[], over_hist_pct=None, fingerprint="buy-fp",
             cluster_key=None, history_started_at=None,
         )
-        first = enqueue_buy_candidate(signal, instance_id=INSTANCE, jobs_dir=self.jobs, ru_snapshot_id="ru-1", now=NOW)
+        first = enqueue_buy_candidate(signal, instance_id=INSTANCE, jobs_dir=self.jobs, ru_snapshot_id="ru-1", now=NOW, recipients=["42"])
         self._run()
         calls = len(self.sender.sent)
-        second = enqueue_buy_candidate(signal, instance_id=INSTANCE, jobs_dir=self.jobs, ru_snapshot_id="ru-1", now=NOW)
+        second = enqueue_buy_candidate(signal, instance_id=INSTANCE, jobs_dir=self.jobs, ru_snapshot_id="ru-1", now=NOW, recipients=["42"])
         self.assertTrue(second["duplicate"])
         self.assertIsNone(self._run(sender=TextSender()))
         self.assertEqual(len(self.sender.sent), calls)
@@ -645,20 +647,31 @@ class MarketTelegramTests(unittest.TestCase):
             "rankings": {},
             "comparison": {
                 "pairs": [{
-                    "pair_id": "ready-pair", "comparison_status": "confirmed", "match_class": "EXACT",
-                    "saving_rub": "50000", "saving_pct": "20",
-                    "ru_membership": {"in_general_top": True},
-                    "th_observation": {
-                        "name": "Ready", "price": "80000", "source": "jib", "url": "https://example.test/ready",
-                        "availability_state": "in_stock", "price_checked_at": fresh, "availability_checked_at": fresh,
-                        "specs": {"screen_resolution": {"value": "2560x1600"}},
-                    },
-                    "ru_observation": {
-                        "price": "250000", "source": "regard", "price_checked_at": fresh, "availability_checked_at": fresh,
-                    },
-                    "price_gap": {"thai_base_rub": "200000", "ru_price_rub": "250000"},
-                }],
-                "best_pairs_by_th_variant_id": {"v": "ready-pair"},
+                        "pair_id": "ready-pair", "comparison_status": "confirmed", "match_class": "EXACT",
+                        "saving_rub": "50000", "saving_pct": "20",
+                        "ru_membership": {"in_general_top": True},
+                        "th_observation": {
+                            "name": "Ready", "price": "80000", "source": "jib", "url": "https://example.test/ready",
+                            "availability_state": "in_stock", "price_checked_at": fresh, "availability_checked_at": fresh,
+                            "specs": {"screen_resolution": {"value": "2560x1600"}},
+                        },
+                        "ru_observation": {
+                            "price": "250000", "source": "regard", "price_checked_at": fresh, "availability_checked_at": fresh,
+                        },
+                        "price_gap": {"thai_base_rub": "200000", "ru_price_rub": "250000"},
+                    }, {
+                        "pair_id": "later-pair", "comparison_status": "confirmed", "match_class": "EXACT",
+                        "saving_rub": "10000", "saving_pct": "10",
+                        "ru_membership": {"in_general_top": True},
+                        "th_observation": {
+                            "name": "Later", "price": "70000", "source": "advice", "url": "https://example.test/later",
+                            "availability_state": "in_stock", "price_checked_at": fresh, "availability_checked_at": fresh,
+                        },
+                        "ru_observation": {
+                            "price": "180000", "source": "regard", "price_checked_at": fresh, "availability_checked_at": fresh,
+                        },
+                    }],
+                    "best_pairs_by_th_variant_id": {"v": "ready-pair", "w": "later-pair"},
             },
         }), encoding="utf-8")
         before = sorted(path.name for path in self.jobs.rglob("*.json"))
@@ -725,7 +738,7 @@ class MarketTelegramTests(unittest.TestCase):
         self.assertIn(old, text)
         self.assertIn("историческ", text.lower())
         self.assertIn("не означает", text)
-        fresh_state = next(part["text"] for part in parts if part["part_id"].endswith("unmatched:fresh#state:info"))
+        fresh_state = next(part["text"] for part in parts if "Свежая без пары" in part["text"])
         self.assertNotIn("историческ", fresh_state.lower())
 
     def test_first_recipient_moves_the_clock_before_the_next(self) -> None:
@@ -744,7 +757,7 @@ class MarketTelegramTests(unittest.TestCase):
 
         def send_text(event, text, **kwargs):
             original(event, text, **kwargs)
-            if kwargs["recipient"] == "111" and "#state:" in kwargs["part_id"]:
+            if kwargs["recipient"] == "111":
                 clock.current = NOW + timedelta(hours=48)
 
         sender.send_text = send_text
@@ -767,8 +780,8 @@ class MarketTelegramTests(unittest.TestCase):
         event.update(subscription_scan_id="shift", result_id="shift")
         (self.jobs / "delivery" / "shift.json").write_text(json.dumps(event), encoding="utf-8")
         self._run(sender=sender, clock=clock)
-        first = " ".join(item["text"] for item in sender.sent if item["recipient"] == "111" and "#state:" in item["part_id"])
-        second = " ".join(item["text"] for item in sender.sent if item["recipient"] == "222" and "#state:" in item["part_id"])
+        first = " ".join(item["text"] for item in sender.sent if item["recipient"] == "111")
+        second = " ".join(item["text"] for item in sender.sent if item["recipient"] == "222")
         self.assertIn("информационными", first)
         self.assertIn("не текущая", second)
 
@@ -845,7 +858,8 @@ class MarketTelegramTests(unittest.TestCase):
         )
         shrunk_ids = [item["part_id"] for item in shrunk.sent]
         self.assertFalse(any(item == "1:thai:edge" for item in shrunk_ids))
-        self.assertTrue(any(item.endswith("state:historical") for item in shrunk_ids))
+        self.assertTrue(any(item.startswith("1:thai:edge#") for item in shrunk_ids))
+        self.assertTrue(any("не текущая" in item["text"] for item in shrunk.sent))
 
     def test_th_only_coverage_reaches_the_message(self) -> None:
         from tests.test_thai_catalog_reuse import _result

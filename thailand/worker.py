@@ -303,6 +303,13 @@ def main(argv: list[str] | None = None) -> int:
     )
     jobs_dir = args.jobs_dir
     deliver = not args.no_deliver
+    if config.stage22_market_telegram_enabled():
+        from thailand.market_schedule import market_work_waiting
+
+        if market_work_waiting(jobs_dir):
+            from thailand.fx import refresh_fx_observation
+
+            refresh_fx_observation(config.FX_OBSERVATION_PATH)
     if args.once:
         result = process_one(jobs_dir=jobs_dir, deliver=deliver)
         return 0 if result is not None or pending_count(jobs_dir) == 0 else 0

@@ -981,6 +981,10 @@ def enqueue_personal_job(
     now: datetime | None = None,
 ) -> dict[str, Any]:
     now = now or datetime.now(timezone.utc)
+    if config.stage22_market_telegram_enabled():
+        from thailand.market_schedule import enqueue_personal_market
+
+        return enqueue_personal_market(chat_id=chat_id, now=now, jobs_dir=jobs_dir)
     allowed, reason = enqueue_allowed(manual=manual, now=now, state=state, jobs_dir=jobs_dir)
     if not allowed:
         return {"ok": False, "error": reason, "thailand_scan_status": reason}
@@ -1018,6 +1022,12 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument("command", choices=("enqueue",))
     parser.add_argument("--manual", action="store_true")
     args = parser.parse_args(argv)
+    if config.stage22_market_telegram_enabled():
+        from thailand.market_schedule import enqueue_personal_market
+
+        result = enqueue_personal_market()
+        print(result.get("thailand_scan_status") or result.get("error"))
+        return 0
     from storage import DEFAULT_DB_PATH, get_all_products_readonly, get_latest_store_runs_readonly
     from store_freshness import get_fresh_store_slugs
 
