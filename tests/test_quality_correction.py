@@ -158,6 +158,23 @@ class ThaiAndDelivery(unittest.TestCase):
         with patch('thailand.market_telegram._persist_delivery',side_effect=OSError('view receipt failure')):
             with self.assertRaises(OSError):sender.send({'requested_view':'all','recipients':['42']},r,current=False,historical=True)
         sender.send({'requested_view':'personal_top3','recipients':['42']},r,current=False,historical=True);self.assertEqual(len(sink.messages),1)
+    def test_whole_presentation_required_not_just_one_equal_card(self):
+        sink=Sink();sender=MarketTextSender(sink,jobs_dir=self.root,now_fn=lambda:NOW);r=result()
+        sender.send({'requested_view':'all','recipients':['42']},r,current=False,historical=True)
+        first=sink.messages[0][0]
+        row=copy.deepcopy(r['rankings']['thai_top_value'][0]);row['model_id']='other';row['variant_id']='other';row['name']='Different second card'
+        row['offers'][0]['offer_id']='other-offer';row['best_offer_id']='other-offer'
+        r['rankings']['thai_top_value'].append(row)
+        sender.send({'requested_view':'personal_top3','recipients':['42']},r,current=False,historical=True)
+        self.assertEqual(sink.messages[1][0],first)
+        self.assertEqual(len(sink.messages),3)
+    def test_corrupt_content_receipt_stops_before_another_http(self):
+        sink=Sink();sender=MarketTextSender(sink,jobs_dir=self.root,now_fn=lambda:NOW);r=result()
+        sender.send({'requested_view':'all','recipients':['42']},r,current=False,historical=True)
+        path=next((self.root/'receipts').glob('content-*.json'));path.write_text('corrupt')
+        with self.assertRaisesRegex(RuntimeError,'unreadable_content_receipt'):
+            sender.send({'requested_view':'general_top','recipients':['42']},r,current=False,historical=True)
+        self.assertEqual(len(sink.messages),1)
     def test_ru_empty_and_human_readable_times_units_coverage(self):
         r=result();r['comparison']['ru_input_summary']={'offer_count':0,'exclusion_reasons':{'stale_observation':200,'price_over_cap':1}}
         r['coverage']=[{'source':'advice','state':'failed'},{'source':'speedcom','state':'429'},{'source':'banana','state':'deferred','enabled':False,'policy_disabled':True}]

@@ -219,7 +219,8 @@ def _migrate_product_price_clock(conn: sqlite3.Connection) -> None:
     if "price_checked_at" not in columns:
         conn.execute("ALTER TABLE products ADD COLUMN price_checked_at TEXT")
         # Legacy last_checked_at is the own Product observation, never pipeline time.
-        conn.execute("UPDATE products SET price_checked_at=last_checked_at WHERE price>0")
+        if {"price", "last_checked_at"} <= columns:
+            conn.execute("UPDATE products SET price_checked_at=last_checked_at WHERE price>0")
 
 
 def _table_sql(conn: sqlite3.Connection, name: str) -> str | None:

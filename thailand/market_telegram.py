@@ -184,7 +184,10 @@ class MarketTextSender:
             index = next(i for i, row in enumerate(plan) if row["part_id"] == local_id and row["text"] == part["text"])
             content_id = hashlib.sha256(json.dumps([result.get("result_id") or result.get("scan_id") or uuid.uuid4().hex, part["recipient"], signature], sort_keys=True, ensure_ascii=False).encode()).hexdigest()
             content_path = jobs_root(self.jobs_dir) / "receipts" / ("content-" + content_id + ".json")
-            shared = _read_json(content_path) or {"result_id": result.get("result_id"), "recipient": part["recipient"], "signature": signature, "acknowledged_indexes": []}
+            saved_content = _read_json(content_path)
+            if content_path.exists() and not isinstance(saved_content, dict):
+                raise RuntimeError("unreadable_content_receipt")
+            shared = saved_content or {"result_id": result.get("result_id"), "recipient": part["recipient"], "signature": signature, "acknowledged_indexes": []}
             if shared.get("result_id") != result.get("result_id") or shared.get("recipient") != part["recipient"] or shared.get("signature") != signature:
                 raise RuntimeError("content_receipt_mismatch")
             indexes = shared.get("acknowledged_indexes")

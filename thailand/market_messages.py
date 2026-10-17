@@ -274,7 +274,7 @@ def _pair_price_lines(pair: Mapping[str, Any], result: Mapping[str, Any], *, pur
         lines.append(f"Наличие RU проверено: {_display_time(ru['availability_checked_at'])}")
     costs = pair.get("unknown_costs") or []
     if costs:
-        lines.append("Неизвестные расходы не равны нулю: " + ", ".join(str(item) for item in costs))
+        lines.append("Неизвестные расходы не равны нулю: " + ", ".join(dict.fromkeys({"travel":"поездка", "customs":"таможенные платежи", "fx_spread":"обменный курс банка", "payment_fees":"комиссии оплаты"}.get(str(item), str(item) if any("А" <= ch <= "я" or ch in "Ёё" for ch in str(item)) else "дополнительные расходы") for item in costs)))
     expenses = pair.get("confirmed_expenses") or []
     shown_costs = ", ".join(
         f"{item.get('label')} {item.get('amount_rub')} ₽" for item in expenses if isinstance(item, dict)
@@ -283,7 +283,8 @@ def _pair_price_lines(pair: Mapping[str, Any], result: Mapping[str, Any], *, pur
         lines.append("Подтверждённые расходы: " + shown_costs)
     diffs = list(pair.get("conflicting_fields") or []) + list(pair.get("commercial_differences") or [])
     if diffs:
-        lines.append("Отличия: " + ", ".join(str(item) for item in diffs))
+        labels = {"cpu":"процессор", "gpu":"видеокарта", "ram_gb":"оперативная память", "ssd_gb":"накопитель", "screen_inch":"диагональ", "screen_resolution":"разрешение экрана", "gpu_vram_gb":"видеопамять", "gpu_tgp_w":"мощность видеокарты", "screen_refresh_hz":"частота экрана", "panel_type":"тип матрицы", "os":"операционная система", "keyboard":"клавиатура", "warranty":"гарантия", "manufacturer_generation":"поколение", "manufacturer_family":"семейство"}
+        lines.append("Отличия: " + ", ".join(dict.fromkeys(labels.get(str(item), str(item) if any("А" <= ch <= "я" or ch in "Ёё" for ch in str(item)) else "дополнительные параметры") for item in diffs)))
     lines.append(_fx_line(result))
     return lines
 
