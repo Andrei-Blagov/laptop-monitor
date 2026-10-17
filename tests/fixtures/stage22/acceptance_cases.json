@@ -1,0 +1,978 @@
+{
+  "fixture_schema_version": 1,
+  "purpose": "Offline stage2.2 contract acceptance; synthetic-only, no live price or stock claims",
+  "all_data_synthetic": true,
+  "reference_now": "2026-10-14T12:00:00Z",
+  "cases": [
+    {
+      "id": "R1_ALL_RU_NOT_TOP",
+      "kind": "cross_market_match",
+      "ru_offers": [
+        {
+          "offer_id": "ru-001",
+          "manufacturer_part_number": "TEST-RU-001",
+          "brand": "ASUS",
+          "specs": {
+            "gpu": "RTX 5070 Ti Laptop",
+            "cpu": "Intel Core Ultra 9 275HX",
+            "ram_gb": 32,
+            "ssd_gb": 1024,
+            "screen_size_inch": 16,
+            "screen_resolution": "2560x1600"
+          },
+          "price_rub": 230000,
+          "availability_status": "in_stock",
+          "verified": true
+        },
+        {
+          "offer_id": "ru-002",
+          "manufacturer_part_number": "TEST-RU-002",
+          "brand": "ASUS",
+          "specs": {
+            "gpu": "RTX 5070 Ti Laptop",
+            "cpu": "Intel Core Ultra 9 275HX",
+            "ram_gb": 32,
+            "ssd_gb": 1024,
+            "screen_size_inch": 16,
+            "screen_resolution": "2560x1600"
+          },
+          "price_rub": 230000,
+          "availability_status": "in_stock",
+          "verified": true
+        },
+        {
+          "offer_id": "ru-003",
+          "manufacturer_part_number": "TEST-RU-003",
+          "brand": "ASUS",
+          "specs": {
+            "gpu": "RTX 5070 Ti Laptop",
+            "cpu": "Intel Core Ultra 9 275HX",
+            "ram_gb": 32,
+            "ssd_gb": 1024,
+            "screen_size_inch": 16,
+            "screen_resolution": "2560x1600"
+          },
+          "price_rub": 230000,
+          "availability_status": "in_stock",
+          "verified": true
+        },
+        {
+          "offer_id": "ru-004",
+          "manufacturer_part_number": "TEST-RU-004",
+          "brand": "ASUS",
+          "specs": {
+            "gpu": "RTX 5070 Ti Laptop",
+            "cpu": "Intel Core Ultra 9 275HX",
+            "ram_gb": 32,
+            "ssd_gb": 1024,
+            "screen_size_inch": 16,
+            "screen_resolution": "2560x1600"
+          },
+          "price_rub": 230000,
+          "availability_status": "in_stock",
+          "verified": true
+        },
+        {
+          "offer_id": "ru-005",
+          "manufacturer_part_number": "TEST-RU-005",
+          "brand": "ASUS",
+          "specs": {
+            "gpu": "RTX 5070 Ti Laptop",
+            "cpu": "Intel Core Ultra 9 275HX",
+            "ram_gb": 32,
+            "ssd_gb": 1024,
+            "screen_size_inch": 16,
+            "screen_resolution": "2560x1600"
+          },
+          "price_rub": 230000,
+          "availability_status": "in_stock",
+          "verified": true
+        },
+        {
+          "offer_id": "ru-006",
+          "manufacturer_part_number": "TEST-RU-006",
+          "brand": "ASUS",
+          "specs": {
+            "gpu": "RTX 5070 Ti Laptop",
+            "cpu": "Intel Core Ultra 9 275HX",
+            "ram_gb": 32,
+            "ssd_gb": 1024,
+            "screen_size_inch": 16,
+            "screen_resolution": "2560x1600"
+          },
+          "price_rub": 230000,
+          "availability_status": "in_stock",
+          "verified": true
+        },
+        {
+          "offer_id": "ru-007",
+          "manufacturer_part_number": "TEST-RU-007",
+          "brand": "ASUS",
+          "specs": {
+            "gpu": "RTX 5070 Ti Laptop",
+            "cpu": "Intel Core Ultra 9 275HX",
+            "ram_gb": 32,
+            "ssd_gb": 1024,
+            "screen_size_inch": 16,
+            "screen_resolution": "2560x1600"
+          },
+          "price_rub": 230000,
+          "availability_status": "in_stock",
+          "verified": true
+        },
+        {
+          "offer_id": "ru-008",
+          "manufacturer_part_number": "TEST-RU-008",
+          "brand": "ASUS",
+          "specs": {
+            "gpu": "RTX 5070 Ti Laptop",
+            "cpu": "Intel Core Ultra 9 275HX",
+            "ram_gb": 32,
+            "ssd_gb": 1024,
+            "screen_size_inch": 16,
+            "screen_resolution": "2560x1600"
+          },
+          "price_rub": 230000,
+          "availability_status": "in_stock",
+          "verified": true
+        },
+        {
+          "offer_id": "ru-009",
+          "manufacturer_part_number": "TEST-RU-009",
+          "brand": "ASUS",
+          "specs": {
+            "gpu": "RTX 5070 Ti Laptop",
+            "cpu": "Intel Core Ultra 9 275HX",
+            "ram_gb": 32,
+            "ssd_gb": 1024,
+            "screen_size_inch": 16,
+            "screen_resolution": "2560x1600"
+          },
+          "price_rub": 230000,
+          "availability_status": "in_stock",
+          "verified": true
+        },
+        {
+          "offer_id": "ru-010",
+          "manufacturer_part_number": "TEST-RU-010",
+          "brand": "ASUS",
+          "specs": {
+            "gpu": "RTX 5070 Ti Laptop",
+            "cpu": "Intel Core Ultra 9 275HX",
+            "ram_gb": 32,
+            "ssd_gb": 1024,
+            "screen_size_inch": 16,
+            "screen_resolution": "2560x1600"
+          },
+          "price_rub": 230000,
+          "availability_status": "in_stock",
+          "verified": true
+        },
+        {
+          "offer_id": "ru-011",
+          "manufacturer_part_number": "TEST-RU-011",
+          "brand": "ASUS",
+          "specs": {
+            "gpu": "RTX 5070 Ti Laptop",
+            "cpu": "Intel Core Ultra 9 275HX",
+            "ram_gb": 32,
+            "ssd_gb": 1024,
+            "screen_size_inch": 16,
+            "screen_resolution": "2560x1600"
+          },
+          "price_rub": 230000,
+          "availability_status": "in_stock",
+          "verified": true
+        },
+        {
+          "offer_id": "ru-012",
+          "manufacturer_part_number": "TEST-RU-012",
+          "brand": "ASUS",
+          "specs": {
+            "gpu": "RTX 5070 Ti Laptop",
+            "cpu": "Intel Core Ultra 9 275HX",
+            "ram_gb": 32,
+            "ssd_gb": 1024,
+            "screen_size_inch": 16,
+            "screen_resolution": "2560x1600"
+          },
+          "price_rub": 230000,
+          "availability_status": "in_stock",
+          "verified": true
+        },
+        {
+          "offer_id": "ru-013",
+          "manufacturer_part_number": "TEST-RU-013",
+          "brand": "ASUS",
+          "specs": {
+            "gpu": "RTX 5070 Ti Laptop",
+            "cpu": "Intel Core Ultra 9 275HX",
+            "ram_gb": 32,
+            "ssd_gb": 1024,
+            "screen_size_inch": 16,
+            "screen_resolution": "2560x1600"
+          },
+          "price_rub": 230000,
+          "availability_status": "in_stock",
+          "verified": true
+        },
+        {
+          "offer_id": "ru-014",
+          "manufacturer_part_number": "TEST-RU-014",
+          "brand": "ASUS",
+          "specs": {
+            "gpu": "RTX 5070 Ti Laptop",
+            "cpu": "Intel Core Ultra 9 275HX",
+            "ram_gb": 32,
+            "ssd_gb": 1024,
+            "screen_size_inch": 16,
+            "screen_resolution": "2560x1600"
+          },
+          "price_rub": 230000,
+          "availability_status": "in_stock",
+          "verified": true
+        },
+        {
+          "offer_id": "ru-015",
+          "manufacturer_part_number": "TEST-RU-015",
+          "brand": "ASUS",
+          "specs": {
+            "gpu": "RTX 5070 Ti Laptop",
+            "cpu": "Intel Core Ultra 9 275HX",
+            "ram_gb": 32,
+            "ssd_gb": 1024,
+            "screen_size_inch": 16,
+            "screen_resolution": "2560x1600"
+          },
+          "price_rub": 230000,
+          "availability_status": "in_stock",
+          "verified": true
+        },
+        {
+          "offer_id": "ru-016",
+          "manufacturer_part_number": "TEST-RU-016",
+          "brand": "ASUS",
+          "specs": {
+            "gpu": "RTX 5070 Ti Laptop",
+            "cpu": "Intel Core Ultra 9 275HX",
+            "ram_gb": 32,
+            "ssd_gb": 1024,
+            "screen_size_inch": 16,
+            "screen_resolution": "2560x1600"
+          },
+          "price_rub": 230000,
+          "availability_status": "in_stock",
+          "verified": true
+        },
+        {
+          "offer_id": "ru-017",
+          "manufacturer_part_number": "G615LR-TEST17",
+          "brand": "ASUS",
+          "specs": {
+            "gpu": "RTX 5070 Ti Laptop",
+            "cpu": "Intel Core Ultra 9 275HX",
+            "ram_gb": 32,
+            "ssd_gb": 1024,
+            "screen_size_inch": 16,
+            "screen_resolution": "2560x1600"
+          },
+          "price_rub": 255000,
+          "availability_status": "in_stock",
+          "verified": true
+        },
+        {
+          "offer_id": "ru-018",
+          "manufacturer_part_number": "TEST-RU-018",
+          "brand": "ASUS",
+          "specs": {
+            "gpu": "RTX 5070 Ti Laptop",
+            "cpu": "Intel Core Ultra 9 275HX",
+            "ram_gb": 32,
+            "ssd_gb": 1024,
+            "screen_size_inch": 16,
+            "screen_resolution": "2560x1600"
+          },
+          "price_rub": 230000,
+          "availability_status": "in_stock",
+          "verified": true
+        },
+        {
+          "offer_id": "ru-019",
+          "manufacturer_part_number": "TEST-RU-019",
+          "brand": "ASUS",
+          "specs": {
+            "gpu": "RTX 5070 Ti Laptop",
+            "cpu": "Intel Core Ultra 9 275HX",
+            "ram_gb": 32,
+            "ssd_gb": 1024,
+            "screen_size_inch": 16,
+            "screen_resolution": "2560x1600"
+          },
+          "price_rub": 230000,
+          "availability_status": "in_stock",
+          "verified": true
+        },
+        {
+          "offer_id": "ru-020",
+          "manufacturer_part_number": "TEST-RU-020",
+          "brand": "ASUS",
+          "specs": {
+            "gpu": "RTX 5070 Ti Laptop",
+            "cpu": "Intel Core Ultra 9 275HX",
+            "ram_gb": 32,
+            "ssd_gb": 1024,
+            "screen_size_inch": 16,
+            "screen_resolution": "2560x1600"
+          },
+          "price_rub": 230000,
+          "availability_status": "in_stock",
+          "verified": true
+        },
+        {
+          "offer_id": "ru-021",
+          "manufacturer_part_number": "TEST-RU-021",
+          "brand": "ASUS",
+          "specs": {
+            "gpu": "RTX 5070 Ti Laptop",
+            "cpu": "Intel Core Ultra 9 275HX",
+            "ram_gb": 32,
+            "ssd_gb": 1024,
+            "screen_size_inch": 16,
+            "screen_resolution": "2560x1600"
+          },
+          "price_rub": 230000,
+          "availability_status": "in_stock",
+          "verified": true
+        },
+        {
+          "offer_id": "ru-022",
+          "manufacturer_part_number": "TEST-RU-022",
+          "brand": "ASUS",
+          "specs": {
+            "gpu": "RTX 5070 Ti Laptop",
+            "cpu": "Intel Core Ultra 9 275HX",
+            "ram_gb": 32,
+            "ssd_gb": 1024,
+            "screen_size_inch": 16,
+            "screen_resolution": "2560x1600"
+          },
+          "price_rub": 230000,
+          "availability_status": "in_stock",
+          "verified": true
+        },
+        {
+          "offer_id": "ru-023",
+          "manufacturer_part_number": "TEST-RU-023",
+          "brand": "ASUS",
+          "specs": {
+            "gpu": "RTX 5070 Ti Laptop",
+            "cpu": "Intel Core Ultra 9 275HX",
+            "ram_gb": 32,
+            "ssd_gb": 1024,
+            "screen_size_inch": 16,
+            "screen_resolution": "2560x1600"
+          },
+          "price_rub": 230000,
+          "availability_status": "in_stock",
+          "verified": true
+        },
+        {
+          "offer_id": "ru-024",
+          "manufacturer_part_number": "TEST-RU-024",
+          "brand": "ASUS",
+          "specs": {
+            "gpu": "RTX 5070 Ti Laptop",
+            "cpu": "Intel Core Ultra 9 275HX",
+            "ram_gb": 32,
+            "ssd_gb": 1024,
+            "screen_size_inch": 16,
+            "screen_resolution": "2560x1600"
+          },
+          "price_rub": 230000,
+          "availability_status": "in_stock",
+          "verified": true
+        },
+        {
+          "offer_id": "ru-025",
+          "manufacturer_part_number": "TEST-RU-025",
+          "brand": "ASUS",
+          "specs": {
+            "gpu": "RTX 5070 Ti Laptop",
+            "cpu": "Intel Core Ultra 9 275HX",
+            "ram_gb": 32,
+            "ssd_gb": 1024,
+            "screen_size_inch": 16,
+            "screen_resolution": "2560x1600"
+          },
+          "price_rub": 230000,
+          "availability_status": "in_stock",
+          "verified": true
+        }
+      ],
+      "ru_top_offer_ids": [
+        "ru-001",
+        "ru-002",
+        "ru-003",
+        "ru-004",
+        "ru-005",
+        "ru-006",
+        "ru-007",
+        "ru-008",
+        "ru-009",
+        "ru-010"
+      ],
+      "th_offers": [
+        {
+          "offer_id": "th-17",
+          "manufacturer_part_number": "G615LR-TEST17",
+          "brand": "ASUS",
+          "specs": {
+            "gpu": "RTX 5070 Ti Laptop",
+            "cpu": "Intel Core Ultra 9 275HX",
+            "ram_gb": 32,
+            "ssd_gb": 1024,
+            "screen_size_inch": 16,
+            "screen_resolution": "2560x1600"
+          },
+          "price_thb": 80000,
+          "availability_status": "in_stock",
+          "verified": true
+        }
+      ],
+      "fx_rub_per_thb": "2.5",
+      "expected": {
+        "ru_eligible_count": 25,
+        "ru_match_offer_ids": [
+          "ru-017"
+        ],
+        "match_class": "EXACT",
+        "found_outside_ru_top": true
+      }
+    },
+    {
+      "id": "R2_EMPTY_RU",
+      "kind": "th_independence",
+      "ru_offers": [],
+      "th_offers": [
+        {
+          "offer_id": "th-single",
+          "manufacturer_part_number": "MSI-ONLY-5080",
+          "brand": "MSI",
+          "specs": {
+            "gpu": "RTX 5080 Laptop",
+            "cpu": "AMD Ryzen 9 9955HX",
+            "ram_gb": 32,
+            "ssd_gb": 1024,
+            "screen_size_inch": 16,
+            "screen_resolution": "2560x1600"
+          },
+          "price_thb": 100000,
+          "availability_status": "in_stock",
+          "verified": true
+        }
+      ],
+      "expected": {
+        "th_discovery_still_runs": true,
+        "th_top_can_be_nonempty": true,
+        "no_ru_match": true
+      }
+    },
+    {
+      "id": "M1_EXACT_SAVING",
+      "kind": "country_gap",
+      "ru_offers": [
+        {
+          "offer_id": "ru-one",
+          "manufacturer_part_number": "G615LR-TEST17",
+          "brand": "ASUS",
+          "specs": {
+            "gpu": "RTX 5070 Ti Laptop",
+            "cpu": "Intel Core Ultra 9 275HX",
+            "ram_gb": 32,
+            "ssd_gb": 1024,
+            "screen_size_inch": 16,
+            "screen_resolution": "2560x1600"
+          },
+          "price_rub": 230000,
+          "availability_status": "in_stock",
+          "verified": true
+        }
+      ],
+      "th_offers": [
+        {
+          "offer_id": "th-one",
+          "manufacturer_part_number": "G615LR-TEST17",
+          "brand": "ASUS",
+          "specs": {
+            "gpu": "RTX 5070 Ti Laptop",
+            "cpu": "Intel Core Ultra 9 275HX",
+            "ram_gb": 32,
+            "ssd_gb": 1024,
+            "screen_size_inch": 16,
+            "screen_resolution": "2560x1600"
+          },
+          "price_thb": 80000,
+          "availability_status": "in_stock",
+          "verified": true
+        }
+      ],
+      "fx_rub_per_thb": "2.5",
+      "known_costs_rub": "0",
+      "expected": {
+        "match_class": "EXACT",
+        "comparison_status": "confirmed",
+        "saving_rub": "30000",
+        "saving_pct_approx": "13.0434782609",
+        "band": "clear"
+      }
+    },
+    {
+      "id": "C3_SAME_MPN_RESOLUTION_CONFLICT",
+      "kind": "config_conflict",
+      "ru_offers": [
+        {
+          "offer_id": "ru-conflict",
+          "manufacturer_part_number": "G615LR-TEST17",
+          "brand": "ASUS",
+          "specs": {
+            "gpu": "RTX 5070 Ti Laptop",
+            "cpu": "Intel Core Ultra 9 275HX",
+            "ram_gb": 32,
+            "ssd_gb": 1024,
+            "screen_size_inch": 16,
+            "screen_resolution": "2560x1600"
+          },
+          "price_rub": 220000,
+          "availability_status": "in_stock",
+          "verified": true
+        }
+      ],
+      "th_offers": [
+        {
+          "offer_id": "th-conflict",
+          "manufacturer_part_number": "G615LR-TEST17",
+          "brand": "ASUS",
+          "specs": {
+            "gpu": "RTX 5070 Ti Laptop",
+            "cpu": "Intel Core Ultra 9 275HX",
+            "ram_gb": 32,
+            "ssd_gb": 1024,
+            "screen_size_inch": 16,
+            "screen_resolution": "3840x2400"
+          },
+          "price_thb": 70000,
+          "availability_status": "in_stock",
+          "verified": true
+        }
+      ],
+      "expected": {
+        "comparison_status": "conflict",
+        "match_class_not": "EXACT",
+        "saving_rub": null,
+        "saving_pct": null
+      }
+    },
+    {
+      "id": "M2_REGIONAL_FULL_SPEC",
+      "kind": "regional_equivalence",
+      "ru_offers": [
+        {
+          "offer_id": "ru-regional",
+          "manufacturer_part_number": "G615LR-XRUTEST",
+          "brand": "ASUS",
+          "specs": {
+            "gpu": "RTX 5070 Ti Laptop",
+            "cpu": "Intel Core Ultra 9 275HX",
+            "ram_gb": 32,
+            "ssd_gb": 1024,
+            "screen_size_inch": 16,
+            "screen_resolution": "2560x1600"
+          },
+          "price_rub": 230000,
+          "availability_status": "in_stock",
+          "verified": true,
+          "manufacturer_family": "ASUS G615LR",
+          "manufacturer_generation": "synthetic-G615LR-generation"
+        }
+      ],
+      "th_offers": [
+        {
+          "offer_id": "th-regional",
+          "manufacturer_part_number": "G615LR-THTEST",
+          "brand": "ASUS",
+          "specs": {
+            "gpu": "RTX 5070 Ti Laptop",
+            "cpu": "Intel Core Ultra 9 275HX",
+            "ram_gb": 32,
+            "ssd_gb": 1024,
+            "screen_size_inch": 16,
+            "screen_resolution": "2560x1600"
+          },
+          "price_thb": 80000,
+          "availability_status": "in_stock",
+          "verified": true,
+          "manufacturer_family": "ASUS G615LR",
+          "manufacturer_generation": "synthetic-G615LR-generation"
+        }
+      ],
+      "manufacturer_family": "ASUS G615LR",
+      "expected": {
+        "match_class": "EQUIVALENT",
+        "not_exact": true,
+        "comparison_status": "confirmed",
+        "show_regional_difference": true
+      }
+    },
+    {
+      "id": "M3_CPU_MODEL_DIFFERENT",
+      "kind": "config_conflict",
+      "ru_offers": [
+        {
+          "offer_id": "ru-cpu",
+          "manufacturer_part_number": "G615LR-TEST17",
+          "brand": "ASUS",
+          "specs": {
+            "gpu": "RTX 5070 Ti Laptop",
+            "cpu": "Intel Core Ultra 9 275HX",
+            "ram_gb": 32,
+            "ssd_gb": 1024,
+            "screen_size_inch": 16,
+            "screen_resolution": "2560x1600"
+          },
+          "price_rub": 230000,
+          "availability_status": "in_stock",
+          "verified": true
+        }
+      ],
+      "th_offers": [
+        {
+          "offer_id": "th-cpu",
+          "manufacturer_part_number": "G615LR-TEST17",
+          "brand": "ASUS",
+          "specs": {
+            "gpu": "RTX 5070 Ti Laptop",
+            "cpu": "Intel Core Ultra 9 285HX",
+            "ram_gb": 32,
+            "ssd_gb": 1024,
+            "screen_size_inch": 16,
+            "screen_resolution": "2560x1600"
+          },
+          "price_thb": 80000,
+          "availability_status": "in_stock",
+          "verified": true
+        }
+      ],
+      "expected": {
+        "comparison_status": "conflict",
+        "saving_rub": null,
+        "saving_pct": null
+      }
+    },
+    {
+      "id": "M7_OTHER_BRAND_SAME_CORE",
+      "kind": "analogue_only",
+      "ru_offers": [
+        {
+          "offer_id": "ru-asus",
+          "manufacturer_part_number": "G615LR-TEST17",
+          "brand": "ASUS",
+          "specs": {
+            "gpu": "RTX 5070 Ti Laptop",
+            "cpu": "Intel Core Ultra 9 275HX",
+            "ram_gb": 32,
+            "ssd_gb": 1024,
+            "screen_size_inch": 16,
+            "screen_resolution": "2560x1600"
+          },
+          "price_rub": 230000,
+          "availability_status": "in_stock",
+          "verified": true
+        }
+      ],
+      "th_offers": [
+        {
+          "offer_id": "th-msi",
+          "manufacturer_part_number": "MSI-ALTERNATIVE",
+          "brand": "MSI",
+          "specs": {
+            "gpu": "RTX 5070 Ti Laptop",
+            "cpu": "Intel Core Ultra 9 275HX",
+            "ram_gb": 32,
+            "ssd_gb": 1024,
+            "screen_size_inch": 16,
+            "screen_resolution": "2560x1600"
+          },
+          "price_thb": 77000,
+          "availability_status": "in_stock",
+          "verified": true
+        }
+      ],
+      "expected": {
+        "match_class": "ALTERNATIVE",
+        "saving_rub": null,
+        "saving_pct": null
+      }
+    },
+    {
+      "id": "C4_MISSING_CPU",
+      "kind": "incomplete_comparison",
+      "ru_offers": [
+        {
+          "offer_id": "ru-missing-cpu",
+          "manufacturer_part_number": "G615LR-TEST17",
+          "brand": "ASUS",
+          "specs": {
+            "gpu": "RTX 5070 Ti Laptop",
+            "cpu": null,
+            "ram_gb": 32,
+            "ssd_gb": 1024,
+            "screen_size_inch": 16,
+            "screen_resolution": "2560x1600"
+          },
+          "price_rub": 230000,
+          "availability_status": "in_stock",
+          "verified": true
+        }
+      ],
+      "th_offers": [
+        {
+          "offer_id": "th-missing-cpu",
+          "manufacturer_part_number": "G615LR-TEST17",
+          "brand": "ASUS",
+          "specs": {
+            "gpu": "RTX 5070 Ti Laptop",
+            "cpu": "Intel Core Ultra 9 275HX",
+            "ram_gb": 32,
+            "ssd_gb": 1024,
+            "screen_size_inch": 16,
+            "screen_resolution": "2560x1600"
+          },
+          "price_thb": 80000,
+          "availability_status": "in_stock",
+          "verified": true
+        }
+      ],
+      "expected": {
+        "comparison_status": "incomplete",
+        "saving_rub": null,
+        "saving_pct": null
+      }
+    },
+    {
+      "id": "O1_STOCK_OUT",
+      "kind": "availability_gate",
+      "ru_offers": [
+        {
+          "offer_id": "ru-stock",
+          "manufacturer_part_number": "G615LR-TEST17",
+          "brand": "ASUS",
+          "specs": {
+            "gpu": "RTX 5070 Ti Laptop",
+            "cpu": "Intel Core Ultra 9 275HX",
+            "ram_gb": 32,
+            "ssd_gb": 1024,
+            "screen_size_inch": 16,
+            "screen_resolution": "2560x1600"
+          },
+          "price_rub": 230000,
+          "availability_status": "in_stock",
+          "verified": true
+        }
+      ],
+      "th_offers": [
+        {
+          "offer_id": "th-oos",
+          "manufacturer_part_number": "G615LR-TEST17",
+          "brand": "ASUS",
+          "specs": {
+            "gpu": "RTX 5070 Ti Laptop",
+            "cpu": "Intel Core Ultra 9 275HX",
+            "ram_gb": 32,
+            "ssd_gb": 1024,
+            "screen_size_inch": 16,
+            "screen_resolution": "2560x1600"
+          },
+          "price_thb": 50000,
+          "availability_status": "out_of_stock",
+          "verified": true
+        }
+      ],
+      "expected": {
+        "current_purchase_eligible": false,
+        "current_price_verdict": false
+      }
+    },
+    {
+      "id": "U1_TH_ONLY_VALUE",
+      "kind": "th_unmatched_value",
+      "ru_offers": [],
+      "th_offers": [
+        {
+          "offer_id": "th-5080-value",
+          "manufacturer_part_number": "MSI-5080-TH",
+          "brand": "MSI",
+          "specs": {
+            "gpu": "RTX 5080 Laptop",
+            "cpu": "Intel Core Ultra 9 275HX",
+            "ram_gb": 32,
+            "ssd_gb": 1024,
+            "screen_size_inch": 16,
+            "screen_resolution": "2560x1600"
+          },
+          "price_thb": 100000,
+          "availability_status": "in_stock",
+          "verified": true
+        }
+      ],
+      "fx_rub_per_thb": "2.5",
+      "input_value_score": 79,
+      "expected": {
+        "unmatched_ru": true,
+        "th_price_rub": "250000",
+        "unmatched_value_candidate": true,
+        "saving_pct": null
+      }
+    },
+    {
+      "id": "F1_REUSE_FRESH",
+      "kind": "cache",
+      "now": "2026-10-14T12:00:00Z",
+      "catalog_finished_at": "2026-10-14T03:00:00Z",
+      "price_checked_at": "2026-10-14T09:00:00Z",
+      "availability_checked_at": "2026-10-14T09:00:00Z",
+      "events": [
+        "manual",
+        "daily",
+        "buy"
+      ],
+      "expected": {
+        "broad_store_http_calls": 0,
+        "detail_store_http_calls": 0,
+        "one_catalogue_id_for_events": true
+      },
+      "discovery_checked_at": "2026-10-14T03:00:00Z"
+    },
+    {
+      "id": "F4_NO_OLD_OFFER_REVIVAL",
+      "kind": "cache",
+      "now": "2026-10-14T12:00:00Z",
+      "catalog_finished_at": "2026-10-14T11:59:00Z",
+      "price_checked_at": "2026-10-13T05:00:00Z",
+      "availability_checked_at": "2026-10-13T05:00:00Z",
+      "expected": {
+        "current_purchase_eligible": false,
+        "old_observation_keeps_original_time": true,
+        "broad_discovery_required": true
+      },
+      "discovery_checked_at": "2026-10-13T05:00:00Z"
+    },
+    {
+      "id": "F2_REFRESH_OLDER_QUOTE",
+      "kind": "cache",
+      "now": "2026-10-14T12:00:00Z",
+      "catalog_finished_at": "2026-10-13T16:00:00Z",
+      "price_checked_at": "2026-10-14T04:00:00Z",
+      "availability_checked_at": "2026-10-14T04:00:00Z",
+      "expected": {
+        "broad_discovery_required": false,
+        "bounded_offer_refresh_required": true
+      },
+      "discovery_checked_at": "2026-10-13T16:00:00Z"
+    },
+    {
+      "id": "FX1_STALE",
+      "kind": "fx",
+      "now": "2026-10-14T12:00:00Z",
+      "fx_fetched_at": "2026-10-12T22:00:00Z",
+      "fx_published_date": "2026-10-12",
+      "expected": {
+        "fx_usable": false,
+        "allow_current_rub_verdict": false,
+        "preserve_thb": true
+      }
+    },
+    {
+      "id": "Q1_COALESCE",
+      "kind": "events",
+      "events": [
+        {
+          "event_id": "event-daily",
+          "trigger": "daily",
+          "recipients": [
+            "synthetic-recipient-1"
+          ]
+        },
+        {
+          "event_id": "event-buy",
+          "trigger": "buy",
+          "recipients": [
+            "synthetic-recipient-2"
+          ]
+        },
+        {
+          "event_id": "event-manual",
+          "trigger": "manual",
+          "recipients": [
+            "synthetic-recipient-3"
+          ]
+        }
+      ],
+      "discovery_scope_hash": "scope-a",
+      "expected": {
+        "heavy_scan_count": 1,
+        "delivered_event_count": 3,
+        "repeat_russian_buy_count": 0
+      }
+    },
+    {
+      "id": "S1_429_PARTIAL",
+      "kind": "source_limits",
+      "store": "speedcom",
+      "finished_queries": [
+        "gpu-5070ti/page1"
+      ],
+      "not_completed_queries": [
+        "gpu-5080/page1"
+      ],
+      "response_at_next_request": 429,
+      "expected": {
+        "store_calls_after_429": 0,
+        "scan_status": "partial",
+        "keep_previous_offers": true,
+        "not_completed_is_not_no_results": true
+      }
+    }
+  ],
+  "fixture_format": "simplified_policy_examples_not_runtime_snapshots",
+  "assumptions": {
+    "verified": "synthetic offer evidence premise, not a runtime provenance payload",
+    "current_pair_examples": "unless explicit time/stock/FX conflict is supplied, quotes, FX and compatible discovery are fresh",
+    "manufactured_identifiers": "synthetic test strings, never live manufacturer evidence"
+  },
+  "policy": {
+    "core_fields": [
+      "gpu",
+      "cpu",
+      "ram_gb",
+      "ssd_gb",
+      "screen_size_inch",
+      "screen_resolution"
+    ],
+    "ru_offer_fresh_minutes": 180,
+    "catalog_fresh_hours": 26,
+    "quote_fresh_hours": 6,
+    "daily_min_broad_hours": 18,
+    "fx_fresh_hours": 36,
+    "fx_published_max_days": 4,
+    "max_price_rub": "330000",
+    "unmatched_score_min": 75,
+    "gpu_target_rub": {
+      "RTX 5070 Ti Laptop": "230000",
+      "RTX 5080 Laptop": "300000"
+    },
+    "country_band_percent": {
+      "slight": "5",
+      "clear": "10"
+    }
+  }
+}
