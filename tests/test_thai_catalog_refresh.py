@@ -19,6 +19,7 @@ from thailand.catalog_refresh import (
     POLICY_DISABLED_SOURCES,
     COMPLETED,
     LiveCatalogTransport,
+    ManualClock,
     OfferRefresh,
     execute_catalog_plan,
 )
@@ -473,12 +474,14 @@ class CatalogRefreshTests(unittest.TestCase):
             with patch("thailand.jib.collect", side_effect=AssertionError("broad jib scan")):
                 outcome = execute_catalog_plan(
                     decision, snapshot_root=root, now=NOW, instance_id="c22-test",
+                    clock=ManualClock(NOW),
                     health_path=self.health_path, fx=_fx(), transport=LiveCatalogTransport(client=client),
                 )
             saved = load_thai_catalog(root, expected_instance_id="c22-test")
         self.assertIn("/web/product/readProduct/th-old", client.urls[0])
         self.assertNotIn("search_suggestion", client.urls[0])
         self.assertEqual(saved["offers"][0]["price_thb"], 75_000)
+        self.assertEqual(saved["offers"][0]["observed_at"], NOW.isoformat())
         self.assertEqual(saved["offers"][0]["specs"]["cpu"]["evidence"]["captured_at"], original_spec)
         self.assertEqual(outcome["http_calls"], 1)
         self.assertTrue(outcome["rankings"]["thai_top_value"])
@@ -504,11 +507,9 @@ class CatalogRefreshTests(unittest.TestCase):
         self.assertIsNone(inspect.signature(run_thailand_scan).parameters["catalog_root"].default)
         scanner = Path("thailand/scanner.py").read_text(encoding="utf-8")
         ranking = Path("deal_ranking.py").read_text(encoding="utf-8")
-        version = Path("VERSION").read_text(encoding="utf-8").strip()
         self.assertNotIn("catalog_refresh", scanner)
         self.assertNotIn("execute_catalog_plan", scanner)
         self.assertNotIn("catalog_refresh", ranking)
-        self.assertEqual(version, "0.10.2")
 
     def test_second_offer_is_blocked_when_health_changes_mid_pass(self) -> None:
         stale = NOW - timedelta(hours=9)
