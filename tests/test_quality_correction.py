@@ -189,3 +189,20 @@ class ThaiAndDelivery(unittest.TestCase):
         for term in ('+00:00','inspected_coverage_incomplete','partial','deferred'):self.assertNotIn(term,text)
 
 if __name__=='__main__':unittest.main()
+
+
+class EvidenceCacheRevision(unittest.TestCase):
+    def test_pre_fix_catalog_scope_cannot_be_reused(self):
+        import hashlib
+        import thai_catalog as tc
+        from thailand.catalog_reuse import evaluate_catalog_reuse
+        from unittest.mock import patch
+        from datetime import datetime, timezone
+        old_payload={"gpu_queries":list(tc.GPU_SEARCH_QUERIES),"line_queries":list(tc.LINE_SEARCH_QUERIES),"query_budget":tc.QUERY_BUDGET,"stores":[{"source":a.slug,"enabled":bool(a.enabled)} for a in tc.get_thailand_adapters()]}
+        old_scope=hashlib.sha256(json.dumps(old_payload,ensure_ascii=False,sort_keys=True,separators=(",",":")).encode()).hexdigest()
+        self.assertNotEqual(old_scope,tc.discovery_scope_hash())
+        # Test only the saved old catalogue read; the planner and scope checks are real.
+        with patch("thailand.catalog_reuse.load_thai_catalog",return_value={"snapshot_id":"old","discovery_scope_hash":old_scope}):
+            decision=evaluate_catalog_reuse("unused",now=datetime(2026,10,17,tzinfo=timezone.utc),instance_id="test")
+        self.assertIn(decision["action"],("DISCOVER","DEFERRED"))
+        self.assertIn("discovery_scope_incompatible",decision["reasons"])

@@ -79,6 +79,8 @@ def discovery_scope_hash() -> str:
     """Identity of the broad Thai discovery policy. Russian TOP is not an input."""
     adapters = get_thailand_adapters()
     payload = {
+        # Parser/evidence changes must refresh retained catalogues without rewriting them.
+        "evidence_revision": "0111-laptop-components-own-ssd-v1",
         "gpu_queries": list(GPU_SEARCH_QUERIES),
         "line_queries": list(LINE_SEARCH_QUERIES),
         "query_budget": QUERY_BUDGET,
