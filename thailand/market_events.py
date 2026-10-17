@@ -598,6 +598,7 @@ def _finish_scan(base, catalog_root, scan, events, outcome, now, fx=None, russia
         "passes": outcome.get("passes"),
         "rankings": outcome.get("rankings"),
         "comparison": comparison or None,
+        "coverage": list(outcome.get("coverage") or []),
         "views": _view_refs(outcome),
     }
     _atomic_write(base / "results" / f"{scan['scan_id']}.json", result)

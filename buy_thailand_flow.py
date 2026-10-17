@@ -62,6 +62,14 @@ def _safe_enqueue(
     instance_id: str | None,
 ) -> dict[str, Any]:
     """enqueue_job, with filesystem/permission errors reported as a failed result."""
+    if config.stage22_market_telegram_enabled():
+        from thailand.market_telegram import enqueue_buy_candidate
+
+        return enqueue_buy_candidate(
+            signal,
+            instance_id=instance_id or config.get_instance_id(),
+            jobs_dir=jobs_dir,
+        )
     try:
         matched = next((d for d in deals if d.cluster_name == signal.cluster_name), None)
         chosen = matched if matched is not None else (deals[0] if deals else None)
