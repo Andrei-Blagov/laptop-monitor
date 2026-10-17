@@ -19,6 +19,7 @@ from thailand.specs_parse import (
     gpu_from_explicit_text,
     is_accessory_listing,
     specs_from_text,
+    own_ssd_gb,
 )
 from thailand.verification import (
     AVAIL_SOURCE_STRUCTURED_API,
@@ -167,6 +168,7 @@ def parse_speedcom_product(
         if p
     )
     specs = specs_from_text(spec_blob)
+    specs["ssd_gb"] = own_ssd_gb(spec_blob)
     variants = [v for v in (product.get("variants") or []) if isinstance(v, dict)]
     if not variants:
         return []

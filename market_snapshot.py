@@ -339,6 +339,7 @@ def _offer_record(
         "source_url": offer.url,
         "observed_at": observed_at,
         "price_checked_at": price_checked_at,
+        "price_changed_at": _price_changed_at(history),
         "availability_checked_at": availability_checked_at,
         "stock_state": "in_stock" if product.get("available") else "out_of_stock",
         "availability_evidence": {
@@ -524,6 +525,7 @@ def _exclusions(
                 "product_name": product.get("name"),
                 "observed_at": _text_or_none(product.get("last_checked_at")),
                 "price_checked_at": price_checked_at,
+                "price_changed_at": _price_changed_at(rows.price_history.get(int(product["id"]), ())),
                 "availability_checked_at": _text_or_none(product.get("last_checked_at")),
                 "public_price_rub": price,
                 "quote_state": quote_state,
@@ -916,11 +918,21 @@ def _price_checked_at(
     history: Sequence[Mapping[str, Any]],
     price: int | None,
 ) -> str | None:
-    if price is not None:
-        for row in reversed(list(history)):
-            if _store_price(row.get("price")) == price:
-                return _text_or_none(row.get("checked_at"))
-    return _text_or_none(product.get("last_checked_at"))
+    if price is None:
+        return None
+    # Both fields originate in a successfully persisted own store observation.
+    # Old schemas are read without migration; their last_checked_at has that meaning.
+    return _text_or_none(product.get("price_checked_at") if "price_checked_at" in product else product.get("last_checked_at"))
+
+
+def _price_changed_at(history: Sequence[Mapping[str, Any]]) -> str | None:
+    previous, changed = None, None
+    for row in history:
+        price = _store_price(row.get("price"))
+        if price != previous:
+            changed = _text_or_none(row.get("checked_at"))
+        previous = price
+    return changed
 
 
 def _captured_at(coverage: Sequence[Mapping[str, Any]]) -> str | None:

@@ -2,13 +2,14 @@
 from __future__ import annotations
 
 import json
+import hashlib
 import uuid
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any, Mapping
 
 import config
-from thailand.job_queue import _atomic_write, jobs_root
+from thailand.job_queue import _atomic_write, _read_json, jobs_root
 from thailand.market_events import build_market_event, enqueue_market_event
 from thailand.market_messages import format_market_messages
 
@@ -167,15 +168,45 @@ class MarketTextSender:
         if not recipients:
             raise RuntimeError("no_recipient")
         done = _done_records(event.get("delivered_part_ids"))
-        for part in iter_market_sends(result, event, self.now_fn):
+        observed_now = None
+
+        def at_send():
+            nonlocal observed_now
+            observed_now = self.now_fn()
+            return observed_now
+
+        for part in iter_market_sends(result, event, at_send):
+            # A whole rendered presentation, result and recipient define reuse.
+            # Matching a single card inside a different presentation is insufficient.
+            plan = format_market_messages(result, event, now=observed_now)
+            signature = [{"text": row["text"], "reply_markup": row.get("reply_markup")} for row in plan]
+            local_id = part["part_id"][len(part["recipient"])+1:]
+            index = next(i for i, row in enumerate(plan) if row["part_id"] == local_id and row["text"] == part["text"])
+            content_id = hashlib.sha256(json.dumps([result.get("result_id") or result.get("scan_id") or uuid.uuid4().hex, part["recipient"], signature], sort_keys=True, ensure_ascii=False).encode()).hexdigest()
+            content_path = jobs_root(self.jobs_dir) / "receipts" / ("content-" + content_id + ".json")
+            shared = _read_json(content_path) or {"result_id": result.get("result_id"), "recipient": part["recipient"], "signature": signature, "acknowledged_indexes": []}
+            if shared.get("result_id") != result.get("result_id") or shared.get("recipient") != part["recipient"] or shared.get("signature") != signature:
+                raise RuntimeError("content_receipt_mismatch")
+            indexes = shared.get("acknowledged_indexes")
+            if not isinstance(indexes, list) or any(type(i) is not int or i < 0 or i >= len(plan) for i in indexes):
+                raise RuntimeError("invalid_content_receipt")
             if _part_already_sent(part["part_id"], part["text"], done):
+                if index not in indexes:
+                    indexes.append(index)
+                    _atomic_write(content_path, shared)
                 continue
             historical = part.get("state") in {"historical", "info"}
-            self._send_one(
-                event, result, part, recipient=part["recipient"], part_id=part["part_id"],
-                historical=historical,
-            )
-            done.append({"id": part["part_id"], "text": part["text"]})
+            reused = index in indexes
+            if not reused:
+                self._send_one(
+                    event, result, part, recipient=part["recipient"], part_id=part["part_id"],
+                    historical=historical,
+                )
+                # First durable ACK, at the existing HTTP -> receipt boundary.
+                # If the view receipt fails, the next attempt recovers from this one.
+                indexes.append(index)
+                _atomic_write(content_path, shared)
+            done.append({"id": part["part_id"], "text": part["text"], "content_receipt_id": content_id, "reused": reused})
             event["delivered_part_ids"] = done
             _persist_delivery(self.jobs_dir, event)
 
@@ -204,7 +235,7 @@ def _done_records(raw: Any) -> list[dict[str, str]]:
         if isinstance(item, str):
             records.append({"id": item, "text": ""})
         elif isinstance(item, dict) and item.get("id"):
-            records.append({"id": str(item["id"]), "text": str(item.get("text") or "")})
+            records.append({"id": str(item["id"]), "text": str(item.get("text") or ""), **{key:item[key] for key in ("content_receipt_id", "reused") if key in item}})
     return records
 
 

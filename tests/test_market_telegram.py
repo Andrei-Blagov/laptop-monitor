@@ -288,7 +288,7 @@ class MarketTelegramTests(unittest.TestCase):
         self.assertTrue(self.sender.sent)
         self.assertTrue(all(not item["current"] for item in self.sender.sent))
         self.assertIn("Текущая выгода не подтверждена", text)
-        self.assertIn(fresh, text)
+        self.assertIn("14.10.2026 15:00 МСК", text)
         self.assertNotIn("Наблюдение не текущее", text)
 
     def test_partial_delivery_retries_only_the_missing_part(self) -> None:
@@ -465,7 +465,7 @@ class MarketTelegramTests(unittest.TestCase):
         self.assertIn("остаются информационными", thai)
         self.assertNotIn("не текущая", thai)
         self.assertIn("Эта пара не текущая", text)
-        self.assertIn("advice: 429", text)
+        self.assertIn("advice: магазин ограничил запросы", text)
 
     def test_configured_sender_posts_through_mock_transport(self) -> None:
         import httpx
@@ -735,7 +735,7 @@ class MarketTelegramTests(unittest.TestCase):
         }
         parts = format_market_messages(result, {"requested_view": "general_top", "recipients": ["1"]}, now=NOW)
         text = "\n".join(part["text"] for part in parts)
-        self.assertIn(old, text)
+        self.assertIn("12.10.2026 15:00 МСК", text)
         self.assertIn("историческ", text.lower())
         self.assertIn("не означает", text)
         fresh_state = next(part["text"] for part in parts if "Свежая без пары" in part["text"])
@@ -880,8 +880,8 @@ class MarketTelegramTests(unittest.TestCase):
         self.assertEqual(states["advice"], "429")
         self.assertIn("failed", states.values())
         text = "\n".join(item["text"] for item in self.sender.sent)
-        self.assertIn("advice: 429", text)
-        self.assertIn("не проверен", text)
+        self.assertIn("advice: магазин ограничил запросы", text)
+        self.assertIn("со сбоем", text)
 
 
 if __name__ == "__main__":

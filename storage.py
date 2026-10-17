@@ -208,9 +208,18 @@ def init_db(conn: sqlite3.Connection) -> None:
             ON store_runs(store, attempted_at DESC);
         """
     )
+    _migrate_product_price_clock(conn)
     _migrate_notification_schema(conn)
     _migrate_pipeline_runs(conn)
     conn.commit()
+
+
+def _migrate_product_price_clock(conn: sqlite3.Connection) -> None:
+    columns = {row[1] for row in conn.execute("PRAGMA table_info(products)")}
+    if "price_checked_at" not in columns:
+        conn.execute("ALTER TABLE products ADD COLUMN price_checked_at TEXT")
+        # Legacy last_checked_at is the own Product observation, never pipeline time.
+        conn.execute("UPDATE products SET price_checked_at=last_checked_at WHERE price>0")
 
 
 def _table_sql(conn: sqlite3.Connection, name: str) -> str | None:
@@ -912,6 +921,7 @@ def upsert_product(conn: sqlite3.Connection, product: Product) -> tuple[str, boo
             изменились price/available и добавлена запись в history
     """
     checked_at = _iso(product.checked_at)
+    price_checked_at = _iso(product.price_checked_at or product.checked_at) if product.price is not None and product.price > 0 else None
     available_int = int(bool(product.available))
     existing = get_product(conn, product.store, product.external_id)
 
@@ -928,9 +938,10 @@ def upsert_product(conn: sqlite3.Connection, product: Product) -> tuple[str, boo
                 available,
                 first_seen_at,
                 last_seen_at,
-                last_checked_at
+                last_checked_at,
+                price_checked_at
             )
-            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
             """,
             (
                 product.store,
@@ -943,6 +954,7 @@ def upsert_product(conn: sqlite3.Connection, product: Product) -> tuple[str, boo
                 checked_at,
                 checked_at,
                 checked_at,
+                price_checked_at,
             ),
         )
         product_id = int(cur.lastrowid)
@@ -966,7 +978,8 @@ def upsert_product(conn: sqlite3.Connection, product: Product) -> tuple[str, boo
             price = ?,
             available = ?,
             last_seen_at = ?,
-            last_checked_at = ?
+            last_checked_at = ?,
+            price_checked_at = ?
         WHERE id = ?
         """,
         (
@@ -977,6 +990,7 @@ def upsert_product(conn: sqlite3.Connection, product: Product) -> tuple[str, boo
             available_int,
             checked_at,
             checked_at,
+            price_checked_at,
             product_id,
         ),
     )
@@ -1031,18 +1045,7 @@ def get_all_products_readonly(db_path: Path | str = DEFAULT_DB_PATH) -> list[dic
 def _fetch_all_products(conn: sqlite3.Connection) -> list[dict]:
     rows = conn.execute(
         """
-        SELECT
-            id,
-            store,
-            external_id,
-            sku,
-            name,
-            url,
-            price,
-            available,
-            first_seen_at,
-            last_seen_at,
-            last_checked_at
+        SELECT *
         FROM products
         ORDER BY store, id
         """

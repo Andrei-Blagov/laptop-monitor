@@ -333,10 +333,10 @@ class RussianMarketSnapshotTests(unittest.TestCase):
             conn.execute(
                 """
                 UPDATE products
-                SET price=?, last_checked_at=?, last_seen_at=?
+                SET price=?, price_checked_at=?, last_checked_at=?, last_seen_at=?
                 WHERE store=? AND external_id=?
                 """,
-                (new_price, NOW.isoformat(), NOW.isoformat(), "regard", "base-17"),
+                (new_price, NOW.isoformat(), NOW.isoformat(), NOW.isoformat(), "regard", "base-17"),
             )
             conn.execute(
                 """

@@ -1,0 +1,103 @@
+{
+  "scan_id": "f2035f4a-841c-492a-8f96-9734e174be47",
+  "thai_snapshot_id": "34832ff9-a6a4-4f5c-9282-c6a0752e6617",
+  "origin": "Preserved extracted fields only; HTTP response bodies were not retained. Parser-body test strings are labelled reconstructions.",
+  "speedcom": [
+    {
+      "external_id": "7311894708320:41635362963552",
+      "title": "โน๊ตบุ๊ค MSI Raider A18 HX A9WIG-071TH Ryzen 9 สีดำ (Core Black)",
+      "ssd_gb": 96
+    },
+    {
+      "external_id": "7311913975904:41635473457248",
+      "title": "โน๊ตบุ๊ค MSI Vector 16 HX AI A2XWIG-078TH Ultra 9 สีเทา (Cosmos Gray)",
+      "ssd_gb": 96
+    },
+    {
+      "external_id": "7369937453152:41792205586528",
+      "title": "โน๊ตบุ๊ค MSI Titan 18 HX AI A2XWIG-080TH Ultra 9 สีดำ (Core Black)",
+      "ssd_gb": 2048
+    },
+    {
+      "external_id": "7388647981152:41864213332064",
+      "title": "โน๊ตบุ๊ค MSI Vector 16 HX AI A2XWHG-253TH Ultra 7 สีเทา (Cosmos Gray)",
+      "ssd_gb": 512
+    },
+    {
+      "external_id": "7394125971552:41890667757664",
+      "title": "โน๊ตบุ๊ค Lenovo Legion Pro 7 16IAX10H-83F5004ETA Ultra 9 สีดำ (Eclipse Black)",
+      "ssd_gb": 1024
+    },
+    {
+      "external_id": "7394140291168:41890710847584",
+      "title": "โน๊ตบุ๊ค Lenovo Legion Pro 7 16IAX10H-83F5001VTA Ultra 9 สีดำ (Eclipse Black)",
+      "ssd_gb": 1024
+    },
+    {
+      "external_id": "7398179111008:41907627491424",
+      "title": "โน๊ตบุ๊ค MSI Raider 18 HX AI A2XWIG-645TH Ultra 9 สีดำ (Core Black)",
+      "ssd_gb": null
+    },
+    {
+      "external_id": "7398348980320:41908068122720",
+      "title": "โน๊ตบุ๊ค MSI Vector 17 HX A2XWHG-091TH Ultra 9 สีเทา (Cosmos Gray)",
+      "ssd_gb": 1024
+    },
+    {
+      "external_id": "7493029658720:42265866109024",
+      "title": "โน๊ตบุ๊ค Lenovo Legion Pro 7 16IAX10H-83F5004DTA Ultra 9 สีดำ (Eclipse Black)",
+      "ssd_gb": 64
+    },
+    {
+      "external_id": "7521715880032:42339369844832",
+      "title": "โน๊ตบุ๊ค MSI Vector A16 HX A8WHG-020TH Ryzen 9 สีเทา (Cosmos Gray)",
+      "ssd_gb": 96
+    },
+    {
+      "external_id": "7730920423520:42864121774176",
+      "title": "โน๊ตบุ๊ค Asus ROG Zephyrus G16 GU606AW-TB118WA Ultra 9 386H สีขาว (Platinum White)",
+      "ssd_gb": 32
+    },
+    {
+      "external_id": "7773451911264:43033315147872",
+      "title": "โน๊ตบุ๊ค ASUS ROG Strix G16 G614FR-TS235W Ryzen 9 สีเขียว (Volt Green)",
+      "ssd_gb": 64
+    },
+    {
+      "external_id": "7774924767328:43037985472608",
+      "title": "โน๊ตบุ๊ค ASUS ROG Strix G16 G614PR-TS113W Ryzen 9 สีเทา (Eclipse Gray)",
+      "ssd_gb": 64
+    },
+    {
+      "external_id": "7774929322080:43037997367392",
+      "title": "โน๊ตบุ๊ค ASUS ROG Strix G16 G614PW-TS056W Ryzen 9 สีเทา (Eclipse Gray)",
+      "ssd_gb": 64
+    }
+  ],
+  "components": [
+    {
+      "external_id": "0000073919",
+      "title": "VGA (การ์ดแสดงผล) GIGABYTE AORUS GEFORCE RTX 5080 XTREME WATERFORCE 16G - 16GB GDDR7 (GV-N5080AORUSX W-16GD)"
+    },
+    {
+      "external_id": "0000074538",
+      "title": "VGA (การ์ดแสดงผล) ASUS TUF GAMING GEFORCE RTX 5070 TI 16GB GDDR7 OC EDITION (TUF-RTX5070TI-O16G-GAMING)"
+    },
+    {
+      "external_id": "0000076727",
+      "title": "VGA (การ์ดแสดงผล) ASUS ROG STRIX GEFORCE RTX 5070 TI 16GB GDDR7 OC EDITION"
+    },
+    {
+      "external_id": "0000078362",
+      "title": "VGA (การ์ดแสดงผล) ASUS TUF GAMING GEFORCE RTX 5070 TI 16GB GDDR7 WHITE OC EDITION"
+    },
+    {
+      "external_id": "0000086833",
+      "title": "VGA (การ์ดแสดงผล) GIGABYTE AORUS GEFORCE RTX 5080 INFINITY 16G - 16GB GDDR7 GV-N5080AORUS IF-16GD"
+    },
+    {
+      "external_id": "0000086834",
+      "title": "VGA (การ์ดแสดงผล) GIGABYTE AORUS GEFORCE RTX 5080 INFINITY WOOD 16G - 16GB GDDR7 GV-N5080AORUSIF WD-16GD"
+    }
+  ]
+}
