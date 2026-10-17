@@ -35,3 +35,5 @@ with the previous image; rollback must preserve new delivery/content ACKs,
 queues, history and Retry-After. Never restore old receipts over delivered work.
 Historical replay must prove input provenance; it may not infer missing specs
 or substitute newer observations. One new live control cycle only after deploy.
+
+Thai catalog compatibility includes evidence revision0111-laptop-components-own-ssd-v1. Pre-fix retained evidence is refreshed by the standard planner without editing original observations or bypassing source backoff.
