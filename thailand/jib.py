@@ -121,6 +121,11 @@ def parse_suggestion_discovery(
         if exclude_non_target_gpu(title) and not gpu_from_explicit_text(title):
             continue
         specs = specs_from_text(title, catalog_gpu=search_context_gpu, apply_catalog_gpu=False)
+        title_evidence = {
+            key: specs.get(key)
+            for key in ("cpu", "ram_gb", "ssd_gb", "screen_inch", "screen_resolution")
+            if specs.get(key) is not None
+        }
         title_gpu = gpu_from_explicit_text(title)
         # If title explicitly has a non-target GPU, drop.
         if title_gpu and exclude_non_target_gpu(title_gpu):
@@ -180,6 +185,11 @@ def parse_suggestion_discovery(
                 "image": raw.get("link"),
             },
         )
+        from thailand.field_evidence import record_field_evidence
+
+        record_field_evidence(
+            offer, title_evidence, method="explicit_title", captured_at=collected_at
+        )
         # Mark search query provenance on candidate only
         if candidate_gpu and not title_gpu:
             offer.metadata["candidate_gpu_source"] = GPU_SOURCE_SEARCH_QUERY
@@ -224,7 +234,11 @@ def parse_read_product_html(
 ) -> dict[str, Any]:
     """Extract product-specific fields from JIB readProduct HTML."""
     collected_at = collected_at or datetime.now(timezone.utc)
-    out: dict[str, Any] = {"external_id": external_id, "collected_at": collected_at}
+    out: dict[str, Any] = {
+        "external_id": external_id,
+        "collected_at": collected_at,
+        "field_methods": {},
+    }
     if not html or len(html) < 80:
         out["error"] = "empty_html"
         return out
@@ -266,15 +280,18 @@ def parse_read_product_html(
     cpu_m = _CPU_LINE.search(html)
     if cpu_m:
         out["cpu"] = re.sub(r"\s+", " ", cpu_m.group(1)).strip()
+        out["field_methods"]["cpu"] = GPU_SOURCE_STRUCTURED_PRODUCT_PAGE
     else:
         title_specs = extract_specs_from_name(out["name"])
         if title_specs.get("cpu"):
             out["cpu"] = title_specs["cpu"]
+            out["field_methods"]["cpu"] = GPU_SOURCE_EXPLICIT_TITLE
 
     ram_m = _RAM_INLINE.search(html)
     if ram_m:
         try:
             out["ram_gb"] = int(ram_m.group(1))
+            out["field_methods"]["ram_gb"] = GPU_SOURCE_STRUCTURED_PRODUCT_PAGE
         except ValueError:
             pass
 
@@ -283,6 +300,7 @@ def parse_read_product_html(
         ssd = _parse_ssd_amount(ssd_m.group(1))
         if ssd:
             out["ssd_gb"] = ssd
+            out["field_methods"]["ssd_gb"] = GPU_SOURCE_STRUCTURED_PRODUCT_PAGE
 
     screen_m = _SCREEN_LINE.search(html)
     if screen_m:
@@ -290,9 +308,11 @@ def parse_read_product_html(
         sm = re.search(r"(15\.6|16\.1|17\.3|18|17|16)", sc)
         if sm:
             out["screen_size_inch"] = float(sm.group(1))
+            out["field_methods"]["screen_inch"] = GPU_SOURCE_STRUCTURED_PRODUCT_PAGE
         rm = re.search(r"(\d{3,4})\s*[xх×]\s*(\d{3,4})", sc, re.I)
         if rm:
             out["screen_resolution"] = f"{rm.group(1)}x{rm.group(2)}"
+            out["field_methods"]["screen_resolution"] = GPU_SOURCE_STRUCTURED_PRODUCT_PAGE
 
     # Availability from qty assignment when present on product page.
     qty_vals = [int(m.group(1)) for m in _QTY_ASSIGN.finditer(html)]
@@ -361,6 +381,21 @@ def apply_detail_verification(
         offer.screen_size_inch = float(detail["screen_size_inch"])
     if detail.get("screen_resolution"):
         offer.screen_resolution = str(detail["screen_resolution"])
+    methods = detail.get("field_methods") or {}
+    observed = detail.get("collected_at") or offer.collected_at
+    if methods and isinstance(observed, datetime):
+        from thailand.field_evidence import record_field_evidence
+
+        record_field_evidence(
+            offer,
+            {field: True for field in methods},
+            method="structured_product_page",
+            captured_at=observed,
+        )
+        evidence = offer.metadata["field_evidence"]
+        for field, method in methods.items():
+            if field in evidence:
+                evidence[field]["method"] = method
     if detail.get("manufacturer_part_number"):
         offer.manufacturer_part_number = str(detail["manufacturer_part_number"])
         offer.sku = offer.sku or offer.manufacturer_part_number

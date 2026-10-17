@@ -219,6 +219,20 @@ def parse_itcity_hit(
         product_id=str(hit.get("productId") or "") or None,
         metadata={"index_object": hit.get("objectID")},
     )
+    from thailand.field_evidence import record_field_evidence
+
+    record_field_evidence(
+        offer,
+        {
+            "cpu": specs.get("cpu"),
+            "ram_gb": specs.get("ram_gb"),
+            "ssd_gb": specs.get("ssd_gb"),
+            "screen_inch": specs.get("screen_inch"),
+            "screen_resolution": specs.get("screen_resolution"),
+        },
+        method="structured_api",
+        captured_at=collected_at,
+    )
     return [compute_verification(offer)]
 
 

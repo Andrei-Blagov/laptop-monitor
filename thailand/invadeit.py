@@ -160,6 +160,20 @@ def parse_invadeit_item(
         product_id=str(item.get("id") or "") or None,
         metadata={"category": category, "key_specs": item.get("keySpecs")},
     )
+    from thailand.field_evidence import record_field_evidence
+
+    record_field_evidence(
+        offer,
+        {
+            "cpu": specs.get("cpu"),
+            "ram_gb": specs.get("ram_gb"),
+            "ssd_gb": specs.get("ssd_gb"),
+            "screen_inch": specs.get("screen_inch"),
+            "screen_resolution": specs.get("screen_resolution"),
+        },
+        method="structured_api",
+        captured_at=collected_at,
+    )
     return compute_verification(offer)
 
 
@@ -211,20 +225,26 @@ def enrich_offer_from_specifications(
     if not text.strip():
         return offer
     specs = specs_from_text(text)
+    filled: dict[str, Any] = {}
     if offer.cpu is None and specs.get("cpu"):
         offer.cpu = specs["cpu"]
+        filled["cpu"] = offer.cpu
     if offer.ram_gb is None and specs.get("ram_gb"):
         offer.ram_gb = specs["ram_gb"]
+        filled["ram_gb"] = offer.ram_gb
     if offer.ssd_gb is None and specs.get("ssd_gb"):
         offer.ssd_gb = specs["ssd_gb"]
+        filled["ssd_gb"] = offer.ssd_gb
     if offer.screen_size_inch is None and specs.get("screen_inch"):
         offer.screen_size_inch = specs["screen_inch"]
+        filled["screen_inch"] = offer.screen_size_inch
     display = display_field_value(payload)
     resolution = None
     if display:
         resolution = specs_from_text(display).get("screen_resolution")
     if offer.screen_resolution is None and resolution:
         offer.screen_resolution = str(resolution)
+        filled["screen_resolution"] = offer.screen_resolution
         offer.metadata = dict(offer.metadata or {})
         offer.metadata["screen_resolution_evidence"] = {
             "product_id": offer.product_id,
@@ -241,6 +261,14 @@ def enrich_offer_from_specifications(
     offer.availability_source = offer.availability_source or AVAIL_SOURCE_PRODUCT_DETAIL
     offer.metadata = dict(offer.metadata or {})
     offer.metadata["detail_enriched"] = True
+    from thailand.field_evidence import record_field_evidence
+
+    record_field_evidence(
+        offer,
+        filled,
+        method="structured_api",
+        captured_at=fetched_at or offer.collected_at,
+    )
     return compute_verification(offer)
 
 
