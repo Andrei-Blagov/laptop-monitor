@@ -392,9 +392,12 @@ class BackupModulePathTests(unittest.TestCase):
                 ],
                 db,
             )
-            code = backup_main(["--db", str(db), "--out-dir", str(out)])
-            self.assertEqual(code, 0)
-            self.assertTrue(list(out.glob("laptop_monitor_*.db")))
+            from ops.state_copy import Refused
+            # Scheduled CLI now requires a kernel read-only full-state source.
+            # Its successful DELETE/WAL path is exercised in real Docker CI.
+            with self.assertRaises(Refused):
+                backup_main(["--source", str(db.parent), "--out-dir", str(out)])
+            self.assertFalse(out.exists())
 
 
 if __name__ == "__main__":

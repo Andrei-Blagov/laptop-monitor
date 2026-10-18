@@ -113,6 +113,11 @@ def _daily_parts(result, event, now):
                                -int(item[1].get("confidence") or 0),
                                Decimal(str(item[1].get("price_rub") or "Infinity")),
                                item[0], str(item[1].get("best_offer_id"))))
+    pairs = [p for p in _confirmed_pairs(comparison, "all") if _pair_purchase(p, result, now)]
+    pair_by_offer = {}
+    for pair in pairs:
+        for side in ("th", "ru"):
+            pair_by_offer[(side.upper(), str(pair.get(side + "_offer_id")))] = pair
     chosen, seen = [], set()
     for market, row in rows:
         offer = _best_offer(row)
@@ -135,7 +140,10 @@ def _daily_parts(result, event, now):
         price = Decimal(str(row.get("price_rub") or 0))
         if not 0 < price <= MAX_PRICE_RUB:
             continue
-        key = (market, str(row.get("variant_id") or row.get("model_id") or offer.get("offer_id")))
+        pair = pair_by_offer.get((market, str(offer.get("offer_id"))))
+        # Only a D-confirmed relation joins the two regional listings. Printed
+        # names/SKUs alone never collapse configurations.
+        key = ("pair", str(pair["th_variant_id"])) if pair else _daily_model_key(market, row, offer)
         if key in seen:
             continue
         seen.add(key)
@@ -143,7 +151,9 @@ def _daily_parts(result, event, now):
         if len(chosen) == 5:
             break
     lines = [f"Ноутбуки — {day}, 08:00 МСК", f"До {MAX_PRICE_RUB:,} ₽ · RTX 5070 Ti / 5080 Laptop".replace(",", " ")]
-    if not chosen:
+    if result.get("status") == "failed":
+        lines.append("Обновление не удалось. Актуальная подборка не сформирована; по этому сбою нельзя судить о рынке.")
+    elif not chosen:
         lines.append("Сейчас нет предложений, которые одновременно проходят требования к характеристикам, цене, наличию и свежести. Фильтры не ослаблены.")
     else:
         lines.append(f"Подтверждено подходящих вариантов в этом отчёте: {len(chosen)}.")
@@ -154,7 +164,15 @@ def _daily_parts(result, event, now):
                       (f" ({offer.get('price')} ฿)" if market == "TH" else ""), _specs(offer),
                       f"{offer.get('source')} · {_AVAILABILITY[offer['availability_state']]}",
                       f"Цена: {_display_time(offer.get('price_checked_at'))}; наличие: {_display_time(offer.get('availability_checked_at'))}"])
-        if _personal(row) or _personal(offer):
+        pair = pair_by_offer.get((market, str(offer.get("offer_id"))))
+        if pair:
+            lines.append(_relation_line(pair))
+            lines.append(_saving_line(pair, purchase_current=True))
+            other = pair.get("ru_observation" if market == "TH" else "th_observation") or {}
+            lines.append(f"Сравнение: {other.get('source')} · {other.get('price')} {'₽' if market == 'TH' else '฿'}")
+            if other.get("url"):
+                lines.append(str(other["url"]))
+        if _personal(row) or _personal(offer) or (pair and _personal_pair(pair)):
             lines.append("Личный TOP-3: эталон")
         if offer.get("url"):
             lines.append(str(offer["url"]))
@@ -182,6 +200,16 @@ def _daily_parts(result, event, now):
             return _daily_parts(compact, event, now)
         text = text[:MESSAGE_LIMIT - 100] + "\nПолное описание ограничений сохранено в диагностике."
     return [{"part_id": "daily#0", "text": text, "reply_markup": None}]
+
+
+def _daily_model_key(market, row, offer):
+    # RU model_id is an exporter identity; include every confirmed hardware
+    # field so different configurations never disappear behind one family.
+    model = row.get("model_id") or offer.get("model_id")
+    if model:
+        return (market, str(model), tuple(str(_spec_value(offer, k)) for k in
+                ("cpu", "gpu", "ram_gb", "ssd_gb", "screen_inch", "screen_resolution")))
+    return (market, str(row.get("variant_id") or offer.get("offer_id")))
 
 
 def _render_parts(result, event, now) -> list[dict[str, Any]]:
@@ -631,6 +659,8 @@ def _coverage_text(comparison: Mapping[str, Any], result: Mapping[str, Any]) -> 
     summary = comparison.get("ru_input_summary") or {}
     ru_empty = summary.get("offer_count") == 0 and (comparison.get("data_freshness") or {}).get("ru_current") is True
     prefix = ""
+    if comparison and (comparison.get("data_freshness") or {}).get("ru_current") is False:
+        prefix = "Российское сравнение сейчас недоступно: свежего российского снимка нет. Это не означает отсутствия модели в России."
     if ru_empty:
         counts = summary.get("exclusion_reasons") or {}
         labels = {"stale_observation": "не прошли проверку свежести", "store_stale": "источник устарел", "price_over_cap": "дороже лимита", "not_available": "нет в наличии", "not_eligible": "не прошли требования к характеристикам"}

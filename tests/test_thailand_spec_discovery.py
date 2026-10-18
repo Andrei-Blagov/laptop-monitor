@@ -36,6 +36,7 @@ def _offer(**kwargs) -> ThailandOffer:
         ram_gb=32,
         ssd_gb=1024,
         screen_resolution="2560x1600",
+        screen_size_inch=16,
     )
     base.update(kwargs)
     return ThailandOffer(**base)

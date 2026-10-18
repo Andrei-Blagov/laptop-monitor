@@ -108,8 +108,8 @@ class DealRankingV2Tests(unittest.TestCase):
         self.assertGreaterEqual(far, 0)
 
     def test_04_eligibility_cap_boundary(self) -> None:
-        self.assertTrue(config.is_price_in_tracking_scope(330_000))
-        self.assertFalse(config.is_price_in_tracking_scope(330_001))
+        self.assertTrue(config.is_price_in_tracking_scope(290_000))
+        self.assertFalse(config.is_price_in_tracking_scope(290_001))
         match = _match(
             "Over",
             [_offer(price=350_000, available=True)],
@@ -158,7 +158,7 @@ class DealRankingV2Tests(unittest.TestCase):
         s17 = score_screen(17)[0]
         s16 = score_screen(16)[0]
         s156 = score_screen(15.6)[0]
-        self.assertGreater(s18, s17)
+        self.assertGreater(s17, s18)
         self.assertGreater(s17, s16)
         self.assertGreater(s16, s156)
 
@@ -261,7 +261,7 @@ class DealRankingV2Tests(unittest.TestCase):
     def test_22_expensive_5080_vs_value_5070ti(self) -> None:
         m5080 = _match(
             "ASUS 5080",
-            [_offer(store="kns", external_id="a", price=299_000, product_id=1)],
+            [_offer(store="kns", external_id="a", price=290_000, product_id=1)],
             sku="A",
         )
         m5070 = _match(
@@ -350,7 +350,7 @@ class DealRankingV2Tests(unittest.TestCase):
         self.test_22_expensive_5080_vs_value_5070ti()
 
     def test_25_over_cap_never_ranked(self) -> None:
-        match = _match("X", [_offer(price=330_001)])
+        match = _match("X", [_offer(price=290_001)])
         self.assertEqual(rank_clusters([match], hard_filters=False), [])
 
     def test_26_stale_store_excluded(self) -> None:
@@ -561,15 +561,15 @@ class DealRankingV2Tests(unittest.TestCase):
 
     def test_32_top_deals_prices_le_cap(self) -> None:
         matches = [
-            _match("A", [_offer(price=329_999, product_id=1)], sku="A"),
+            _match("A", [_offer(price=289_999, product_id=1)], sku="A"),
             _match(
                 "B",
-                [_offer(store="regard", external_id="b", price=330_001, product_id=2)],
+                [_offer(store="regard", external_id="b", price=290_001, product_id=2)],
                 sku="B",
             ),
         ]
         ranked = rank_clusters(matches, hard_filters=False)
-        self.assertTrue(all((d.price or 0) <= 330_000 for d in ranked))
+        self.assertTrue(all((d.price or 0) <= 290_000 for d in ranked))
         self.assertTrue(all(d.cluster_name != "B" for d in ranked))
 
 

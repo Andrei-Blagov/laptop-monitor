@@ -1,5 +1,5 @@
 [Unit]
-Description=Laptop Monitor SQLite backup (Docker Compose)
+Description=Laptop Monitor full-state backup and safe retention (Docker Compose)
 Requires=docker.service
 After=docker.service
 

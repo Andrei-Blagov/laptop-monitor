@@ -84,7 +84,7 @@ class TopHardeningTests(unittest.TestCase):
             external_id="b",
             name="ROG STRIX G18 RTX 5080",
             gpu="RTX 5080",
-            price_thb=120000,
+            price_thb=110000,
         )
         top = build_thai_top([a, b], fx=_fx(), limit=5)
         self.assertEqual(len(top), 2)

@@ -137,8 +137,8 @@ class InvadeItParseTests(unittest.TestCase):
         self.assertTrue(offer.metadata.get("detail_enriched"))
 
     def test_cap_filtering(self) -> None:
-        inside = parse_invadeit_item(_item(price=330000, keySpecs="32GB DDR5 / 1TB SSD / 2560x1600 / RTX 5070 Ti"))
-        outside = parse_invadeit_item(_item(price=330001, keySpecs="32GB DDR5 / 1TB SSD / 2560x1600 / RTX 5070 Ti"))
+        inside = parse_invadeit_item(_item(price=290000, keySpecs="32GB DDR5 / 1TB SSD / 2560x1600 / RTX 5070 Ti"))
+        outside = parse_invadeit_item(_item(price=290001, keySpecs="32GB DDR5 / 1TB SSD / 2560x1600 / RTX 5070 Ti"))
         assert inside and outside
         ok_in, _, _ = offer_user_facing_eligible(inside, fx=_fx())
         ok_out, reason, _ = offer_user_facing_eligible(outside, fx=_fx())

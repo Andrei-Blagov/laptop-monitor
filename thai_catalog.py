@@ -80,7 +80,7 @@ def discovery_scope_hash() -> str:
     adapters = get_thailand_adapters()
     payload = {
         # Parser/evidence changes must refresh retained catalogues without rewriting them.
-        "evidence_revision": "0111-laptop-components-own-ssd-v1",
+        "evidence_revision": "0120-own-field-clock-identity-policy-v1",
         "gpu_queries": list(GPU_SEARCH_QUERIES),
         "line_queries": list(LINE_SEARCH_QUERIES),
         "query_budget": QUERY_BUDGET,
@@ -288,7 +288,8 @@ def comparison_from_catalog(
                     "variant_id": offer.variant_id or offer.offer_id,
                     "offers": [offer.to_dict()], "best_offer_id": offer.offer_id,
                     "name": offer.name, "price_rub": str(assessment.price_rub),
-                    "score": str(score), "confidence": confidence, "score_breakdown": breakdown})
+                    "score": str(score), "confidence": confidence, "score_breakdown": breakdown,
+                    "in_personal_top3": any(offer.model_id in p["model_ids"] for p in ru.personal_profiles)})
     from decimal import Decimal
     ru_rows.sort(key=lambda row: (-Decimal(row["score"]), -row["confidence"], Decimal(row["price_rub"]), row["best_offer_id"]))
     comparison["ru_eligible_offers"] = ru_rows

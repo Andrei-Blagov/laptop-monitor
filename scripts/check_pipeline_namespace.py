@@ -38,9 +38,13 @@ print(json.dumps({'acquired':acquired,'pid':os.getpid()}))
             result=json.loads(docker('run','--name',name+'-contender','--rm',*common,image_id,'python','-c',contender).stdout)
             report.update(owner_pid=int((work/'ready').read_text()),contender=result,owner_still_running=json.loads(docker('container','inspect',name).stdout)[0]['State']['Running'])
             if result['acquired'] != (a.expect=='defect') or not report['owner_still_running']:raise RuntimeError('unexpected lock outcome')
-            report['status']='PASS'
+            docker('stop','--time','1',name)
+            recovered=json.loads(docker('run','--name',name+'-recover','--rm',*common,image_id,'python','-c',contender).stdout)
+            if not recovered['acquired']:raise RuntimeError('lock not recovered after owner death')
+            report['recovery_after_owner_exit']=recovered
+            report['status']='PASS' 
         finally:
-            for resource in (name+'-contender',name):
+            for resource in (name+'-recover',name+'-contender',name):
                 found=docker('container','inspect',resource,check=False)
                 if found.returncode==0:
                     obj=json.loads(found.stdout)[0]

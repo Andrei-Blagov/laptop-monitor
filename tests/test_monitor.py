@@ -298,7 +298,7 @@ class TargetPriceTests(MonitorTestBase):
         save_products(
             [
                 _product(
-                    price=295_000,
+                    price=275_000,
                     name="Laptop RTX 5080",
                 )
             ],

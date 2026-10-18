@@ -68,6 +68,7 @@ def _row(price: int, *, store: str = "jib", oos: bool = False, diffs: list[str] 
         "ram_gb": 32,
         "ssd_gb": 1024,
         "screen_resolution": "2560x1600",
+        "screen_size_inch": 16,
         "verification_status": "VERIFIED",
         "availability_confirmed": not oos,
         "manufacturer_part_number": "G614PR-TS113W",

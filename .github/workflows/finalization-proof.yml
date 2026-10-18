@@ -19,9 +19,11 @@ jobs:
           persist-credentials: false
       - name: Actual accepted RU lock in separate PID namespaces
         run: sudo env PATH="$PATH" python3 scripts/check_pipeline_namespace.py --source accepted-0111 --expect defect
+      - name: Fixed RU lock and owner-death recovery
+        run: sudo env PATH="$PATH" python3 scripts/check_pipeline_namespace.py --source . --expect fixed
       - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
         if: always()
         with:
           name: ru-lock-original-evidence
-          path: dist/checks/ru-lock-defect.json
+          path: dist/checks/ru-lock-*.json
           retention-days: 30

@@ -311,6 +311,7 @@ def attach_series_candidates(
                 "ssd_gb": getattr(offer, "ssd_gb", None),
                 "screen_inch": getattr(offer, "screen_size_inch", None),
                 "screen_resolution": getattr(offer, "screen_resolution", None),
+                "screen_size_inch": getattr(offer, "screen_size_inch", None),
             },
         )
         if not _suits_series_profile(model, specs):
@@ -332,6 +333,7 @@ def attach_series_candidates(
                 "ram_gb": getattr(offer, "ram_gb", None),
                 "ssd_gb": getattr(offer, "ssd_gb", None),
                 "screen_resolution": getattr(offer, "screen_resolution", None),
+                "screen_size_inch": getattr(offer, "screen_size_inch", None),
                 "availability_confirmed": bool(getattr(offer, "availability_confirmed", False)),
                 "verification_status": getattr(offer, "verification_status", None),
                 "marketplace": bool(getattr(offer, "marketplace", False)),
