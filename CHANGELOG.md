@@ -2,6 +2,17 @@
 
 ## Unreleased
 
+## 0.12.0 — 2026-10-18
+
+Approved final B/C corrections; no new stores or replacement comparison engine.
+
+- Own evidence clocks survive RU/TH extraction, cache, snapshots and matching; legacy undated data is not silently refreshed
+- Shared inclusive 290000 RUB policy, 17-inch preference, 230000/280000 targets and standard VRAM only for a proven exact Laptop GPU; conflicting data remains excluded
+- One compact 08:00 Moscow digest of eligible models, explicit source limitations and personal benchmark badges; manual views and durable content ACK semantics preserved
+- Reproduced cross-container RU PID-lock defect fixed with a stable kernel lease and tested owner-death recovery
+- Full private state backups, seven verified daily copies, graph-protected orphan retention and per-project Docker log rotation; no history or ACK horizon reduction
+- Seven calendar days of post-release observation are required before declaring this version stable
+
 ## 0.11.0 — 2026-10-17
 
 Stage 2.2 shared Russian and Thailand market runtime, integrated from the accepted A–F2 chain.

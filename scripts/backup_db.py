@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-"""SQLite online backup + integrity check + retention."""
+"""Full-state scheduled backup; legacy SQLite functions remain diagnostic APIs."""
 
 import argparse
 import sqlite3

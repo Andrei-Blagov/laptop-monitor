@@ -73,6 +73,8 @@ jobs:
         run: |
           set -Eeuo pipefail
           python -m scripts.check_containers --image "laptop-monitor-ci:$(cat VERSION)"
+      - name: Real full-state DELETE/WAL backup, restore and dependency protection
+        run: sudo env PATH="$PATH" python3 scripts/check_full_backup.py --image "laptop-monitor-ci:$(cat VERSION)"
       - name: Upload container evidence
         if: always()
         uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02

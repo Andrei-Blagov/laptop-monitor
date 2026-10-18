@@ -27,7 +27,7 @@ export COMPOSE_PROJECT_NAME="${COMPOSE_PROJECT_NAME:-laptop-monitor}"
 cd "${ROOT}"
 
 compose() {
-  docker compose \
+  docker --host=unix:///var/run/docker.sock compose \
     -f "${ROOT}/deploy/docker-compose.yml" \
     --project-directory "${ROOT}" \
     "$@"
@@ -41,12 +41,12 @@ case "${1:-}" in
     shift
     compose --profile manual build "$@"
     if [[ "${cmd}" == "build-image" ]]; then
-      docker image inspect "laptop-monitor:${VERSION}" --format '{{.Id}}' >/dev/null
+      docker --host=unix:///var/run/docker.sock image inspect "laptop-monitor:${VERSION}" --format '{{.Id}}' >/dev/null
       echo "Built image laptop-monitor:${VERSION}"
     fi
     ;;
   *)
-    exec docker compose \
+    exec docker --host=unix:///var/run/docker.sock compose \
       -f "${ROOT}/deploy/docker-compose.yml" \
       --project-directory "${ROOT}" \
       "$@"

@@ -109,6 +109,8 @@ def _daily_parts(result, event, now):
     rankings = result.get("rankings") or {}
     rows = [("TH", row) for row in rankings.get("eligible_models", rankings.get("thai_top_value", []))]
     rows += [("RU", row) for row in comparison.get("ru_eligible_offers") or []]
+    if result.get("status") == "failed":
+        rows = []
     rows.sort(key=lambda item: (-Decimal(str(item[1].get("score") or 0)),
                                -int(item[1].get("confidence") or 0),
                                Decimal(str(item[1].get("price_rub") or "Infinity")),

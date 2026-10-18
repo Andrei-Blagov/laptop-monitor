@@ -83,3 +83,15 @@ def apply(root,*,now):
         path.unlink();removed.append(entry)
     return {'removed_count':len(removed),'removed_bytes':sum(x['bytes'] for x in removed),
             'ack_policy':'preserved; no ACK/receipt expiration introduced','history_preserved':True}
+
+
+def main():
+    import argparse
+    from datetime import datetime, timezone
+    parser=argparse.ArgumentParser(description=__doc__)
+    parser.add_argument('--root',required=True,type=Path)
+    args=parser.parse_args()
+    # The host maintenance controller holds the four leases throughout.
+    print(json.dumps(apply(args.root,now=datetime.now(timezone.utc))))
+
+if __name__=='__main__':main()

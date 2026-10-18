@@ -1,5 +1,5 @@
 [Unit]
-Description=Daily Laptop Monitor SQLite backup timer
+Description=Daily Laptop Monitor full-state backup timer
 
 [Timer]
 OnCalendar=*-*-* 03:15:00
