@@ -22,8 +22,8 @@ morning cards. Distinct manual views remain distinct; identical formatted
 cards keep existing durable physical-content ACK reuse. No extra live scans.
 At controlled release enable market-daily.timer only; disable personal-top.timer
 (the service remains for explicit requests). Verify actual next elapse08MSK and
-absence of an active Laptop Monitor legacy n8n daily producer; do not touch any
-other workflow/project. Retry/path workers consume one queue, not a new producer.
+no duplicate systemd producer. Existing n8n webhook/infrastructure remain
+unchanged; its legacy daily activation was not established by the accepted audit. Retry/path workers consume one queue, not a new producer.
 
 B4 is NOT NOOP. Accepted v0.11.1 pipeline_lock.py reproduced acquisition by a
 second container PID1 while owner PID7 remained alive, CI39109674327. Kernel
@@ -63,3 +63,8 @@ and operational storage semantics. No feature beyond approved B/C.
 After PASS:7 actual calendar days natural runs, no synthetic live scans. Configure
 supported read-only Automation before promising background observation. Stability
 cannot be declared before this elapsed observation is complete.
+
+Additional B2 regression reproduced at23b5d719: direct evaluate_purchase with
+GPU=RTX5070Ti/RTX5080 incorrectly returned eligible; deal_is_eligible ignored
+explicit16GB VRAM on5070Ti. Fixed exact-target ambiguity check and propagated
+optional VRAM through ranking/BUY/personal/TH gates. Missing VRAM remains allowed.

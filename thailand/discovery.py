@@ -123,6 +123,7 @@ def coverage_for_offers(
         verdict = evaluate_purchase(
             price_rub=price_rub,
             gpu=offer.gpu,
+            gpu_vram_gb=(offer.metadata or {}).get("gpu_vram_gb"),
             ram_gb=offer.ram_gb,
             ssd_gb=offer.ssd_gb,
             screen_resolution=offer.screen_resolution,

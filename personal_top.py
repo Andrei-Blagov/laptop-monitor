@@ -173,6 +173,7 @@ def confirmed_specs(product: Mapping[str, Any], identity: Any = None) -> dict[st
     }
     if any(value is None for value in required.values()):
         return None
+    required["gpu_vram_gb"] = _identity_value(identity, "gpu_vram_gb")
     return required
 
 
@@ -211,6 +212,7 @@ def _profile_specs(product: Mapping[str, Any], identity: Any = None) -> dict[str
         "ssd_gb": _norm_int(raw["ssd_gb"]),
         "screen_inch": _norm_inch(raw["screen_inch"]),
         "screen_resolution": _norm_resolution(raw["screen_resolution"]),
+        "gpu_vram_gb": _identity_value(identity, "gpu_vram_gb"),
     }
 
 
@@ -225,6 +227,7 @@ def _suits_series_profile(model: Mapping[str, Any], specs: Mapping[str, Any]) ->
         return False
     return evaluate_hardware(
         gpu=specs.get("gpu"),
+        gpu_vram_gb=specs.get("gpu_vram_gb"),
         ram_gb=specs.get("ram_gb"),
         ssd_gb=specs.get("ssd_gb"),
         screen_resolution=specs.get("screen_resolution"),
@@ -376,6 +379,7 @@ def russian_side(
 
         if specs is None or not evaluate_hardware(
             gpu=specs.get("gpu"),
+            gpu_vram_gb=specs.get("gpu_vram_gb"),
             ram_gb=specs.get("ram_gb"),
             ssd_gb=specs.get("ssd_gb"),
             screen_resolution=specs.get("screen_resolution"),

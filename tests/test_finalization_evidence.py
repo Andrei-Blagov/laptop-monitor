@@ -73,6 +73,15 @@ class ApprovedPolicy(unittest.TestCase):
         self.assertFalse(evaluate_purchase(price_rub=230000,**(good|{'gpu':'RTX 5070 Ti Desktop'})).eligible)
         self.assertFalse(evaluate_purchase(price_rub=230000,**(good|{'gpu':None})).eligible)
 
+    def test_ambiguous_gpu_and_contradictory_buy_are_rejected(self):
+        from types import SimpleNamespace
+        from laptop_eligibility import deal_is_eligible
+        good=dict(gpu='RTX 5070 Ti Laptop',ram_gb=32,ssd_gb=1024,screen_resolution='2560x1600',screen_inch=17.3)
+        self.assertFalse(deal_is_eligible(SimpleNamespace(price=230000,gpu_vram_gb=16,**good)))
+        self.assertTrue(deal_is_eligible(SimpleNamespace(price=230000,**good)))
+        for gpu in ('RTX 5070 Ti / RTX 5080 Laptop','RTX 5070 Ti / 5080','RTX 5080 SUPER'):
+            self.assertFalse(evaluate_purchase(price_rub=230000,**(good|{'gpu':gpu})).eligible)
+
     def test_inclusive_cap_no_lower_bound_and_diagonal(self):
         good=dict(gpu='RTX 5070 Ti',ram_gb=32,ssd_gb=1000,screen_resolution='2560x1600',screen_inch=15.6)
         for price in (1,200000,290000):self.assertTrue(evaluate_purchase(price_rub=price,**good).eligible)

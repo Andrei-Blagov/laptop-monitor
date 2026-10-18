@@ -56,7 +56,8 @@ def assess_quote(offer: Offer, snapshot: MarketSnapshot, fx: FxObservation | Non
     for key, value in values.items():
         if value is None:
             reasons.append('spec_unconfirmed:' + key)
-    if values['gpu'] not in ('RTX 5070 Ti', 'RTX 5080'):
+    from product_policy import exact_target_gpu
+    if values['gpu'] not in ('RTX 5070 Ti', 'RTX 5080') or exact_target_gpu(offer.specs.get('gpu').value if offer.specs.get('gpu') else None) is None:
         reasons.append('gpu_rejected')
     from product_policy import LAPTOP_VRAM_GB
     vram = offer.extras.get('gpu_vram_gb')

@@ -95,12 +95,8 @@ def evaluate_hardware(
     gpu_vram_gb: Any = None,
 ) -> Eligibility:
     """Shared hardware policy. Unknown values are not treated as a pass."""
-    if (
-        not gpu
-        or re.search(r"DESKTOP|НАСТОЛЬН|\bVGA\b", str(gpu), re.I)
-        or not re.search(r"\bRTX\s*(?:5070\s*TI|5080)\b", str(gpu), re.I)
-        or canonical_gpu(str(gpu)) not in TARGET_GPUS
-    ):
+    from product_policy import exact_target_gpu
+    if exact_target_gpu(gpu) is None:
         return Eligibility(False, GPU_NOT_DETECTED, ["gpu_unknown" if not gpu else f"gpu:{gpu}"])
 
     # An exact Laptop GPU has a published standard memory configuration.
@@ -164,6 +160,7 @@ def deal_is_eligible(deal: Any) -> bool:
         ssd_gb=getattr(deal, "ssd_gb", None),
         screen_resolution=getattr(deal, "screen_resolution", None),
         screen_inch=getattr(deal, "screen_inch", None),
+        gpu_vram_gb=getattr(deal, "gpu_vram_gb", None),
     ).eligible
 
 
