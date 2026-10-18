@@ -68,3 +68,13 @@ Additional B2 regression reproduced at23b5d719: direct evaluate_purchase with
 GPU=RTX5070Ti/RTX5080 incorrectly returned eligible; deal_is_eligible ignored
 explicit16GB VRAM on5070Ti. Fixed exact-target ambiguity check and propagated
 optional VRAM through ranking/BUY/personal/TH gates. Missing VRAM remains allowed.
+
+Pre-release concrete production compatibility correction: accepted audit found
+data/n8n_watchdog_state.json owned by root. Retention reads dependency roots
+owned by root or the application UID; it never changes their ownership or bytes.
+Deletion still requires the application UID on each exact candidate. Actual
+DELETE/WAL Docker checks include this root-owned readable metadata, UID10001
+reader and preservation of the referenced result. The earlier retained package
+39112412893 is superseded and must not be deployed.
+The pending event's actual source_ru_snapshot_id is also a graph root before
+its result exists; a targeted regression prevents premature source deletion.

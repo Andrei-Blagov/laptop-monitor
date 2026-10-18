@@ -7,7 +7,7 @@ from ops.state_copy import require,safe_path,digest,write_json
 from market_contracts import moment
 
 RESULT_KEYS={'result_id','scan_id','subscription_scan_id'}
-SNAPSHOT_KEYS={'snapshot_id','ru_snapshot_id','requested_ru_snapshot_id','result_snapshot_id'}
+SNAPSHOT_KEYS={'snapshot_id','ru_snapshot_id','requested_ru_snapshot_id','source_ru_snapshot_id','result_snapshot_id'}
 
 def links(value,results,snapshots):
     if isinstance(value,dict):
@@ -21,7 +21,10 @@ def links(value,results,snapshots):
 
 
 def read(path):
-    safe_path(path,uid=os.geteuid())
+    # Root-owned watchdog metadata is a dependency root, never a deletion target.
+    # Read both trusted writers; apply() still requires the deleting UID on targets.
+    safe_path(path)
+    require(path.stat().st_uid in (0,os.geteuid()),'unknown state document owner')
     value=json.loads(path.read_text())
     require(isinstance(value,(dict,list)),'unknown state document')
     return value

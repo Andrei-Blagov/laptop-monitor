@@ -34,6 +34,11 @@ class RetentionGraph(unittest.TestCase):
         target=self.result('unused','x');p=self.root/'thailand_jobs/pending/link.json';p.parent.mkdir();p.symlink_to(target)
         with self.assertRaises(Refused):apply(self.root,now=AT)
         self.assertTrue(target.exists())
+    def test_pending_source_ru_snapshot_is_a_dependency_before_result_exists(self):
+        snap=self.write('russian_market/snapshots/source-ru.json',{'snapshot_id':'source-ru','created_at':(AT-timedelta(days=40)).isoformat()})
+        self.write('thailand_jobs/pending/daily.json',{'source_ru_snapshot_id':'source-ru'})
+        self.assertEqual(apply(self.root,now=AT)['removed_count'],0)
+        self.assertTrue(snap.exists())
     def test_transitive_result_reference_keeps_snapshot(self):
         self.result('one','s1');second=self.result('two','s2');self.snapshot('s2')
         self.write('thailand_jobs/pending/e.json',{'result_id':'one'})

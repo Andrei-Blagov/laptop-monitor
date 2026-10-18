@@ -61,12 +61,17 @@ def main():
                     for rel,data in documents.items():
                         p=source/rel;p.parent.mkdir(parents=True,exist_ok=True);p.write_text(json.dumps(data))
                     for p in source.rglob('*'):os.chown(p,10001,10001);p.chmod(0o700 if p.is_dir() else 0o600)
+                    watchdog=source/'n8n_watchdog_state.json'
+                    watchdog.write_text(json.dumps({'result_id':'result','owner':'root watchdog'}));os.chown(watchdog,0,0);watchdog.chmod(0o644)
                     hold(source,leases)
                     # The host backup controller and a separate PID namespace
                     # must contend on the very same stable inode.
                     run(mode.lower()+'-busy',[f'type=bind,src={source},dst=/source,readonly'],
                         "import fcntl;f=open('/source/thailand_jobs/scan.lease','rb');\ntry: fcntl.flock(f,fcntl.LOCK_EX|fcntl.LOCK_NB);raise RuntimeError('live lease stolen')\nexcept BlockingIOError: print('busy owner respected')")
                     before=inventory(source)
+                    run(mode.lower()+'-root-state',[f'type=bind,src={source},dst=/source,readonly'],
+                        "import os;from pathlib import Path;from datetime import datetime,timezone;from ops.state_retention import plan;p=Path('/source');assert (p/'n8n_watchdog_state.json').stat().st_uid==0;assert os.getuid()==10001;assert plan(p,now=datetime(2026,10,18,tzinfo=timezone.utc))==[];print('root-owned dependency read; protected result retained')")
+                    if before!=inventory(source):raise RuntimeError('dependency read changed source')
                     log=run(mode.lower(),[f'type=bind,src={source},dst=/source,readonly',f'type=bind,src={dest},dst=/backup'],
                         "import os,json;from ops.state_backup import create_backup,verify_copy;assert os.getuid()==10001;p=create_backup('/source','/backup');r=verify_copy(p);print(json.dumps({'status':r['status'],'files':len(r['files']),'source_guard':r['source_guard']}))")
                     if before!=inventory(source):raise RuntimeError('source directory or file changed')
