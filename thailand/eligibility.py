@@ -109,9 +109,11 @@ def offer_user_facing_eligible(
     hardware = evaluate_purchase(
         price_rub=price_rub,
         gpu=offer.gpu,
+        gpu_vram_gb=(offer.metadata or {}).get("gpu_vram_gb"),
         ram_gb=offer.ram_gb,
         ssd_gb=offer.ssd_gb,
         screen_resolution=offer.screen_resolution,
+        screen_inch=offer.screen_size_inch,
     )
     if not hardware.eligible:
         return False, hardware.reason, price_rub

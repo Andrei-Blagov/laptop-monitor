@@ -20,12 +20,12 @@ from storage import init_db, open_db, upsert_product
 
 class PriceCapHelperTests(unittest.TestCase):
     def test_boundaries(self) -> None:
-        self.assertEqual(config.MAX_TRACKED_PRICE_RUB, 330_000)
-        self.assertTrue(config.is_price_in_tracking_scope(299_999))
-        self.assertTrue(config.is_price_in_tracking_scope(300_000))
-        self.assertTrue(config.is_price_in_tracking_scope(329_999))
-        self.assertTrue(config.is_price_in_tracking_scope(330_000))
-        self.assertFalse(config.is_price_in_tracking_scope(330_001))
+        self.assertEqual(config.MAX_TRACKED_PRICE_RUB, 290_000)
+        self.assertTrue(config.is_price_in_tracking_scope(259_999))
+        self.assertTrue(config.is_price_in_tracking_scope(260_000))
+        self.assertTrue(config.is_price_in_tracking_scope(289_999))
+        self.assertTrue(config.is_price_in_tracking_scope(290_000))
+        self.assertFalse(config.is_price_in_tracking_scope(290_001))
         self.assertFalse(config.is_price_in_tracking_scope(None))
         self.assertFalse(config.is_price_in_tracking_scope(0))
         self.assertFalse(config.is_price_in_tracking_scope(-1))
@@ -109,7 +109,7 @@ class PriceCapAlertTests(unittest.TestCase):
                         url="https://example/regard/2",
                         name="Laptop SKU-CAP Core Ultra 9 275HX, RTX 5070 Ti, 32GB DDR5, 1TB SSD, 16\" 2560x1600",
                         sku="SKU-CAP",
-                        price=295_000,
+                        price=275_000,
                         available=True,
                         checked_at=now,
                     ),
@@ -123,7 +123,7 @@ class PriceCapAlertTests(unittest.TestCase):
                 self.assertIsNotNone(event)
                 assert event is not None
                 self.assertEqual(event["event_type"], EVENT_PRICE_DROP)
-                self.assertEqual(event["new_price"], 295_000)
+                self.assertEqual(event["new_price"], 275_000)
 
     def test_drop_305k_still_out_of_scope(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
@@ -131,16 +131,16 @@ class PriceCapAlertTests(unittest.TestCase):
             with open_db(db) as conn:
                 init_db(conn)
                 product = self._seed_product(
-                    conn, store="regard", external_id="3", price=320_000
+                    conn, store="regard", external_id="3", price=280_000
                 )
                 conn.execute(
                     "UPDATE products SET price=? WHERE id=?",
-                    (305_000, product["id"]),
+                    (265_000, product["id"]),
                 )
                 conn.execute(
                     """
                     INSERT INTO price_history (product_id, price, available, checked_at)
-                    VALUES (?, 320000, 1, ?), (?, 305000, 1, ?)
+                    VALUES (?, 280000, 1, ?), (?, 265000, 1, ?)
                     """,
                     (
                         product["id"],
@@ -173,7 +173,7 @@ class PriceCapCrossStoreTests(unittest.TestCase):
     def test_two_in_scope_allowed(self) -> None:
         offers = [
             self._offer("kns", 280_000, pid=1),
-            self._offer("regard", 299_000, pid=2),
+            self._offer("regard", 259_000, pid=2),
         ]
         match = ProductMatch(
             normalized_sku="SAMESKU",
@@ -231,7 +231,7 @@ class PriceCapCrossStoreTests(unittest.TestCase):
             name="Model",
             offers=[
                 self._offer("kns", 290_000),
-                self._offer("regard", 310_000),
+                self._offer("regard", 270_000),
             ],
             match_method="sku",
             matched_identifier="SAME-SKU",
@@ -248,8 +248,8 @@ class PriceCapCrossStoreTests(unittest.TestCase):
             display_sku="SAME-SKU",
             name="Model",
             offers=[
-                self._offer("kns", 310_000),
-                self._offer("regard", 320_000),
+                self._offer("kns", 270_000),
+                self._offer("regard", 280_000),
             ],
             match_method="sku",
             matched_identifier="SAME-SKU",
@@ -287,14 +287,14 @@ class PriceCapRankingTests(unittest.TestCase):
     def test_top_excludes_above_cap(self) -> None:
         matches = [
             self._match("Cheap", [("kns", 250_000)]),
-            self._match("AtCap", [("regard", 330_000)]),
-            self._match("JustOver", [("andpro", 330_001)]),
+            self._match("AtCap", [("regard", 290_000)]),
+            self._match("JustOver", [("andpro", 290_001)]),
             self._match("Expensive", [("citilink", 400_000)]),
             self._match("Mixed", [("kns", 289_000), ("regard", 345_000)]),
         ]
         ranked = rank_clusters(matches, limit=10)
         prices = [d.price for d in ranked]
-        self.assertTrue(all(p is not None and p <= 330_000 for p in prices))
+        self.assertTrue(all(p is not None and p <= 290_000 for p in prices))
         names = {d.cluster_name for d in ranked}
         self.assertIn("Cheap", names)
         self.assertIn("AtCap", names)
@@ -308,14 +308,14 @@ class PriceCapRankingTests(unittest.TestCase):
 
     def test_telegram_top_title_and_empty(self) -> None:
         text = format_top_deals_message([])
-        self.assertIn("330 000", text)
+        self.assertIn("290 000", text)
         self.assertNotIn("300 000", text)
         self.assertIn("Нет свежих предложений до", text)
         ranked = rank_clusters(
             [self._match("Ok", [("kns", 220_000)])], limit=5
         )
         msg = format_top_deals_message(ranked)
-        self.assertIn("ТОП ПРЕДЛОЖЕНИЙ ДО 330 000 ₽", msg)
+        self.assertIn("ТОП ПРЕДЛОЖЕНИЙ ДО 290 000 ₽", msg)
 
 
 class PriceCapN8nPayloadTests(unittest.TestCase):

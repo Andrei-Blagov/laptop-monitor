@@ -63,7 +63,7 @@ def deal(**fields) -> RankedDeal:
     return RankedDeal(
         score=90, cluster_name="Any manufacturer Eligible test laptop",
         price=220_000, confidence=100, historical_min=220_000,
-        history_started_at="2020-01-01T00:00:00+00:00", **(GOOD | fields),
+        history_started_at="2020-01-01T00:00:00+00:00", screen_inch=16, **(GOOD | fields),
     )
 
 
@@ -104,9 +104,9 @@ class UnifiedHardwareTests(unittest.TestCase):
     def test_price_and_ssd_boundary_representations(self):
         for gpu in ("RTX 5070 Ti", "RTX 5080"):
             for ssd in (1000, 1024, 2048):
-                for price, ok in ((330_000, True), (330_001, False), (0, False), (None, False), (True, False)):
+                for price, ok in ((290_000, True), (290_001, False), (0, False), (None, False), (True, False)):
                     with self.subTest(gpu=gpu, ssd=ssd, price=price):
-                        self.assertEqual(evaluate_purchase(price_rub=price, **(GOOD | dict(gpu=gpu, ssd_gb=ssd))).eligible, ok)
+                        self.assertEqual(evaluate_purchase(price_rub=price, screen_inch=16, **(GOOD | dict(gpu=gpu, ssd_gb=ssd))).eligible, ok)
 
     def test_any_manufacturer_passes_without_personal_top_membership(self):
         self.assertIsNotNone(evaluate_buy_rules(deal()))
@@ -425,7 +425,7 @@ class ThailandPathTests(unittest.TestCase):
                     self.assertEqual(bool(build([offer], fx=fx())), expected)
 
     def test_exact_identifier_does_not_bypass_hardware_or_recommend_cheaper(self):
-        target = dict(model_codes=["TEST-1"], cluster_name="Test", price=220_000, **GOOD)
+        target = dict(model_codes=["TEST-1"], cluster_name="Test", price=220_000, screen_inch=16, **GOOD)
         for label, fields in (("eligible", {}), *BAD):
             with self.subTest(label=label):
                 offer = thai(price_thb=60_000, **fields)
@@ -450,14 +450,14 @@ class ThailandPathTests(unittest.TestCase):
                 self.assertNotIn("Альтернативы в Таиланде:", text)
 
     def test_pre_upgrade_search_rows_need_fresh_purchase_confirmation(self):
-        target = dict(model_codes=["TEST-1"], cluster_name="Test", price=220_000, **GOOD)
+        target = dict(model_codes=["TEST-1"], cluster_name="Test", price=220_000, screen_inch=16, **GOOD)
         search = search_collected_offers(target, [thai(price_thb=60_000)], fx=fx())
         search["exact_matches"][0].pop("purchase_eligible")
         self.assertFalse(build_recommendation(deal(), search).country_comparison_trusted)
         self.assertNotIn("Таиланд дешевле на", format_target_model_message(target, search))
 
     def test_thai_price_cap_uses_converted_rubles_inclusively(self):
-        for price, eligible in ((132_000, True), (132_001, False)):
+        for price, eligible in ((116_000, True), (116_001, False)):
             with self.subTest(price_thb=price):
                 offer = thai(price_thb=price)
                 self.assertEqual(offer_user_facing_eligible(offer, fx=fx())[0], eligible)

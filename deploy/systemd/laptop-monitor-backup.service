@@ -1,12 +1,12 @@
 [Unit]
-Description=Laptop Monitor SQLite backup (Docker Compose)
+Description=Laptop Monitor full-state backup and safe retention (Docker Compose)
 Requires=docker.service
 After=docker.service
 
 [Service]
 Type=oneshot
 WorkingDirectory=/opt/laptop-monitor
-ExecStart=/opt/laptop-monitor/deploy/compose.sh run --rm --no-deps backup
+ExecStart=/usr/bin/python3 -B /opt/laptop-monitor/deploy/full_state_maintenance.py
 
 [Install]
 WantedBy=multi-user.target

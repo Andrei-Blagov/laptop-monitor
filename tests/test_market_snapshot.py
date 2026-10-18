@@ -115,16 +115,16 @@ class RussianMarketSnapshotTests(unittest.TestCase):
                 checked_at=checked,
                 mpn="RU17-MPN-5070TI" if index == 17 else None,
             )
-        add("regard", "multi-a", "RU-MULTI-01", 301_000, "Multi config Regard", screen_refresh_hz=240)
-        add("kns", "multi-b", "RU-MULTI-01", 309_000, "Multi config KNS", screen_refresh_hz=165)
-        add("kns", "only-1", "RU-KNS-ONLY-01", 311_000, "KNS only laptop")
-        add("regard", "conflict-a", "LEGION-16AFR10H", 313_000, "Lenovo Legion Pro 7 16AFR10H variant A", cpu="Core Ultra 9 275HX")
-        add("kns", "conflict-b", "LEGION-16AFR10H", 315_000, "Lenovo Legion Pro 7 16AFR10H variant B", cpu="Core Ultra 9 285HX")
-        add("regard", "msi-1", "A2XWHG-814XRU", 321_000, "MSI Raider 16 HX AI A2XWHG-814XRU")
-        add("regard", "stale-1", "RU-STALE-01", 325_000, "Stale laptop", checked_at=STALE)
-        add("regard", "future-1", "RU-FUTURE-01", 326_000, "Future laptop", checked_at=FUTURE)
+        add("regard", "multi-a", "RU-MULTI-01", 261_000, "Multi config Regard", screen_refresh_hz=240)
+        add("kns", "multi-b", "RU-MULTI-01", 269_000, "Multi config KNS", screen_refresh_hz=165)
+        add("kns", "only-1", "RU-KNS-ONLY-01", 271_000, "KNS only laptop")
+        add("regard", "conflict-a", "LEGION-16AFR10H", 273_000, "Lenovo Legion Pro 7 16AFR10H variant A", cpu="Core Ultra 9 275HX")
+        add("kns", "conflict-b", "LEGION-16AFR10H", 275_000, "Lenovo Legion Pro 7 16AFR10H variant B", cpu="Core Ultra 9 285HX")
+        add("regard", "msi-1", "A2XWHG-814XRU", 281_000, "MSI Raider 16 HX AI A2XWHG-814XRU")
+        add("regard", "stale-1", "RU-STALE-01", 285_000, "Stale laptop", checked_at=STALE)
+        add("regard", "future-1", "RU-FUTURE-01", 286_000, "Future laptop", checked_at=FUTURE)
         add("regard", "unavailable-1", "RU-UNAVAIL-01", 100_000, "Unavailable laptop", available=False)
-        add("regard", "over-1", "RU-OVER-01", 330_001, "Over cap laptop")
+        add("regard", "over-1", "RU-OVER-01", 290_001, "Over cap laptop")
         add("regard", "small-ram", "RU-SMALL-RAM-1", 190_000, "Small RAM laptop", ram_gb=16)
         add("dns", "failed-1", "RU-DNS-FAIL-01", 150_000, "Failed store laptop")
 
@@ -278,10 +278,10 @@ class RussianMarketSnapshotTests(unittest.TestCase):
         kns_only = [row for row in document["offers"] if row["external_id"] == "only-1"]
         self.assertEqual(len(kns_only), 1)
         self.assertEqual(kns_only[0]["store"], "kns")
-        self.assertEqual(kns_only[0]["public_price_rub"], 311_000)
+        self.assertEqual(kns_only[0]["public_price_rub"], 271_000)
 
         multi = [row for row in document["offers"] if row["external_id"] in {"multi-a", "multi-b"}]
-        self.assertEqual(sorted(row["public_price_rub"] for row in multi), [301_000, 309_000])
+        self.assertEqual(sorted(row["public_price_rub"] for row in multi), [261_000, 269_000])
         self.assertEqual({row["model_id"] for row in multi}, {multi[0]["model_id"]})
         model = next(row for row in document["models"] if row["model_id"] == multi[0]["model_id"])
         self.assertEqual(model["state"], "proven")
@@ -302,7 +302,7 @@ class RussianMarketSnapshotTests(unittest.TestCase):
         self.assertEqual(len(conflict), 2)
         self.assertNotEqual(conflict[0]["model_id"], conflict[1]["model_id"])
         prices = {row["external_id"]: row["public_price_rub"] for row in conflict}
-        self.assertEqual(prices, {"conflict-a": 313_000, "conflict-b": 315_000})
+        self.assertEqual(prices, {"conflict-a": 273_000, "conflict-b": 275_000})
         cpus = {row["specs"]["cpu"]["value"] for row in conflict}
         self.assertEqual(len(cpus), 2)
         for row in conflict:
@@ -402,9 +402,9 @@ class RussianMarketSnapshotTests(unittest.TestCase):
         self.assertTrue(all(row["specs"]["cpu"]["value"] != "285HX" for row in groups[0]))
 
         products = [
-            Product("regard", "cpu-a", "https://example.test/regard/cpu-a", "Transitive A", "TRANS-CPU-01", 327_000, True, OBSERVED),
-            Product("kns", "cpu-b", "https://example.test/kns/cpu-b", "Transitive B", "TRANS-CPU-01", 327_500, True, OBSERVED),
-            Product("andpro", "cpu-c", "https://example.test/andpro/cpu-c", "Transitive C", "TRANS-CPU-01", 328_000, True, OBSERVED),
+            Product("regard", "cpu-a", "https://example.test/regard/cpu-a", "Transitive A", "TRANS-CPU-01", 287_000, True, OBSERVED),
+            Product("kns", "cpu-b", "https://example.test/kns/cpu-b", "Transitive B", "TRANS-CPU-01", 287_500, True, OBSERVED),
+            Product("andpro", "cpu-c", "https://example.test/andpro/cpu-c", "Transitive C", "TRANS-CPU-01", 288_000, True, OBSERVED),
         ]
         save_products(products, self.db_path)
         cache = json.loads(self.specs_path.read_text(encoding="utf-8"))

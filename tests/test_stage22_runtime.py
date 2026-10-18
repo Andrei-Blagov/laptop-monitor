@@ -296,7 +296,7 @@ class RuntimeAcceptanceTests(unittest.TestCase):
         scans = {json.loads(path.read_text(encoding="utf-8"))["subscription_scan_id"] for path in archived}
         self.assertEqual(len(scans), 1)
         texts = [item["text"] for item in self.messages]
-        self.assertEqual(len(texts), 1)
+        self.assertEqual(len(texts), 2)  # Compact daily and distinct manual; BUY reuses manual ACK.
         self.assertIn("Таиланд дешевле", texts[0])
         self.assertIn("50000.0", texts[0])
         self.assertEqual(before, 0)
@@ -333,7 +333,7 @@ class RuntimeAcceptanceTests(unittest.TestCase):
         self.assertGreater(len(self._store_calls()), 0)
         joined = "\n".join(item["text"] for item in self.messages)
         self.assertNotIn("Таиланд дешевле", joined)
-        self.assertIn("не текущая", joined)
+        self.assertNotIn("SKU-MATCH17", joined)  # Stale TH is not a morning card.
         seen = len(self._store_calls())
         self._wake()
         self.assertEqual(len(self._store_calls()), seen)
@@ -406,7 +406,7 @@ class RuntimeAcceptanceTests(unittest.TestCase):
         self._daily()
         self._wake()
         self.assertGreater(len(self._store_calls()), 0)
-        self.assertIn("показывать нечего", self.messages[0]["text"])
+        self.assertIn("Сейчас нет предложений", self.messages[0]["text"])
         self.assertNotIn("Обновление не удалось", self.messages[0]["text"])
 
     def test_missing_or_old_fx_does_not_grant_a_current_benefit(self) -> None:

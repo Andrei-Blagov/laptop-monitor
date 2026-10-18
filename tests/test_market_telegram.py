@@ -160,7 +160,7 @@ class MarketTelegramTests(unittest.TestCase):
         self.assertIn("https://example.test/th-1", shown)
         self.assertIn("ctrl:ptop_go", json.dumps(client.calls[-1]["json"].get("reply_markup"), ensure_ascii=False))
 
-    def test_manual_daily_and_buy_share_one_formatted_pass(self) -> None:
+    def test_manual_daily_and_buy_share_scan_but_keep_distinct_daily_text(self) -> None:
         self._catalog(2)
         for trigger, event_id in (("daily", "daily-1"), ("manual", "manual-1"), ("buy", "buy-1")):
             enqueue_market_event(build_market_event(
@@ -173,7 +173,7 @@ class MarketTelegramTests(unittest.TestCase):
         self.assertEqual({item["recipient"] for item in self.sender.sent}, {"daily", "manual", "buy"})
         archived = list((self.jobs / "archive").glob("*.json"))
         self.assertEqual({path.stem for path in archived}, {"daily-1", "manual-1", "buy-1"})
-        self.assertEqual(len({item["text"] for item in self.sender.sent}), 1)
+        self.assertEqual(len({item["text"] for item in self.sender.sent}), 2)
 
     def test_regional_and_unmatched_cards_keep_their_meaning(self) -> None:
         fresh = NOW.isoformat()
@@ -188,7 +188,7 @@ class MarketTelegramTests(unittest.TestCase):
             "commercial_differences": ["регион"],
             "ru_membership": {"in_general_top": True, "in_personal_top3": True},
             "th_observation": {
-                "name": "Legion Pro 7", "url": "https://example.test/th-regional", "source": "jib",
+                "name": "Legion Pro 7", "url": "https://example.test/th-regional", "source": "jib", "external_id": "regional",
                 "price": "80000", "availability_state": "in_stock",
                 "price_checked_at": fresh, "availability_checked_at": fresh,
                 "specs": {"gpu": {"value": "RTX 5070 Ti"}, "ram_gb": {"value": 32}, "ssd_gb": {"value": 1024}},
@@ -198,6 +198,8 @@ class MarketTelegramTests(unittest.TestCase):
                 "price": "250000", "price_checked_at": fresh, "availability_checked_at": fresh,
             },
         }
+        for field in pair["th_observation"]["specs"].values():
+            field["evidence"] = {"source":"jib", "external_id":"regional", "captured_at":fresh, "method":"structured_api"}
         alternative = dict(pair, pair_id="other", match_class="ALTERNATIVE", comparison_status="not_comparable", saving_rub=None)
         result = {
             "result_id": "cards", "scan_id": "cards", "fx": _fx(),

@@ -166,7 +166,7 @@ class AdapterEvidenceTests(unittest.TestCase):
         self.assertEqual(evidence["screen_resolution"]["captured_at"], DETAIL_AT.isoformat())
         self.assertEqual(evidence["ram_gb"]["captured_at"], OBSERVED.isoformat())
         self.assertEqual(offer.gpu_source, "structured_product_page")
-        self.assertNotIn("gpu", evidence)
+        self.assertEqual(evidence["gpu"]["captured_at"], DETAIL_AT.isoformat())
 
     def test_invadeit_detail_does_not_copy_resolution_between_skus(self) -> None:
         payload = json.loads((FIXTURES / "81984.json").read_text(encoding="utf-8"))

@@ -258,7 +258,7 @@ class PackageDRankingTests(unittest.TestCase):
 
     def test_score_matches_existing_international_formula_at_integer_prices(self):
         t=thai_snapshot(snapshot('TH',[offer()]));o=t.offers[0]
-        for price in (180000,200000,230000,260000,330000):
+        for price in (180000,200000,230000,260000,290000):
             score,_,_=value_score(o,Decimal(price),now=NOW,policy=ComparisonPolicy())
             legacy=international_value_score(price_rub=price,gpu=CORE['gpu'],cpu=CORE['cpu'],ram_gb=32,ssd_gb=1024,screen_inch=16,screen_resolution='2560x1600')
             self.assertEqual(score,Decimal(str(legacy.score)))
@@ -266,8 +266,8 @@ class PackageDRankingTests(unittest.TestCase):
 
 class PackageDPriceAndFreshnessTests(unittest.TestCase):
     def test_cap_boundary_keeps_fraction_before_rounding(self):
-        self.assertEqual(len(run([offer(price='132000')])['thai_top_value']),1)
-        self.assertEqual(run([offer(price='132000.004')])['thai_top_value'],[])
+        self.assertEqual(len(run([offer(price='116000')])['thai_top_value']),1)
+        self.assertEqual(run([offer(price='116000.004')])['thai_top_value'],[])
 
     def test_price_gap_boundaries_and_signed_symmetry(self):
         for percent,band in [(Decimal('4.999'),'comparable'),(Decimal(5),'slight'),(Decimal('9.999'),'slight'),(Decimal(10),'clear')]:
@@ -390,7 +390,7 @@ class PackageDAdditionalGuardTests(unittest.TestCase):
         with localcontext() as ctx:
             ctx.prec=6
             rate=fx(rub_per_thb='2.5000000000000000000000000000000000000000000001')
-            self.assertEqual(run([offer(price=132000)],rate=rate)['thai_top_value'],[])
+            self.assertEqual(run([offer(price=116000)],rate=rate)['thai_top_value'],[])
 
     def test_snapshot_captured_at_is_not_a_spec_evidence_timestamp(self):
         th=offer();th['specs']['cpu']['evidence']['captured_at']=None
@@ -457,8 +457,8 @@ class PackageDAdditionalGuardTests(unittest.TestCase):
         self.assertNotEqual(run([th],[ru])['pairs'][0]['match_class'],'EXACT')
 
     def test_policy_numeric_inputs_are_normalized_and_invalid_rejected(self):
-        policy=ComparisonPolicy(max_price_rub='330000',unmatched_min_score='75',gpu_targets=(('RTX 5070 Ti',230000),))
-        self.assertEqual(policy.max_price_rub,Decimal(330000))
+        policy=ComparisonPolicy(max_price_rub='290000',unmatched_min_score='75',gpu_targets=(('RTX 5070 Ti',230000),))
+        self.assertEqual(policy.max_price_rub,Decimal(290000))
         self.assertEqual(len(run([offer()],policy=policy)['thai_top_value']),1)
         for kwargs in ({'max_price_rub':float('inf')},{'unmatched_min_score':Decimal('NaN')},
                        {'quote_hours':True},{'gpu_targets':(('RTX 5080',0),)}):

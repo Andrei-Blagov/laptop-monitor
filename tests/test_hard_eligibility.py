@@ -90,20 +90,20 @@ def _match(name: str, price: int, *, available: bool = True, store: str = "regar
 
 class PriceCapTests(unittest.TestCase):
     def test_boundaries(self) -> None:
-        for price, ok in ((299_999, True), (300_000, True), (329_999, True), (330_000, True), (330_001, False)):
+        for price, ok in ((259_999, True), (260_000, True), (289_999, True), (290_000, True), (290_001, False)):
             self.assertIs(config.is_price_in_tracking_scope(price), ok, price)
 
     def test_ranked_with_hard_filters(self) -> None:
         names = {
             d.cluster_name
             for d in rank_clusters(
-                [_match(f"N{p}{SPECS}", p) for p in (299_999, 300_000, 329_999, 330_000, 330_001)],
+                [_match(f"N{p}{SPECS}", p) for p in (259_999, 260_000, 289_999, 290_000, 290_001)],
                 hard_filters=True,
             )
         }
         self.assertEqual(
             names,
-            {f"N{p}{SPECS}" for p in (299_999, 300_000, 329_999, 330_000)},
+            {f"N{p}{SPECS}" for p in (259_999, 260_000, 289_999, 290_000)},
         )
 
 
@@ -177,12 +177,12 @@ class ExclusionRecordTests(unittest.TestCase):
         self.assertEqual(reasons["Unknown"], SPECS_MISSING)
 
     def test_no_artificial_msi_bonus(self) -> None:
-        msi = _match("MSI Vector 17 HX AI A2XWIG-063XRU" + SPECS, 309_900)
-        other = _match("Other Brand X1" + SPECS, 309_900)
+        msi = _match("MSI Vector 17 HX AI A2XWIG-063XRU" + SPECS, 269_900)
+        other = _match("Other Brand X1" + SPECS, 269_900)
         ranked = {d.cluster_name: d.score for d in rank_clusters([msi, other], hard_filters=True)}
         self.assertEqual(len(set(ranked.values())), 1)
         expected = score_offer(
-            price=309_900,
+            price=269_900,
             gpu="RTX 5080",
             ram_gb=32,
             ssd_gb=1024,
@@ -192,7 +192,7 @@ class ExclusionRecordTests(unittest.TestCase):
         self.assertEqual(ranked[msi.name], expected)
 
 
-def _regard_item(pid: int, *, title: str, brief: str = "", gpu_model: str | None = None, show_flag: int = 1, price: int = 309900) -> dict:
+def _regard_item(pid: int, *, title: str, brief: str = "", gpu_model: str | None = None, show_flag: int = 1, price: int = 269900) -> dict:
     item = {
         "id": pid,
         "title": title,
@@ -233,7 +233,7 @@ class RegardPriorityFetchTests(unittest.TestCase):
         self.assertEqual(calls, ["/api/site/goods/492577"])
         self.assertEqual(len(out), 1)
         self.assertEqual(out[0].external_id, "492577")
-        self.assertEqual(out[0].price, 309900)
+        self.assertEqual(out[0].price, 269900)
         self.assertTrue(out[0].available)
 
     def test_no_request_when_search_found_it(self) -> None:
@@ -339,7 +339,7 @@ class ConsistencyTests(unittest.TestCase):
         self.assertIn("Good One", top)
         for name in ("Small One", "Fhd One", "Over One", "Unk One"):
             self.assertNotIn(name, top)
-        self.assertIn("ТОП ПРЕДЛОЖЕНИЙ ДО 330 000 ₽", top)
+        self.assertIn("ТОП ПРЕДЛОЖЕНИЙ ДО 290 000 ₽", top)
 
     def test_best_recommendation_is_eligible(self) -> None:
         from control_bot import handle_recommendation_pick
@@ -371,7 +371,7 @@ class ConsistencyTests(unittest.TestCase):
 
     def test_buy_rules_and_maturity_unchanged(self) -> None:
         self.assertEqual(config.BUY_MIN_HISTORY_DAYS, 14.0)
-        self.assertEqual(config.TARGET_PRICES, {"RTX 5070 Ti": 230_000, "RTX 5080": 300_000})
+        self.assertEqual(config.TARGET_PRICES, {"RTX 5070 Ti": 230_000, "RTX 5080": 280_000})
         self.assertEqual(
             (
                 config.BUY_RULE_A_MAX_OVER_HIST_PCT,
@@ -474,13 +474,13 @@ class PriorityWatchlistTests(unittest.TestCase):
     def test_in_top_with_price_and_status(self) -> None:
         from priority_watchlist import IN_TOP, format_priority_block
 
-        status = self._status(self._pair(309_900))
+        status = self._status(self._pair(269_900))
         self.assertEqual(status.status, IN_TOP)
         self.assertEqual(status.rank, 1)
-        self.assertEqual(status.best_price, 309_900)
+        self.assertEqual(status.best_price, 269_900)
         text = format_priority_block([status])
         self.assertIn("Приоритетная модель", text)
-        self.assertIn("309 900 ₽ — Regard, в наличии", text)
+        self.assertIn("269 900 ₽ — Regard, в наличии", text)
         self.assertIn("Статус: в ТОП, №1", text)
 
     def test_over_cap_shows_reason_and_new_limit(self) -> None:
@@ -489,28 +489,28 @@ class PriorityWatchlistTests(unittest.TestCase):
         status = self._status(self._pair(340_000))
         self.assertEqual(status.status, PRICE_OVER_CAP)
         self.assertEqual(status.best_price, 340_000)
-        self.assertIn("выше лимита 330 000 ₽", format_priority_block([status]))
+        self.assertIn("выше лимита 290 000 ₽", format_priority_block([status]))
 
     def test_unavailable(self) -> None:
-        status = self._status(self._pair(309_900, available=False))
+        status = self._status(self._pair(269_900, available=False))
         self.assertEqual(status.status, NOT_AVAILABLE)
 
     def test_single_store_model_is_ranked(self) -> None:
         from priority_watchlist import IN_TOP, format_priority_block
 
-        status = self._status([self._msi(309_900)])
+        status = self._status([self._msi(269_900)])
         self.assertEqual(status.status, IN_TOP)
         self.assertEqual(status.rank, 1)
         self.assertIn("single_store", status.details)
-        self.assertEqual(status.best_price, 309_900)
+        self.assertEqual(status.best_price, 269_900)
         self.assertIn("Статус: в ТОП, №1", format_priority_block([status]))
 
     def test_price_change_and_history_min(self) -> None:
-        save_products(self._pair(319_720), self.db)
-        save_products(self._pair(309_900), self.db)
+        save_products(self._pair(279_720), self.db)
+        save_products(self._pair(269_900), self.db)
         status = self._status([])
-        self.assertEqual(status.previous_price, 319_720)
-        self.assertEqual(status.history_min, 309_900)
+        self.assertEqual(status.previous_price, 279_720)
+        self.assertEqual(status.history_min, 269_900)
 
     def test_not_discovered(self) -> None:
         from laptop_eligibility import NOT_DISCOVERED
@@ -526,14 +526,14 @@ class PriorityWatchlistTests(unittest.TestCase):
                     "k1",
                     name="MSI Vector 17 HX AI A2XWIG-063XRU" + SPECS,
                     sku="9S7-17S372-063",
-                    price=305_000,
+                    price=265_000,
                 ),
-                self._msi(309_900),
+                self._msi(269_900),
             ]
         )
         self.assertNotEqual(status.status, "NOT_DISCOVERED")
         self.assertEqual(status.best_store, "kns")
-        self.assertEqual(status.best_price, 305_000)
+        self.assertEqual(status.best_price, 265_000)
         self.assertEqual(status.duplicate_clusters, 0)
         self.assertEqual(len(status.offers), 2)
 
@@ -609,19 +609,19 @@ class SingleStoreRankingTests(unittest.TestCase):
         name = "ASUS ROG Strix G18 G815LR-TT344 90NR0LT1-M00H30" + FULL
         deals, _ = self._deals(
             [
-                _product("kns", "k1", name=name, sku="90NR0LT1-M00H30", price=322_178),
-                _product("citilink", "c1", name=name, sku="90NR0LT1-M00H30", price=324_055),
-                _product("regard", "r1", name="ASUS G815LR (TT344)" + FULL, sku="90NR0LT1-M00H30-R", price=320_400),
+                _product("kns", "k1", name=name, sku="90NR0LT1-M00H30", price=282_178),
+                _product("citilink", "c1", name=name, sku="90NR0LT1-M00H30", price=284_055),
+                _product("regard", "r1", name="ASUS G815LR (TT344)" + FULL, sku="90NR0LT1-M00H30-R", price=280_400),
             ]
         )
         by_price = {d.price: d for d in deals}
-        self.assertEqual(set(by_price), {320_400, 322_178})
-        cluster = by_price[322_178]
+        self.assertEqual(set(by_price), {280_400, 282_178})
+        cluster = by_price[282_178]
         self.assertEqual(cluster.store, "kns")
         self.assertEqual(cluster.next_store, "citilink")
-        self.assertEqual(cluster.next_price, 324_055)
+        self.assertEqual(cluster.next_price, 284_055)
         self.assertEqual(cluster.saving_vs_next, 1_877)
-        self.assertIsNone(by_price[320_400].saving_vs_next)
+        self.assertIsNone(by_price[280_400].saving_vs_next)
 
     def test_different_config_with_same_code_is_kept(self) -> None:
         base = "ASUS G614PR 90NR0NJ7-M001J0"
@@ -660,17 +660,17 @@ class ProvenIdentityMergeTests(SingleStoreRankingTests):
         code = "A2XWIG-063XRU"
         deals, _ = self._deals(
             [
-                self._named("kns", "k1", code, 305_000),
-                self._named("regard", "r1", code, 309_900),
-                self._named("citilink", "c1", code, 320_000),
+                self._named("kns", "k1", code, 265_000),
+                self._named("regard", "r1", code, 269_900),
+                self._named("citilink", "c1", code, 280_000),
             ]
         )
         self.assertEqual(len(deals), 1)
         deal = deals[0]
         self.assertEqual(deal.store, "kns")
-        self.assertEqual(deal.price, 305_000)
+        self.assertEqual(deal.price, 265_000)
         self.assertEqual(deal.next_store, "regard")
-        self.assertEqual(deal.next_price, 309_900)
+        self.assertEqual(deal.next_price, 269_900)
         self.assertEqual(deal.saving_vs_next, 4_900)
         older = _now() - timedelta(days=4)
         with open_db(self.db) as conn:
@@ -683,7 +683,7 @@ class ProvenIdentityMergeTests(SingleStoreRankingTests):
                 INSERT INTO price_history (product_id, price, available, checked_at)
                 VALUES (?, ?, ?, ?)
                 """,
-                (int(citi["id"]), 270_000, 1, older.isoformat()),
+                (int(citi["id"]), 250_000, 1, older.isoformat()),
             )
         merges: list[dict] = []
         from russian_deals import load_russian_ranked_deals
@@ -692,7 +692,7 @@ class ProvenIdentityMergeTests(SingleStoreRankingTests):
             self.db, specs_path=self.specs, limit=0, merges=merges
         )
         self.assertEqual(len(reloaded), 1)
-        self.assertEqual(reloaded[0].historical_min, 270_000)
+        self.assertEqual(reloaded[0].historical_min, 250_000)
         started = datetime.fromisoformat(reloaded[0].history_started_at)
         self.assertEqual(started, older)
         self.assertEqual(len(merges), 1)
@@ -702,11 +702,11 @@ class ProvenIdentityMergeTests(SingleStoreRankingTests):
         other = ' Intel Core Ultra 7 255HX, RTX 5080, 32GB DDR5, 1TB SSD, 17" 2560x1600'
         deals, _ = self._deals(
             [
-                self._named("regard", "r1", "A2XWIG-063XRU", 309_900),
-                self._named("kns", "k1", "A2XWIG-063XRU", 299_000, specs=other),
+                self._named("regard", "r1", "A2XWIG-063XRU", 269_900),
+                self._named("kns", "k1", "A2XWIG-063XRU", 259_000, specs=other),
             ]
         )
-        self.assertEqual(sorted(d.price for d in deals), [299_000, 309_900])
+        self.assertEqual(sorted(d.price for d in deals), [259_000, 269_900])
         self.assertTrue(all(d.saving_vs_next is None for d in deals))
 
     def test_different_ssd_stays_separate(self) -> None:
@@ -756,8 +756,8 @@ class ProvenIdentityMergeTests(SingleStoreRankingTests):
         ambiguous: list[dict] = []
         deals, _ = self._deals(
             [
-                self._named("regard", "r1", "A2XWIG-063XRU", 309_900),
-                self._named("kns", "k1", "A2XWIG-063US", 301_000),
+                self._named("regard", "r1", "A2XWIG-063XRU", 269_900),
+                self._named("kns", "k1", "A2XWIG-063US", 261_000),
             ],
             ambiguous=ambiguous,
         )
@@ -812,13 +812,13 @@ class ProvenIdentityMergeTests(SingleStoreRankingTests):
         merges: list[dict] = []
         deals, _ = self._deals(
             [
-                self._named("regard", "r1", "A2XWIG-063XRU", 309_900, specs=SPECS),
-                self._named("kns", "k1", "A2XWIG-063XRU", 305_000, specs=SPECS),
+                self._named("regard", "r1", "A2XWIG-063XRU", 269_900, specs=SPECS),
+                self._named("kns", "k1", "A2XWIG-063XRU", 265_000, specs=SPECS),
             ],
             merges=merges,
             ambiguous=ambiguous,
         )
-        self.assertEqual(sorted(d.price for d in deals), [305_000, 309_900])
+        self.assertEqual(sorted(d.price for d in deals), [265_000, 269_900])
         self.assertEqual(merges, [])
         self.assertEqual(len(ambiguous), 1)
         self.assertEqual(ambiguous[0]["status"], "AMBIGUOUS")
@@ -844,7 +844,7 @@ class DailyDigestCapTests(unittest.TestCase):
 
         code = gen.digest_js()
         self.assertIn(f"const MAX_PRICE = {config.MAX_TRACKED_PRICE_RUB};", code)
-        self.assertIn("ТОП ДО 330 000 ₽:", code)
+        self.assertIn("ТОП ДО 290 000 ₽:", code)
         self.assertNotIn("300 000", code)
         repo = json.loads((gen.DIGEST).read_text(encoding="utf-8"))
         node = next(n for n in repo["nodes"] if n["name"] == "Build and send digest")
@@ -877,9 +877,9 @@ class ThailandCapTests(unittest.TestCase):
         from thailand.fx import thb_to_rub
         from thailand.models import FxRate
 
-        self.assertEqual(max_tracked_price_rub(), 330_000)
-        self.assertTrue(price_within_cap(330_000))
-        self.assertFalse(price_within_cap(330_001))
+        self.assertEqual(max_tracked_price_rub(), 290_000)
+        self.assertTrue(price_within_cap(290_000))
+        self.assertFalse(price_within_cap(290_001))
         fx = FxRate(
             source="t",
             currency="THB",
@@ -890,7 +890,7 @@ class ThailandCapTests(unittest.TestCase):
             fetched_at=datetime.now(timezone.utc),
         )
         self.assertEqual(thb_to_rub(86_990, fx), 215_862)
-        self.assertIn("330 000", footer_cap())
+        self.assertIn("290 000", footer_cap())
 
 
 if __name__ == "__main__":

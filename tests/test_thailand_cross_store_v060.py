@@ -111,14 +111,14 @@ class CrossStoreTests(unittest.TestCase):
         ]
         deduped, removed = dedupe_user_facing_rows(rows)
         self.assertEqual(removed, 2)
-        text = format_thailand_alternatives_message(deduped, price_cap={"over_cap_count": 0, "max_tracked_price_rub": 300000})
+        text = format_thailand_alternatives_message(deduped, price_cap={"over_cap_count": 0, "max_tracked_price_rub": 290000})
         self.assertEqual(text.count("G614PR-TS113W"), 1)
         self.assertIn("Другие магазины:", text)
         self.assertIn("JIB", text)
         self.assertLessEqual(len(deduped[0]["alt_channels"]), 2)
 
     def test_over_cap_and_unknown_availability_excluded(self) -> None:
-        priced = _offer("jib", 330001)
+        priced = _offer("jib", 290001)
         unknown = _offer("jib", 200000, mpn="OTHER-1", available=False)
         unknown.availability_status = "unknown"
         unknown.availability_confirmed = False
@@ -129,12 +129,12 @@ class CrossStoreTests(unittest.TestCase):
 
     def test_strict_price_sort_preserved(self) -> None:
         rows = [
-            _row(_offer("jib", 300000, mpn="A-300000"), 300000),
+            _row(_offer("jib", 260000, mpn="A-260000"), 260000),
             _row(_offer("speedcom", 100000, mpn="B-100000"), 100000),
-            _row(_offer("invadeit", 299999, mpn="C-299999"), 299999),
+            _row(_offer("invadeit", 259999, mpn="C-259999"), 259999),
         ]
         ordered = sort_cheapest_rows(rows)
-        self.assertEqual([r["price_rub"] for r in ordered], [100000, 299999, 300000])
+        self.assertEqual([r["price_rub"] for r in ordered], [100000, 259999, 260000])
 
 
 if __name__ == "__main__":

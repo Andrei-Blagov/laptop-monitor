@@ -80,7 +80,7 @@ def discovery_scope_hash() -> str:
     adapters = get_thailand_adapters()
     payload = {
         # Parser/evidence changes must refresh retained catalogues without rewriting them.
-        "evidence_revision": "0111-laptop-components-own-ssd-v1",
+        "evidence_revision": "0120-own-field-clock-identity-policy-v1",
         "gpu_queries": list(GPU_SEARCH_QUERIES),
         "line_queries": list(LINE_SEARCH_QUERIES),
         "query_budget": QUERY_BUDGET,
@@ -273,6 +273,26 @@ def comparison_from_catalog(
     ru = russian_snapshot(russian) if russian is not None else None
     rate = fx_observation(fx) if fx is not None else None
     comparison = compare_markets(as_comparison_snapshot(document), ru, rate, now=_utc(now))
+    # Presentation uses the entire eligible RU input, never the personal TOP.
+    # Reuse the same evidence gate and value score; the pure matching core stays unchanged.
+    from thai_market_ranking import assess_quote, value_score
+    from market_contracts import ComparisonPolicy
+    policy = ComparisonPolicy()
+    ru_rows = []
+    if ru is not None:
+        for offer in ru.offers:
+            assessment = assess_quote(offer, ru, rate, now=_utc(now), policy=policy)
+            if assessment.eligible:
+                score, breakdown, confidence = value_score(offer, assessment.price_rub, now=_utc(now), policy=policy)
+                ru_rows.append({"model_id": offer.model_id or offer.offer_id,
+                    "variant_id": offer.variant_id or offer.offer_id,
+                    "offers": [offer.to_dict()], "best_offer_id": offer.offer_id,
+                    "name": offer.name, "price_rub": str(assessment.price_rub),
+                    "score": str(score), "confidence": confidence, "score_breakdown": breakdown,
+                    "in_personal_top3": any(offer.model_id in p["model_ids"] for p in ru.personal_profiles)})
+    from decimal import Decimal
+    ru_rows.sort(key=lambda row: (-Decimal(row["score"]), -row["confidence"], Decimal(row["price_rub"]), row["best_offer_id"]))
+    comparison["ru_eligible_offers"] = ru_rows
     from collections import Counter
     comparison["ru_input_summary"] = {
         "offer_count": len(russian.get("offers") or []),
@@ -440,11 +460,6 @@ def _spec_slot(offer: ThailandOffer, field: str, attr: str, *, now: datetime) ->
 
 def _own_field_basis(offer: ThailandOffer, field: str) -> tuple[str, str] | None:
     """Return (method, captured_at) only for evidence that belongs to this field."""
-    if field == "gpu":
-        method = str(offer.gpu_source or GPU_SOURCE_UNKNOWN)
-        if method not in CONFIRMING_METHODS:
-            return None
-        return method, _iso(_utc(offer.collected_at))
     meta = offer.metadata or {}
     if field == "screen_resolution" and isinstance(meta.get("screen_resolution_evidence"), dict):
         fetched = meta["screen_resolution_evidence"].get("fetched_at")
@@ -458,29 +473,32 @@ def _own_field_basis(offer: ThailandOffer, field: str) -> tuple[str, str] | None
         if method in CONFIRMING_METHODS and _parse(None if captured is None else str(captured)) is not None:
             return method, str(captured)
         return None
+    if field == "gpu":
+        method = str(offer.gpu_source or GPU_SOURCE_UNKNOWN)
+        if method not in CONFIRMING_METHODS:
+            return None
+        return method, _iso(_utc(offer.collected_at))
     return None
 
 
 def _identity(offer: ThailandOffer, *, now: datetime) -> dict[str, Any]:
     found: dict[str, Any] = {}
-    basis = _own_field_basis(offer, "brand")
-    if basis is None:
-        return found
-    method, captured = basis
-    moment = _parse(captured)
-    confirmed = method in CONFIRMING_METHODS and moment is not None and moment <= now
-    evidence = {
-        "source": offer.store,
-        "external_id": str(offer.external_id),
-        "captured_at": _iso(moment) if confirmed and moment is not None else None,
-        "capture_state": "known" if confirmed else "unknown",
-        "method": method if method in CONFIRMING_METHODS else GPU_SOURCE_UNKNOWN,
-        "provenance": method,
-    }
-    if offer.brand:
-        found["brand"] = {"value": offer.brand, "evidence": evidence}
-    if offer.model_family:
-        found["manufacturer_family"] = {"value": offer.model_family, "evidence": dict(evidence)}
+    for public, field in (("brand", "brand"), ("manufacturer_family", "model_family"),
+                          ("manufacturer_generation", "manufacturer_generation")):
+        value = getattr(offer, field, None)
+        if value is None:
+            value = (offer.metadata or {}).get(field)
+        basis = _own_field_basis(offer, field)
+        if value is None or basis is None:
+            continue
+        method, captured = basis
+        moment = _parse(captured)
+        confirmed = method in CONFIRMING_METHODS and moment is not None and moment <= now
+        found[public] = {"value": value, "evidence": {
+            "source": offer.store, "external_id": str(offer.external_id),
+            "captured_at": _iso(moment) if confirmed else None,
+            "capture_state": "known" if confirmed else "unknown",
+            "method": method if confirmed else GPU_SOURCE_UNKNOWN, "provenance": method}}
     return found
 
 

@@ -60,6 +60,7 @@ def _confirmed_row(**overrides) -> dict:
         "ssd_gb": 1024,
         "screen_size_inch": 16,
         "screen_resolution": "2560x1600",
+                    "screen_size_inch": 16,
         "url": "https://jib.example/raider",
         "spec_differences": [],
         "purchase_eligible": True,
@@ -250,6 +251,7 @@ class VerdictTests(unittest.TestCase):
                     "ram_gb": 64,
                     "ssd_gb": 1024,
                     "screen_resolution": "2560x1600",
+                    "screen_size_inch": 16,
                     "availability_confirmed": True,
                     "verification_status": "VERIFIED",
                     "purchase_eligible": True,
@@ -372,6 +374,7 @@ class QueueTests(unittest.TestCase):
             gpu="RTX 5070 Ti",
             ram_gb=32,
             screen_resolution="2560x1600",
+            screen_size_inch=16,
         )
         from personal_top import attach_series_candidates
         from thailand.models import FxRate

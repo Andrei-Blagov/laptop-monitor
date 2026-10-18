@@ -5,6 +5,11 @@ services:
       dockerfile: deploy/Dockerfile
       args:
         APP_VERSION: ${LAPTOP_MONITOR_VERSION:?Set LAPTOP_MONITOR_VERSION via deploy/compose.sh}
+    logging:
+      driver: json-file
+      options:
+        max-size: "10m"
+        max-file: "3"
     image: laptop-monitor:${LAPTOP_MONITOR_VERSION:?Set LAPTOP_MONITOR_VERSION via deploy/compose.sh}
     container_name: laptop-monitor-pipeline
     env_file:
@@ -20,6 +25,11 @@ services:
     profiles: ["manual"]
 
   control-bot:
+    logging:
+      driver: json-file
+      options:
+        max-size: "10m"
+        max-file: "3"
     image: laptop-monitor:${LAPTOP_MONITOR_VERSION:?Set LAPTOP_MONITOR_VERSION via deploy/compose.sh}
     container_name: laptop-monitor-control
     depends_on: []
@@ -38,16 +48,29 @@ services:
 
   backup:
     image: laptop-monitor:${LAPTOP_MONITOR_VERSION:?Set LAPTOP_MONITOR_VERSION via deploy/compose.sh}
+    logging:
+      driver: json-file
+      options:
+        max-size: "10m"
+        max-file: "3"
     container_name: laptop-monitor-backup
-    env_file:
-      - .env
+    network_mode: none
+    read_only: true
+    cap_drop: [ALL]
+    security_opt: ["no-new-privileges:true"]
     volumes:
-      - ./data:/app/data
+      - ./data:/source:ro
+      - ./data/backups:/backup
     working_dir: /app
-    command: ["python", "-m", "scripts.backup_db"]
+    command: ["python", "-B", "-m", "scripts.backup_db"]
     profiles: ["manual"]
 
   thailand-worker:
+    logging:
+      driver: json-file
+      options:
+        max-size: "10m"
+        max-file: "3"
     image: laptop-monitor:${LAPTOP_MONITOR_VERSION:?Set LAPTOP_MONITOR_VERSION via deploy/compose.sh}
     env_file:
       - .env

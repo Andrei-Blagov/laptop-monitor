@@ -63,7 +63,7 @@ def _product(
         store=store,
         external_id=external_id,
         url=f"https://example.test/{store}/{external_id}",
-        name=name + " RTX 5070 Ti, 32GB DDR5, 1TB SSD, 2560x1600",
+        name=name + " RTX 5070 Ti, 32GB DDR5, 1TB SSD, 16\", 2560x1600",
         sku=sku,
         price=price,
         available=available,
@@ -320,7 +320,7 @@ class PipelineTests(unittest.TestCase):
                     store="regard",
                     external_id="2",
                     sku="SKU-2",
-                    price=300_000,
+                    price=280_000,
                     checked_at=_now(20),
                 ),
             ]
@@ -356,18 +356,15 @@ class PipelineTests(unittest.TestCase):
         finally:
             release_pipeline_lock(self.lock_path, expected_pid=os.getpid())
 
-    def test_stale_lock(self) -> None:
+    def test_unverified_legacy_lock_is_not_stolen(self) -> None:
         self.lock_path.write_text(
             json.dumps({"pid": 999_999_999, "started_at": "2000-01-01T00:00:00+00:00"}),
             encoding="utf-8",
         )
-        self.assertTrue(try_remove_stale_lock(self.lock_path) or True)
-        # Even if try_remove left it, acquire should clear stale and proceed.
-        self._seed_history()
+        self.assertFalse(try_remove_stale_lock(self.lock_path))
         result = self._run()
-        self.assertIn(result.exit_code, {EXIT_SUCCESS, EXIT_PARTIAL})
-        self.assertNotEqual(result.exit_code, EXIT_LOCKED)
-        self.assertFalse(self.lock_path.exists())
+        self.assertEqual(result.exit_code, EXIT_LOCKED)
+        self.assertTrue(self.lock_path.exists())
 
     def test_lock_released_after_success(self) -> None:
         self._seed_history()

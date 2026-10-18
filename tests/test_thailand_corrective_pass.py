@@ -138,11 +138,11 @@ class SortingCorrectiveTests(unittest.TestCase):
         )
 
     def test_over_cap_excluded(self) -> None:
-        # 2.5 RUB/THB: 132 000 THB = 330 000 RUB (in), 132 001 THB is over.
-        ok = _direct(external_id="ok", price_thb=132_000)
+        # 2.5 RUB/THB: 116 000 THB = 290 000 RUB (in), 116 001 THB is over.
+        ok = _direct(external_id="ok", price_thb=116_000)
         bad = _direct(
             external_id="bad",
-            price_thb=132_001,
+            price_thb=116_001,
             sku="OVER",
             manufacturer_part_number="OVER",
         )
@@ -279,7 +279,7 @@ class BananaViaLazadaTests(unittest.TestCase):
                 seller_name="BaNANA IT",
                 official_store=False,
                 mall=True,
-                price=132_001,
+                price=116_001,
             )
         )
         assert o is not None

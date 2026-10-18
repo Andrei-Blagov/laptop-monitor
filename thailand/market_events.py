@@ -892,17 +892,23 @@ def _retry_delivery_locked(base: Path, sender, *, clock=None, fallback: datetime
     waiting = _load_events(base / "delivery")
     if not waiting:
         return None
-    groups: dict[tuple[str, str], list[dict[str, Any]]] = {}
+    groups: dict[tuple[str, str, str], list[dict[str, Any]]] = {}
     for event in waiting:
         result_id = str(event.get("subscription_scan_id") or event.get("result_id") or "")
         if _load_result(base, result_id) is None:
             continue
         view = str(event.get("requested_view") or "general_top")
-        groups.setdefault((result_id, view), []).append(event)
+        # Daily is a distinct compact presentation. Do not attach a manual event
+        # to a different text merely because result/view happen to be equal.
+        presentation = ""
+        if event.get("trigger_type") == "daily":
+            presentation = "daily:" + str(event.get("event_id"))
+        groups.setdefault((result_id, view, presentation), []).append(event)
     sent_ids = []
-    for (result_id, view), events in groups.items():
+    for (result_id, view, presentation), events in groups.items():
         result = _load_result(base, result_id)
-        receipt_id = hashlib.sha256(json.dumps([result_id, view]).encode()).hexdigest()
+        receipt_key = [result_id, view] + ([presentation] if presentation else [])
+        receipt_id = hashlib.sha256(json.dumps(receipt_key).encode()).hexdigest()
         receipt = _read_json(base / "receipts" / f"{receipt_id}.json") or {}
         claimed = []
         for event in events:

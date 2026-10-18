@@ -7,7 +7,9 @@ from typing import Any, Mapping
 from thailand.models import ThailandOffer
 
 EVIDENCE_FIELDS = frozenset({
-    "cpu",
+    "cpu", "gpu",
+    "brand", "model_family", "manufacturer_generation",
+    "gpu_vram_gb", "screen_refresh_hz",
     "ram_gb",
     "ssd_gb",
     "screen_inch",
@@ -30,7 +32,7 @@ def record_field_evidence(
 ) -> None:
     """Attach evidence for values this observation actually produced.
 
-    GPU is intentionally absent: ``gpu_source`` is not reused here.
+    GPU gets its own record; it is never reused for RAM, SSD or another field.
     """
     meta = dict(offer.metadata or {})
     evidence = dict(meta.get("field_evidence") or {})

@@ -356,6 +356,7 @@ def _offer_record(
         "quote_state": "current",
         "specs": specs,
         "known_extras": extras,
+        "identity_evidence": _identity_evidence(offer, identity),
     }
 
 
@@ -636,6 +637,7 @@ def _field_evidence(
     listing observation because that text was seen then.
     """
     from comparison import offer_identity
+    from identity_sync import _values_equivalent
     from stores.common import extract_specs_from_name
 
     title = extract_specs_from_name(str(getattr(offer, "name", "") or ""))
@@ -643,7 +645,10 @@ def _field_evidence(
     specs: dict[str, Any] = {}
     for public_name, identity_name, title_name in CORE_FIELDS:
         cached = None if identity is None else getattr(identity, identity_name, None)
-        if cached is not None:
+        title_value = title.get(title_name)
+        own_cache_time = _known_spec_time(identity, (identity_name, public_name))
+        title_conflicts = title_value is not None and not _values_equivalent(identity_name, cached, title_value)
+        if cached is not None and (own_cache_time or title_value is None or title_conflicts):
             value = _json_value(getattr(proven, identity_name, None))
             evidence = _spec_evidence(
                 offer,
@@ -708,6 +713,20 @@ def _spec_evidence(
         "method": method,
         "provenance": _provenance_label(identity, field_names),
     }
+
+
+def _identity_evidence(offer: Any, identity: Any) -> dict[str, Any]:
+    """Pass documented manufacturer identity through B to D without guessing it."""
+    found = {}
+    for public, attr in (("brand", "brand"), ("manufacturer_family", "model_family"),
+                         ("manufacturer_generation", "manufacturer_generation")):
+        value = getattr(identity, attr, None)
+        if value is None:
+            continue
+        found[public] = {"value": value, "evidence": _spec_evidence(
+            offer, identity, method="specs_cache", field_names=(attr, public),
+            listing_observed_at=None)}
+    return found
 
 
 def _source_identifiers(identity: Any) -> dict[str, Any]:

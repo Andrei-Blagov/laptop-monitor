@@ -10,6 +10,7 @@ from decimal import Decimal, InvalidOperation, localcontext
 from types import MappingProxyType
 from typing import Any, Mapping
 from zoneinfo import ZoneInfo
+import product_policy
 
 CORE_FIELDS = ('cpu', 'gpu', 'ram_gb', 'ssd_gb', 'screen_inch', 'screen_resolution')
 HARD_FIELDS = ('gpu', 'ram_gb', 'ssd_gb', 'screen_resolution')
@@ -223,9 +224,9 @@ class FxObservation:
 
 @dataclass(frozen=True)
 class ComparisonPolicy:
-    max_price_rub: Decimal = Decimal('330000')
-    min_ram: int = 32
-    min_ssd: int = 1000
+    max_price_rub: Decimal = Decimal(product_policy.MAX_PRICE_RUB)
+    min_ram: int = product_policy.MIN_RAM_GB
+    min_ssd: int = product_policy.MIN_SSD_GB
     quote_hours: int = 6
     ru_quote_hours: int = 3
     catalog_hours: int = 26
@@ -233,7 +234,7 @@ class ComparisonPolicy:
     fx_date_days: int = 4
     top_limit: int = 5
     unmatched_min_score: Decimal = Decimal('75')
-    gpu_targets: tuple[tuple[str, Decimal], ...] = (('RTX 5070 Ti', Decimal('230000')), ('RTX 5080', Decimal('300000')))
+    gpu_targets: tuple[tuple[str, Decimal], ...] = tuple((gpu, Decimal(value)) for gpu, value in product_policy.GPU_TARGETS)
 
     def __post_init__(self) -> None:
         budget, threshold = money(self.max_price_rub, positive=True), money(self.unmatched_min_score)

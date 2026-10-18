@@ -1,0 +1,80 @@
+Laptop Monitor 0.12.0 — accepted finalization, 18 October 2026
+
+Authority: approved 01_Audit_RU.html, 02_File_Matrix.html,
+03_Product_Spec_RU.html, 04_Final_Plan_RU.html and the owner's final B–E request.
+This supersedes earlier 330000/290000 ambiguity and dual 08:00 producers.
+
+B1: each RU/TH field retains its own observation evidence/captured_at through
+storage, snapshot and comparison. Failed/incomplete parsing cannot date an old
+value as new. Undated legacy cache is not proof. Trusted exact Laptop GPU may
+use its standard VRAM (5070 Ti 12 GB, 5080 16 GB, NVIDIA laptop specification);
+conflict or unproved GPU identity remains ineligible. Matching core is unchanged.
+
+B2: one pure product_policy: inclusive 290000 RUB, no lower price cap,
+RTX 5070 Ti Laptop/5080 Laptop, installed RAM >=32 GB, SSD >=1000 GB,
+confirmed >=15.6 inch high-resolution screen. Prefer 17 inch, targets230000/
+280000. Stock, prices, source health and own evidence gates remain mandatory.
+
+B3: one compact daily at08:00 Europe/Moscow, up to5 evidenced unique variants
+from all eligible RU and TH, with personal benchmark badges, proven comparison
+and honest 0–2/failed/limited-coverage status. No unsuitable informational
+morning cards. Distinct manual views remain distinct; identical formatted
+cards keep existing durable physical-content ACK reuse. No extra live scans.
+At controlled release enable market-daily.timer only; disable personal-top.timer
+(the service remains for explicit requests). Verify actual next elapse08MSK and
+no duplicate systemd producer. Existing n8n webhook/infrastructure remain
+unchanged; its legacy daily activation was not established by the accepted audit. Retry/path workers consume one queue, not a new producer.
+
+B4 is NOT NOOP. Accepted v0.11.1 pipeline_lock.py reproduced acquisition by a
+second container PID1 while owner PID7 remained alive, CI39109674327. Kernel
+lease fix and owner-death recovery: CI39110987836. Stable inode is never deleted;
+legacy metadata cannot be stolen based on a namespace-local PID lookup.
+Release must wait for old RU/TH operations to finish before migrating protocol.
+Never delete an unexplained legacy lock.
+
+C: the existing backup timer runs full_state_maintenance.py. It holds RU,
+scan, delivery and queue kernel leases, then creates a complete private backup
+from a kernel read-only source using actual SQLite online backup; live WAL
+requires readable existing sidecars. Concurrent state mutation refuses the
+copy. No immutable live-WAL shortcut or stale backup fallback. All files except
+nested backups are included, preserving specs, history, BUY, source health,
+queues, ACKs/receipts and Retry-After. Copies are standalone DELETE databases.
+Only7 latest verified owned full daily backups are retained; separate release
+rollback copy and unknown legacy backups remain untouched.
+After successful full backup, >=30-day unreferenced result/snapshot deletion
+requires the complete transitive dependency graph under the same leases.
+All queue states, latest, BUY, durable ACK and legacy references are roots.
+ACK/receipt horizons are not shortened; legacy references conservatively keep
+their targets. This bounds disposable files, not referenced business history.
+Actual deletion bytes are reported. Docker json-file rotation is10MB x3 only
+on Laptop Monitor compose services. Chromium/Playwright unchanged.
+
+Checks: python -m scripts.check_offline (offline socket guard, full unittest,
+packaging,compileall,diff,systemd,bundle/tree); real image check_containers;
+sudo python scripts/check_full_backup.py --image EXACT_LOCAL_TAG (DELETE/WAL,
+UID10001,ro source,none network,real inspect,full restore,dependency protection,
+host/container lease contention,own-resource cleanup). CI uses no OVH secrets.
+
+Release gates: actual protected cleanup >=10GB goal, B/C PASS, exact retained
+image/source, separate checked full rollback backup, old-image rollback proof,
+controlled switch, one live control cycle, final health/disk. Version0.12.0 is a
+minor release because it consolidates accepted product policy, morning contract
+and operational storage semantics. No feature beyond approved B/C.
+After PASS:7 actual calendar days natural runs, no synthetic live scans. Configure
+supported read-only Automation before promising background observation. Stability
+cannot be declared before this elapsed observation is complete.
+
+Additional B2 regression reproduced at23b5d719: direct evaluate_purchase with
+GPU=RTX5070Ti/RTX5080 incorrectly returned eligible; deal_is_eligible ignored
+explicit16GB VRAM on5070Ti. Fixed exact-target ambiguity check and propagated
+optional VRAM through ranking/BUY/personal/TH gates. Missing VRAM remains allowed.
+
+Pre-release concrete production compatibility correction: accepted audit found
+data/n8n_watchdog_state.json owned by root. Retention reads dependency roots
+owned by root or the application UID; it never changes their ownership or bytes.
+Deletion still requires the application UID on each exact candidate. Actual
+DELETE/WAL Docker checks include this root-owned readable metadata, UID10001
+reader and preservation of the referenced result. The earlier retained package
+39112412893 is superseded and must not be deployed.
+The pending event's actual source_ru_snapshot_id is also a graph root before
+its result exists; a targeted regression prevents premature source deletion.

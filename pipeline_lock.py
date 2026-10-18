@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import json
 import os
+import stat
 from contextlib import contextmanager
 from dataclasses import dataclass
 from datetime import datetime, timezone
@@ -86,7 +87,7 @@ def read_lock_info(lock_path: Path | str) -> LockInfo | None:
 
 def _write_lock(path: Path, info: LockInfo) -> None:
     path.parent.mkdir(parents=True, exist_ok=True)
-    payload = {"pid": info.pid, "started_at": info.started_at}
+    payload = {"pid": info.pid, "started_at": info.started_at, "protocol": "kernel-v1"}
     # Exclusive create — атомарно на Windows/POSIX.
     flags = os.O_CREAT | os.O_EXCL | os.O_WRONLY
     fd = os.open(str(path), flags)
@@ -96,65 +97,107 @@ def _write_lock(path: Path, info: LockInfo) -> None:
         os.close(fd)
 
 
+# The stable inode is never unlinked: PID namespaces do not affect its lock.
+_HELD: dict[str, tuple[int, LockInfo]] = {}
+
+
+def _after_fork() -> None:
+    for fd, _ in _HELD.values():
+        os.close(fd)  # Never LOCK_UN the parent's shared open-file description.
+    _HELD.clear()
+
+
+if hasattr(os, "register_at_fork"):
+    os.register_at_fork(after_in_child=_after_fork)
+
+
 def try_remove_stale_lock(lock_path: Path | str) -> bool:
-    """
-    Удаляет lock только если PID достоверно не работает.
-    Returns True если lock удалён (или отсутствовал).
-    """
-    path = Path(lock_path)
-    info = read_lock_info(path)
-    if info is None:
-        if path.exists():
-            # Повреждённый/пустой lock — не удаляем агрессивно, если не читается
-            # и файл есть: считаем «занято», кроме нулевого размера после crash mid-write.
-            try:
-                if path.stat().st_size == 0:
-                    path.unlink(missing_ok=True)
-                    return True
-            except OSError:
-                pass
-            return False
-        return True
-    alive = _pid_is_running(info.pid)
-    if alive is False:
-        try:
-            path.unlink(missing_ok=True)
-            return True
-        except OSError:
-            return False
-    return False
+    """Legacy PID files are never removed on a namespace-local PID guess."""
+    return not Path(lock_path).exists()
+
+
+def _unlock(fd: int) -> None:
+    try:
+        if os.name == "nt":
+            import msvcrt
+            os.lseek(fd, 0, os.SEEK_SET)
+            msvcrt.locking(fd, msvcrt.LK_UNLCK, 1)
+        else:
+            import fcntl
+            fcntl.flock(fd, fcntl.LOCK_UN)
+    finally:
+        os.close(fd)
 
 
 def acquire_pipeline_lock(lock_path: Path | str = DEFAULT_LOCK_PATH) -> LockInfo:
-    path = Path(lock_path)
-    info = LockInfo(pid=os.getpid(), started_at=_iso_now())
-    try:
-        _write_lock(path, info)
-        return info
-    except FileExistsError:
-        if try_remove_stale_lock(path):
-            try:
-                _write_lock(path, info)
-                return info
-            except FileExistsError as exc:
-                raise PipelineLockError("Pipeline already running") from exc
+    path = Path(lock_path).absolute()
+    key = str(path)
+    if key in _HELD:
         raise PipelineLockError("Pipeline already running")
+    path.parent.mkdir(parents=True, exist_ok=True)
+    if path.is_symlink():
+        raise PipelineLockError("Unsafe pipeline lock")
+    lease = path.with_name(path.name + ".lease")
+    fd = os.open(lease, os.O_CREAT | os.O_RDWR | getattr(os, "O_NOFOLLOW", 0), 0o600)
+    locked = False
+    try:
+        st = os.fstat(fd)
+        if not stat.S_ISREG(st.st_mode) or st.st_nlink != 1:
+            raise PipelineLockError("Unsafe pipeline lease")
+        if st.st_size == 0:
+            os.write(fd, b"0")
+        os.lseek(fd, 0, os.SEEK_SET)
+        try:
+            if os.name == "nt":
+                import msvcrt
+                msvcrt.locking(fd, msvcrt.LK_NBLCK, 1)
+            else:
+                import fcntl
+                fcntl.flock(fd, fcntl.LOCK_EX | fcntl.LOCK_NB)
+        except OSError as exc:
+            raise PipelineLockError("Pipeline already running") from exc
+        locked = True
+        if path.exists():
+            st = path.lstat()
+            if not stat.S_ISREG(st.st_mode) or st.st_nlink != 1:
+                raise PipelineLockError("Unsafe pipeline metadata")
+            try:
+                old = json.loads(path.read_text())
+            except (OSError, ValueError) as exc:
+                raise PipelineLockError("Unverified legacy pipeline lock") from exc
+            if old.get("protocol") != "kernel-v1":
+                raise PipelineLockError("Unverified legacy pipeline lock")
+            # Only a dead kernel-v1 owner can leave metadata while this lease
+            # is available. No cross-container PID lookup participates.
+            path.unlink()
+        info = LockInfo(pid=os.getpid(), started_at=_iso_now())
+        _write_lock(path, info)
+        _HELD[key] = (fd, info)
+        return info
+    except BaseException:
+        if locked:
+            _unlock(fd)
+        else:
+            os.close(fd)
+        raise
 
 
-def release_pipeline_lock(
-    lock_path: Path | str = DEFAULT_LOCK_PATH,
-    *,
-    expected_pid: int | None = None,
-) -> None:
-    path = Path(lock_path)
-    info = read_lock_info(path)
-    if info is None:
-        path.unlink(missing_ok=True)
+def release_pipeline_lock(lock_path: Path | str = DEFAULT_LOCK_PATH, *, expected_pid: int | None = None) -> None:
+    path = Path(lock_path).absolute()
+    held = _HELD.get(str(path))
+    if held is None:
         return
-    if expected_pid is not None and info.pid != expected_pid:
-        # Чужой lock — не трогаем.
+    fd, owner = held
+    if owner.pid != os.getpid() or (expected_pid is not None and expected_pid != owner.pid):
         return
-    path.unlink(missing_ok=True)
+    _HELD.pop(str(path))
+    try:
+        if not path.is_symlink():
+            info = read_lock_info(path)
+            if info == owner:
+                path.unlink(missing_ok=True)
+    finally:
+        _unlock(fd)
 
 
 @contextmanager

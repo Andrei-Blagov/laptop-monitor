@@ -244,7 +244,8 @@ def parse_speedcom_product(
         record_field_evidence(
             offer,
             {
-                "cpu": specs.get("cpu"),
+                "brand": specs.get("brand"),
+            "cpu": specs.get("cpu"),
                 "ram_gb": specs.get("ram_gb"),
                 "ssd_gb": specs.get("ssd_gb"),
                 "screen_inch": specs.get("screen_inch"),

@@ -37,6 +37,7 @@ class RankedDeal:
     history_started_at: str | None = None
     # Set only after comparison.comparable_offer_groups confirms the second offer.
     saving_verified: bool = False
+    gpu_vram_gb: int | None = None
 
 
 @dataclass
@@ -486,6 +487,7 @@ def _extract_specs(
     identity = offer_identity(best, specs_by_key or {})
     return {
         "gpu": identity.gpu,
+        "gpu_vram_gb": identity.gpu_vram_gb,
         "ram_gb": identity.ram_gb,
         "ssd_gb": identity.ssd_gb,
         "screen_inch": identity.screen_size_inch,
@@ -557,9 +559,11 @@ def rank_clusters(
 
             verdict = evaluate_hardware(
                 gpu=specs["gpu"],
+                gpu_vram_gb=specs.get("gpu_vram_gb"),
                 ram_gb=specs["ram_gb"],
                 ssd_gb=specs["ssd_gb"],
                 screen_resolution=specs["screen_resolution"],
+                screen_inch=specs["screen_inch"],
             )
             if not verdict.eligible:
                 if exclusions is not None:
@@ -602,6 +606,7 @@ def rank_clusters(
                 },
                 cluster_name=match.name,
                 gpu=specs["gpu"],
+                gpu_vram_gb=specs.get("gpu_vram_gb"),
                 store=best.store,
                 price=int(best.price),
                 url=best.url,
@@ -693,9 +698,11 @@ def _exclusion_record(
     specs = cluster_specs(match, specs_by_key)
     hardware = evaluate_hardware(
         gpu=specs.get("gpu"),
+        gpu_vram_gb=specs.get("gpu_vram_gb"),
         ram_gb=specs.get("ram_gb"),
         ssd_gb=specs.get("ssd_gb"),
         screen_resolution=specs.get("screen_resolution"),
+        screen_inch=specs.get("screen_inch"),
     )
     also = [f"also:{d}" for d in hardware.details]
     if selling:

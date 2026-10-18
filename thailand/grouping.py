@@ -146,6 +146,7 @@ def select_best_and_alts(
                 "ram_gb": r.get("ram_gb"),
                 "ssd_gb": r.get("ssd_gb"),
                 "screen_resolution": r.get("screen_resolution"),
+                "screen_size_inch": r.get("screen_size_inch") or r.get("screen_inch"),
                 "availability_confirmed": r.get("availability_confirmed"),
                 "verification_status": r.get("verification_status"),
                 "purchase_eligible": r.get("purchase_eligible"),
