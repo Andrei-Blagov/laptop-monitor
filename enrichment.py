@@ -3,6 +3,7 @@ from __future__ import annotations
 import json
 import logging
 import re
+from datetime import datetime, timezone
 from typing import Any
 
 import httpx
@@ -98,11 +99,14 @@ def enrich_regard_product(
 
     product_id = item["external_id"]
     raw: dict[str, Any] = {}
+    observed_at = None
     try:
         response = client.get(REGARD_API.format(product_id=product_id))
         print(f"[enrich regard] status={response.status_code} id={product_id}")
         if response.status_code == 200:
             raw = response.json()
+            if isinstance(raw, dict) and raw:
+                observed_at = datetime.now(timezone.utc).isoformat()
         else:
             logger.warning(
                 "Regard enrich HTTP %s for %s", response.status_code, product_id
@@ -184,6 +188,7 @@ def enrich_regard_product(
         gtin=None,
         raw_characteristics=flat_raw,
         source_identifiers={
+            "structured_observed_at": observed_at,
             "vendorcode": vendorcode,
             "alternative_pn": alt,
             "manufacturer_code_field": "Код производителя / vendorcode",
@@ -237,12 +242,15 @@ def enrich_andpro_product(
         )
 
     html = ""
+    observed_at = None
     url = item.get("url") or ""
     try:
         response = client.get(url)
         print(f"[enrich andpro] status={response.status_code} id={item.get('external_id')}")
         if response.status_code == 200:
             html = response.text
+            if html:
+                observed_at = datetime.now(timezone.utc).isoformat()
         else:
             logger.warning("ANDPRO enrich HTTP %s for %s", response.status_code, url)
     except httpx.HTTPError as exc:
@@ -311,6 +319,7 @@ def enrich_andpro_product(
         gtin=str(gtin) if gtin else None,
         raw_characteristics=props,
         source_identifiers={
+            "structured_observed_at": observed_at,
             "mpn": mpn,
             "ld_sku": ld.get("sku"),
             "article_field": "JSON-LD mpn / Артикул на карточке",

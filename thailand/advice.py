@@ -84,7 +84,7 @@ def parse_advice_product_dict(
         apply_catalog_gpu=False,
     )
     title_fields = {
-        key for key in ("cpu", "ram_gb", "ssd_gb", "screen_inch", "screen_resolution")
+        key for key in ("brand", "cpu", "ram_gb", "ssd_gb", "screen_inch", "screen_resolution")
         if specs.get(key) is not None
     }
     structured_fields: set[str] = set()
@@ -101,7 +101,7 @@ def parse_advice_product_dict(
     for key in ("cpu", "brand", "warranty", "screen_resolution"):
         if raw.get(key):
             specs[key] = raw[key]
-            if key in {"cpu", "screen_resolution"}:
+            if key in {"brand", "cpu", "screen_resolution"}:
                 structured_fields.add(key)
     for key, cast in (("ram_gb", int), ("ssd_gb", int), ("screen_size_inch", float)):
         if raw.get(key) is not None:

@@ -74,15 +74,15 @@ def prune_backups(
 
 
 def main(argv: list[str] | None = None) -> int:
-    parser = argparse.ArgumentParser(description="Backup laptop-monitor SQLite DB")
-    parser.add_argument("--db", default=str(DEFAULT_DB_PATH))
-    parser.add_argument("--out-dir", default=str(DEFAULT_BACKUP_DIR))
-    parser.add_argument("--retention-days", type=int, default=RETENTION_DAYS)
+    """Scheduled backups contain the entire state; old SQLite API is diagnostic only."""
+    from ops.state_backup import create_backup, retain_daily
+    parser = argparse.ArgumentParser(description="Private full-state backup from a read-only mount")
+    parser.add_argument("--source", default="/source")
+    parser.add_argument("--out-dir", default="/backup")
     args = parser.parse_args(argv)
-    path = backup_sqlite(args.db, args.out_dir)
-    removed = prune_backups(args.out_dir, retention_days=args.retention_days)
-    print(f"Backup OK: {path}")
-    print(f"Pruned: {removed}")
+    path = create_backup(args.source, args.out_dir)
+    retained = retain_daily(args.out_dir, keep=7)
+    print(f"Full backup integrity PASS: {path.name}; kept={retained['kept']}; removed={len(retained['removed'])}; unknown preserved={len(retained['skipped'])}")
     return 0
 
 

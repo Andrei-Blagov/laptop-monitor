@@ -124,7 +124,7 @@ def parse_suggestion_discovery(
         specs = specs_from_text(title, catalog_gpu=search_context_gpu, apply_catalog_gpu=False)
         title_evidence = {
             key: specs.get(key)
-            for key in ("cpu", "ram_gb", "ssd_gb", "screen_inch", "screen_resolution")
+            for key in ("brand", "cpu", "ram_gb", "ssd_gb", "screen_inch", "screen_resolution")
             if specs.get(key) is not None
         }
         title_gpu = gpu_from_explicit_text(title)
@@ -355,6 +355,8 @@ def parse_read_product_html(
         out["manufacturer_part_number"] = mpns[0]
         out["sku"] = mpns[0]
     out["brand"] = extract_brand(out["name"])
+    if out["brand"]:
+        out["field_methods"]["brand"] = GPU_SOURCE_EXPLICIT_TITLE
     return out
 
 
@@ -371,6 +373,9 @@ def apply_detail_verification(
         offer.gpu_source = str(
             detail.get("gpu_source") or GPU_SOURCE_STRUCTURED_PRODUCT_PAGE
         )
+        from thailand.field_evidence import record_field_evidence
+        record_field_evidence(offer, {"gpu": offer.gpu}, method=offer.gpu_source,
+                              captured_at=detail.get("collected_at") or offer.collected_at)
     if detail.get("cpu") and not offer.cpu:
         offer.cpu = str(detail["cpu"])
     elif detail.get("cpu"):

@@ -224,6 +224,7 @@ def parse_itcity_hit(
     record_field_evidence(
         offer,
         {
+            "brand": specs.get("brand"),
             "cpu": specs.get("cpu"),
             "ram_gb": specs.get("ram_gb"),
             "ssd_gb": specs.get("ssd_gb"),

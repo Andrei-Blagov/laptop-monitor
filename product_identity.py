@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import re
+from datetime import datetime
 from dataclasses import asdict, dataclass, field
 from typing import Any, Mapping, Sequence
 
@@ -276,6 +277,7 @@ class ProductIdentity:
 
     brand: str | None = None
     model_family: str | None = None
+    manufacturer_generation: str | None = None
     model: str | None = None
     manufacturer_part_number: str | None = None
     alternative_part_numbers: list[str] = field(default_factory=list)
@@ -581,7 +583,11 @@ def compare_identities(left: ProductIdentity, right: ProductIdentity) -> Identit
 
 
 _META_SPEC_KEYS = (
+    ("brand", ("brand",), normalize_brand),
+    ("model_family", ("model_family", "manufacturer_family"), normalize_model),
+    ("manufacturer_generation", ("manufacturer_generation",), normalize_model),
     ("gpu", ("gpu",), normalize_gpu),
+    ("gpu_vram_gb", ("gpu_vram_gb",), normalize_vram_gb),
     ("cpu", ("cpu",), normalize_cpu),
     ("ram_gb", ("ram_gb", "ram"), normalize_ram_gb),
     ("ssd_gb", ("ssd_gb", "ssd"), normalize_ssd_gb),
@@ -635,6 +641,8 @@ def identity_from_collected_product(product: Any) -> ProductIdentity:
 
     source_identifiers: dict[str, Any] = {
         "field_provenance": provenance,
+        "field_captured_at": {field: product.checked_at.isoformat() for field in values}
+        if isinstance(getattr(product, "checked_at", None), datetime) and product.checked_at.tzinfo is not None else {},
     }
     # Preserve non-spec metadata breadcrumbs for diagnostics.
     for key in ("availability_status", "member_price", "catalog_gpu", "mpn"):
@@ -649,8 +657,12 @@ def identity_from_collected_product(product: Any) -> ProductIdentity:
         price=getattr(product, "price", None),
         available=bool(getattr(product, "available", False)),
         url=getattr(product, "url", None),
+        brand=values.get("brand"),
+        model_family=values.get("model_family"),
+        manufacturer_generation=values.get("manufacturer_generation"),
         cpu=values.get("cpu"),
         gpu=values.get("gpu"),
+        gpu_vram_gb=values.get("gpu_vram_gb"),
         ram_gb=values.get("ram_gb"),
         ssd_gb=values.get("ssd_gb"),
         screen_size_inch=values.get("screen_size_inch"),

@@ -165,6 +165,7 @@ def parse_invadeit_item(
     record_field_evidence(
         offer,
         {
+            "brand": specs.get("brand"),
             "cpu": specs.get("cpu"),
             "ram_gb": specs.get("ram_gb"),
             "ssd_gb": specs.get("ssd_gb"),
@@ -258,6 +259,7 @@ def enrich_offer_from_specifications(
         if gpu in {"RTX 5070 Ti", "RTX 5080"}:
             offer.gpu = gpu
             offer.gpu_source = GPU_SOURCE_STRUCTURED_API
+            filled["gpu"] = offer.gpu
     offer.availability_source = offer.availability_source or AVAIL_SOURCE_PRODUCT_DETAIL
     offer.metadata = dict(offer.metadata or {})
     offer.metadata["detail_enriched"] = True

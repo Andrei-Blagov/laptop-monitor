@@ -560,6 +560,7 @@ def rank_clusters(
                 ram_gb=specs["ram_gb"],
                 ssd_gb=specs["ssd_gb"],
                 screen_resolution=specs["screen_resolution"],
+                screen_inch=specs["screen_inch"],
             )
             if not verdict.eligible:
                 if exclusions is not None:
@@ -696,6 +697,7 @@ def _exclusion_record(
         ram_gb=specs.get("ram_gb"),
         ssd_gb=specs.get("ssd_gb"),
         screen_resolution=specs.get("screen_resolution"),
+        screen_inch=specs.get("screen_inch"),
     )
     also = [f"also:{d}" for d in hardware.details]
     if selling:

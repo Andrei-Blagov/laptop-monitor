@@ -58,6 +58,12 @@ def assess_quote(offer: Offer, snapshot: MarketSnapshot, fx: FxObservation | Non
             reasons.append('spec_unconfirmed:' + key)
     if values['gpu'] not in ('RTX 5070 Ti', 'RTX 5080'):
         reasons.append('gpu_rejected')
+    from product_policy import LAPTOP_VRAM_GB
+    vram = offer.extras.get('gpu_vram_gb')
+    if vram is not None and vram.value is not None:
+        from market_contracts import money
+        if money(vram.value, positive=True) != LAPTOP_VRAM_GB.get(values['gpu']):
+            reasons.append('gpu_vram_conflict')
     if values['ram_gb'] is not None and values['ram_gb'] < policy.min_ram:
         reasons.append('ram_rejected')
     if values['ssd_gb'] is not None and values['ssd_gb'] < policy.min_ssd:
@@ -66,6 +72,11 @@ def assess_quote(offer: Offer, snapshot: MarketSnapshot, fx: FxObservation | Non
         width, height = map(int, values['screen_resolution'].split('x'))
         if width <= 1920 or height < 1440 or width * height < 2560 * 1440:
             reasons.append('screen_rejected')
+    size = normalized_field(offer, 'screen_inch', now)
+    if size is None:
+        reasons.append('spec_unconfirmed:screen_inch')
+    elif size < Decimal(str(config.MIN_SCREEN_INCH)):
+        reasons.append('screen_size_rejected')
     return QuoteAssessment(not reasons, rub, tuple(reasons))
 
 

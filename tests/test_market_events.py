@@ -238,7 +238,8 @@ class MarketEventQueueTests(unittest.TestCase):
         self.assertEqual([row["recipients"] for row in stored], [["daily-chat"], ["manual-chat"], ["buy-chat"]])
         self.assertEqual(stored[2]["source_ru_snapshot_id"], "ru-buy")
         self.assertTrue(all(row.get("delivery_state") == "sent" for row in stored))
-        self.assertEqual(self.sender.sent[0]["recipients"], ["daily-chat", "manual-chat", "buy-chat"])
+        self.assertEqual(self.sender.sent[0]["recipients"], ["daily-chat"])
+        self.assertEqual(self.sender.sent[1]["recipients"], ["manual-chat", "buy-chat"])
 
     def test_same_event_id_is_not_duplicated(self) -> None:
         self._catalog(2)

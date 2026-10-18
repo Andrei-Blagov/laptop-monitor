@@ -228,6 +228,7 @@ def _suits_series_profile(model: Mapping[str, Any], specs: Mapping[str, Any]) ->
         ram_gb=specs.get("ram_gb"),
         ssd_gb=specs.get("ssd_gb"),
         screen_resolution=specs.get("screen_resolution"),
+        screen_inch=specs.get("screen_inch"),
     ).eligible
 
 
@@ -376,6 +377,7 @@ def russian_side(
             ram_gb=specs.get("ram_gb"),
             ssd_gb=specs.get("ssd_gb"),
             screen_resolution=specs.get("screen_resolution"),
+            screen_inch=specs.get("screen_inch"),
         ).eligible:
             continue
         item = dict(row)

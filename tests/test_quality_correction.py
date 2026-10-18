@@ -114,7 +114,7 @@ def deliver_three(case,root,comp=None):
         _atomic_write(root/'delivery'/f'{trigger}.json',event)
     _retry_delivery_locked(root,sender,fallback=NOW)
     texts=[x[0] for x in sink.messages]
-    # The comparison fixture has no view membership, so each view's fallback is equal.
+    # Manual/personal fallback is equal; approved daily digest is a distinct text.
     case.assertEqual(len(texts),len(set(texts)))
     case.assertEqual(len(list((root/'archive').glob('*.json'))),3)
     for p in (root/'archive').glob('*.json'):
@@ -145,8 +145,8 @@ class ThaiAndDelivery(unittest.TestCase):
         self.assertIsNone(own_ssd_gb('RAM 96GB SSD'))
         self.assertEqual(own_ssd_gb('SSD: 64GB'),64)
         self.assertIsNone(own_ssd_gb('up to SSD 8TB'))
-    def test_three_equal_views_one_physical_send_and_all_events_archived(self):
-        sink=deliver_three(self,self.root);self.assertEqual(len(sink.messages),1)
+    def test_daily_digest_and_shared_manual_personal_all_events_archived(self):
+        sink=deliver_three(self,self.root);self.assertEqual(len(sink.messages),2)
     def test_other_recipient_or_result_is_not_deduplicated(self):
         sink=Sink();sender=MarketTextSender(sink,jobs_dir=self.root,now_fn=lambda:NOW)
         for rid,chat in [('one','42'),('one','43'),('two','42')]:

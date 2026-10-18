@@ -126,6 +126,7 @@ def coverage_for_offers(
             ram_gb=offer.ram_gb,
             ssd_gb=offer.ssd_gb,
             screen_resolution=offer.screen_resolution,
+            screen_inch=offer.screen_size_inch,
         )
         if verdict.eligible:
             hardware_and_price += 1

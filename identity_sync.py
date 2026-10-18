@@ -36,6 +36,7 @@ SPECS_CACHE_PATH = Path("data") / "product_specs.json"
 _MERGE_SPEC_FIELDS = (
     "brand",
     "model_family",
+    "manufacturer_generation",
     "model",
     "manufacturer_part_number",
     "cpu",
@@ -95,7 +96,10 @@ def _stamp_structured_provenance(
 ) -> ProductIdentity:
     """Mark known fields as structured store data (authoritative over title)."""
     prov = dict(_field_provenance(identity))
+    captured = dict((identity.source_identifiers or {}).get("field_captured_at") or {})
+    observed = (identity.source_identifiers or {}).get("structured_observed_at")
     for field in (
+        "brand", "model_family", "manufacturer_generation",
         "gpu",
         "cpu",
         "ram_gb",
@@ -107,8 +111,11 @@ def _stamp_structured_provenance(
     ):
         if getattr(identity, field, None) is not None:
             prov[field] = source
+            if observed:
+                captured[field] = observed
     src = dict(identity.source_identifiers or {})
     src["field_provenance"] = prov
+    src["field_captured_at"] = captured
     identity.source_identifiers = src
     return identity
 
@@ -223,6 +230,8 @@ def merge_identity_into_cache(
             existing["source_identifiers"].get("field_provenance") or {}
         )
     incoming_prov = _field_provenance(identity)
+    existing_times = dict((existing.get("source_identifiers") or {}).get("field_captured_at") or {})
+    incoming_times = dict((incoming.get("source_identifiers") or {}).get("field_captured_at") or {})
 
     for field in _MERGE_SPEC_FIELDS:
         old = existing.get(field)
@@ -233,6 +242,8 @@ def merge_identity_into_cache(
             merged[field] = new
             if field in incoming_prov:
                 existing_prov[field] = incoming_prov[field]
+            if field in incoming_times:
+                existing_times[field] = incoming_times[field]
             continue
         if _values_equivalent(field, old, new):
             merged[field] = new
@@ -242,6 +253,8 @@ def merge_identity_into_cache(
             ):
                 if field in incoming_prov:
                     existing_prov[field] = incoming_prov[field]
+                if field in incoming_times:
+                    existing_times[field] = incoming_times[field]
             continue
 
         # Conflict: do not silently overwrite.
@@ -256,6 +269,9 @@ def merge_identity_into_cache(
             merged[field] = new
             if kept_source:
                 existing_prov[field] = kept_source
+            existing_times.pop(field, None)
+            if field in incoming_times:
+                existing_times[field] = incoming_times[field]
         conflicts.append(
             {
                 "status": "SPEC_CONFLICT",
@@ -314,9 +330,10 @@ def merge_identity_into_cache(
 
     src = dict(existing.get("source_identifiers") or {})
     inc_src = dict(incoming.get("source_identifiers") or {})
-    src.update({k: v for k, v in inc_src.items() if k != "field_provenance"})
+    src.update({k: v for k, v in inc_src.items() if k not in {"field_provenance", "field_captured_at"}})
     if existing_prov:
         src["field_provenance"] = existing_prov
+    src["field_captured_at"] = existing_times
     if conflicts:
         prev = src.get("spec_conflicts")
         bucket = list(prev) if isinstance(prev, list) else []

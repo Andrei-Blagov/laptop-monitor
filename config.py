@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import os
 from pathlib import Path
+import product_policy as policy
 
 # Минимальное падение цены для PRICE_DROP (проценты).
 PRICE_DROP_PERCENT: float = 5.0
@@ -13,25 +14,23 @@ HISTORICAL_LOW_MIN_PERCENT: float = 2.0
 HISTORICAL_LOW_MIN_ABSOLUTE: int = 3_000
 
 # Пороги целевой цены по GPU (руб.).
-TARGET_PRICES: dict[str, int] = {
-    "RTX 5070 Ti": 230_000,
-    "RTX 5080": 300_000,
-}
+TARGET_PRICES: dict[str, int] = dict(policy.GPU_TARGETS)
 
 # Global tracking / alerts / TOP / cross-store recommendation cap (inclusive).
 # Collection may still persist products above this; user-facing scope is capped.
-MAX_TRACKED_PRICE_RUB: int = 330_000
+MAX_TRACKED_PRICE_RUB: int = policy.MAX_PRICE_RUB
 
 # Hard eligibility for user-facing selection (TOP, recommendation, BUY, menus).
 # Collection and price history keep every product; only selection is filtered.
-MIN_INSTALLED_RAM_GB: int = 32
+MIN_INSTALLED_RAM_GB: int = policy.MIN_RAM_GB
 # Store adapters normalize 1 TB to 1024 GB; some catalogs use 1000 GB.
-MIN_SSD_GB: int = 1000
+MIN_SSD_GB: int = policy.MIN_SSD_GB
+MIN_SCREEN_INCH: float = policy.MIN_SCREEN_INCH
 # Screen: horizontal side above Full HD width, vertical side at least 1440,
 # and at least 2560×1440 pixels in total.
-MIN_SCREEN_WIDTH_EXCLUSIVE: int = 1920
-MIN_SCREEN_HEIGHT: int = 1440
-MIN_SCREEN_PIXELS: int = 2560 * 1440
+MIN_SCREEN_WIDTH_EXCLUSIVE: int = policy.MIN_SCREEN_WIDTH_EXCLUSIVE
+MIN_SCREEN_HEIGHT: int = policy.MIN_SCREEN_HEIGHT
+MIN_SCREEN_PIXELS: int = policy.MIN_SCREEN_PIXELS
 
 # Personal shortlist. Compared with Thailand on its own daily job.
 # The general TOP and PRIORITY_MODELS stay independent of this list.
@@ -129,8 +128,8 @@ SCORE_SSD_2TB: float = 5.0
 SCORE_SSD_1TB: float = 4.0
 SCORE_SSD_512: float = 1.0
 
-SCORE_SCREEN_18: float = 8.0
-SCORE_SCREEN_17: float = 7.0
+SCORE_SCREEN_18: float = 5.0
+SCORE_SCREEN_17: float = 8.0
 SCORE_SCREEN_16: float = 4.0
 SCORE_SCREEN_156: float = 2.0
 SCORE_SCREEN_QHD_BONUS: float = 2.0  # capped by SCORE_SCREEN_MAX

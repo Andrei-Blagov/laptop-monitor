@@ -3,6 +3,7 @@ from __future__ import annotations
 """Hard eligibility for user-facing laptop selection. Collection is not filtered."""
 
 import re
+import math
 from dataclasses import dataclass, field
 from typing import Any, Mapping
 
@@ -90,19 +91,39 @@ def evaluate_hardware(
     ram_gb: Any,
     screen_resolution: Any,
     ssd_gb: Any = None,
+    screen_inch: Any = None,
+    gpu_vram_gb: Any = None,
 ) -> Eligibility:
     """Shared hardware policy. Unknown values are not treated as a pass."""
     if (
         not gpu
+        or re.search(r"DESKTOP|НАСТОЛЬН|\bVGA\b", str(gpu), re.I)
         or not re.search(r"\bRTX\s*(?:5070\s*TI|5080)\b", str(gpu), re.I)
         or canonical_gpu(str(gpu)) not in TARGET_GPUS
     ):
         return Eligibility(False, GPU_NOT_DETECTED, ["gpu_unknown" if not gpu else f"gpu:{gpu}"])
 
+    # An exact Laptop GPU has a published standard memory configuration.
+    # Missing shop VRAM is allowed; contradictory or malformed stated VRAM is not.
+    from product_policy import LAPTOP_VRAM_GB
+    if gpu_vram_gb is not None:
+        try:
+            memory_matches = not isinstance(gpu_vram_gb, bool) and float(gpu_vram_gb) == LAPTOP_VRAM_GB[canonical_gpu(str(gpu))]
+        except (TypeError, ValueError, OverflowError, KeyError):
+            memory_matches = False
+        if not memory_matches:
+            return Eligibility(False, HARD_FILTER_REJECTED, ["gpu_vram_conflict"])
     ram_ok = ram_meets_minimum(ram_gb)
     screen_ok = screen_meets_minimum(screen_resolution)
     ssd_ok = ssd_meets_minimum(ssd_gb)
+    try:
+        diagonal = float(screen_inch) if not isinstance(screen_inch, bool) else 0
+        size_ok = diagonal >= config.MIN_SCREEN_INCH if math.isfinite(diagonal) and diagonal > 0 else None
+    except (TypeError, ValueError, OverflowError):
+        size_ok = None
     missing = []
+    if size_ok is None:
+        missing.append("screen_size_unknown")
     if ram_ok is None:
         missing.append("ram_unknown")
     if screen_ok is None:
@@ -110,6 +131,8 @@ def evaluate_hardware(
     if ssd_ok is None:
         missing.append("ssd_unknown")
     rejected = []
+    if size_ok is False:
+        rejected.append(f"screen_size_{diagonal:g}")
     if ram_ok is False:
         rejected.append(f"ram_{int(ram_gb)}gb")
     if screen_ok is False:
@@ -140,6 +163,7 @@ def deal_is_eligible(deal: Any) -> bool:
         ram_gb=getattr(deal, "ram_gb", None),
         ssd_gb=getattr(deal, "ssd_gb", None),
         screen_resolution=getattr(deal, "screen_resolution", None),
+        screen_inch=getattr(deal, "screen_inch", None),
     ).eligible
 
 
@@ -161,9 +185,11 @@ def product_is_eligible(product: Mapping[str, Any], identity: Any = None) -> boo
     return evaluate_purchase(
         price_rub=product.get("price"),
         gpu=value("gpu"),
+        gpu_vram_gb=value("gpu_vram_gb"),
         ram_gb=value("ram_gb"),
         ssd_gb=value("ssd_gb"),
         screen_resolution=value("screen_resolution"),
+        screen_inch=getattr(identity, "screen_size_inch", None) or inferred.get("screen_inch"),
     ).eligible
 
 
@@ -172,9 +198,11 @@ def row_hardware_eligible(row: Mapping[str, Any], *, price_key: str = "price_rub
     return evaluate_purchase(
         price_rub=row.get(price_key),
         gpu=row.get("gpu"),
+        gpu_vram_gb=row.get("gpu_vram_gb"),
         ram_gb=row.get("ram_gb"),
         ssd_gb=row.get("ssd_gb"),
         screen_resolution=row.get("screen_resolution"),
+        screen_inch=row.get("screen_inch") or row.get("screen_size_inch"),
     ).eligible
 
 
