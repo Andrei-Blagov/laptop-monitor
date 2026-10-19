@@ -408,6 +408,7 @@ def run_pipeline(
                 state_path=buy_state_path if buy_state_path is not None else BUY_STATE_PATH,
                 jobs_dir=thailand_jobs_dir,
                 source_pipeline_run_id=run_id,
+                enqueue_thailand=config.THAILAND_AUTOMATIC_ENABLED,
             )
             result.buy_opportunities_count = int(buy_flow.get("buy_actionable") or 0)
             result.thailand_scan_triggered = bool(

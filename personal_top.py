@@ -989,6 +989,8 @@ def enqueue_personal_job(
     now: datetime | None = None,
 ) -> dict[str, Any]:
     now = now or datetime.now(timezone.utc)
+    if not manual and not config.THAILAND_AUTOMATIC_ENABLED:
+        return {"ok": True, "thailand_scan_status": "automatic_thailand_paused"}
     if config.stage22_market_telegram_enabled():
         from thailand.market_schedule import enqueue_personal_market
 
@@ -1030,6 +1032,9 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument("command", choices=("enqueue",))
     parser.add_argument("--manual", action="store_true")
     args = parser.parse_args(argv)
+    if not args.manual and not config.THAILAND_AUTOMATIC_ENABLED:
+        print("automatic_thailand_paused")
+        return 0
     if config.stage22_market_telegram_enabled():
         from thailand.market_schedule import enqueue_personal_market
 

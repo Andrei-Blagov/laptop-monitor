@@ -121,11 +121,11 @@ Control-bot does **not** keep Chromium open; browser starts only during pipeline
 ### Thailand async architecture
 
 ```
-Russian pipeline → BUY evaluate → enqueue pending job → pipeline.completed → exit
+Explicit Telegram Thailand request → enqueue pending job → thailand-worker → result
 systemd.path (DirectoryNotEmpty pending/) → thailand-worker --drain → Telegram follow-up
 ```
 
-Queue: `data/thailand_jobs/{pending,processing,archive,failed}/`. Worker never writes Russian SQLite products.
+Automatic daily Thailand and BUY enqueue are paused. The existing queue remains for explicit requests: `data/thailand_jobs/{pending,processing,archive,failed}/`. Worker never writes Russian SQLite products.
 
 ## Explicit DB migration
 

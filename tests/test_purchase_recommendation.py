@@ -319,30 +319,29 @@ class PriceMathTests(unittest.TestCase):
 
 
 class UxTests(unittest.TestCase):
-    def test_main_menu_has_recommendation_button(self) -> None:
+    def test_main_menu_opens_russian_top(self) -> None:
         text = json.dumps(_keyboard(), ensure_ascii=False)
-        self.assertIn("Что покупать сейчас", text)
-        self.assertIn("ctrl:recommend", text)
+        self.assertIn("TOP-10 России", text)
+        self.assertIn("ctrl:top", text)
 
-    def test_selector_is_best_plus_five_compact_callbacks(self) -> None:
+    def test_selector_has_ten_compact_callbacks(self) -> None:
         deals = [_deal(cluster_name=f"Model {i}", offer={"external_id": str(i), "sku": f"SKU-{i}", "mpn": f"SKU-{i}"}) for i in range(8)]
         kb = recommendation_keyboard(deals)
         labels = [row[0]["text"] for row in kb["inline_keyboard"]]
-        self.assertEqual(labels[0], "🏆 Лучший вариант")
-        self.assertLessEqual(len(kb["inline_keyboard"]) - 2, 5)
+        self.assertEqual(len(kb["inline_keyboard"]) - 1, 8)
         for row in kb["inline_keyboard"][:-1]:
             self.assertLessEqual(len(row[0]["callback_data"]), 64)
             self.assertTrue(row[0]["callback_data"].startswith("rq:"))
 
-    def test_pick_enqueues_without_scan(self) -> None:
+    def test_pick_explains_russia_without_scan(self) -> None:
         deal = _deal()
         with patch("control_bot.unique_russian_top", return_value=[deal]), patch(
-            "buy_thailand_flow.enqueue_recommendation_job", return_value={"ok": True, "thailand_job_id": "abc"}
-        ) as enq, patch("thailand.scanner.run_thailand_scan") as scan, patch("control_bot.send_message"):
+            "buy_thailand_flow.enqueue_recommendation_job"
+        ) as enq, patch("thailand.scanner.run_thailand_scan") as scan, patch("control_bot.send_message") as send:
             handle_recommendation_pick(object(), "token", 1, "best")
-        enq.assert_called_once()
+        enq.assert_not_called()
         scan.assert_not_called()
-        self.assertEqual(enq.call_args.args[0].cluster_name, deal.cluster_name)
+        self.assertIn(deal.url, send.call_args.args[3])
 
     def test_non_admin_blocked(self) -> None:
         update = {"callback_query": {"id": "1", "data": "rq:best", "message": {"chat": {"id": 999}, "message_id": 1}}}

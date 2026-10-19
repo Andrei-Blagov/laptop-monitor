@@ -212,6 +212,7 @@ class RuntimeAcceptanceTests(unittest.TestCase):
                 super().__init__(*args, **kwargs)
 
         self.patches = [
+            patch.object(config, "THAILAND_AUTOMATIC_ENABLED", True),
             patch.object(config, "THAILAND_JOBS_DIR", str(self.jobs)),
             patch.object(config, "THAI_CATALOG_ROOT", str(self.catalog)),
             patch.object(config, "RUSSIAN_MARKET_ROOT", str(self.russian)),

@@ -270,7 +270,7 @@ class FreshStoreTopTests(unittest.TestCase):
                     error_message="boom",
                 )
             text = build_top_text(db)
-            self.assertIn("Российский каталог сейчас недоступен", text)
+            self.assertIn("Подходящих свежих предложений сейчас нет", text)
 
 
 class DynamicStoreSummaryTests(unittest.TestCase):

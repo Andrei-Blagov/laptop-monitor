@@ -8,6 +8,7 @@ Does NOT run schema migrations — require migrate_db first.
 """
 
 import hashlib
+import html
 import json
 import logging
 import re
@@ -15,6 +16,7 @@ import sys
 import time
 from pathlib import Path
 from typing import Any
+from zoneinfo import ZoneInfo
 
 import httpx
 
@@ -71,6 +73,7 @@ from telegram_safe import (
     telegram_http_error_summary,
 )
 from version import APP_NAME, get_version
+from manual_run import mark_notified, read_request, reconcile, request_run, set_message_id
 
 logger = logging.getLogger(__name__)
 
@@ -87,6 +90,7 @@ BTN_TH_FIND = "ctrl:th_find"
 BTN_RECOMMEND = "ctrl:recommend"
 BTN_PERSONAL = "ctrl:ptop"
 BTN_PERSONAL_REFRESH = "ctrl:ptop_go"
+CALLBACK_BUY = "buy:"
 CALLBACK_MODEL_PICK = "tm:"
 CALLBACK_RECOMMEND = "rq:"
 
@@ -94,12 +98,12 @@ CALLBACK_RECOMMEND = "rq:"
 BOT_COMMANDS: tuple[tuple[str, str], ...] = (
     ("start", "Открыть главное меню"),
     ("menu", "Главное меню"),
-    ("recommend", "Что покупать сейчас"),
-    ("top", "Топ предложений"),
+    ("recommend", "Стоит ли покупать модель из TOP-10"),
+    ("top", "TOP-10 России"),
     ("history", "История цен"),
     ("markets", "Россия и Таиланд"),
-    ("mytop", "Мой TOP-3"),
-    ("run", "Запустить проверку"),
+    ("mytop", "Избранное"),
+    ("run", "Обновить цены"),
     ("status", "Статус системы"),
     ("version", "Версия бота"),
     ("help", "Помощь"),
@@ -154,8 +158,7 @@ def handle_text_message(
     elif name == "run":
         handle_run(client, token, chat_id)
     elif name == "top":
-        for text in build_top_parts():
-            send_message(client, token, chat_id, text)
+        handle_top(client, token, chat_id)
     elif name == "history":
         handle_history_list(client, token, chat_id)
     elif name == "recommend":
@@ -181,24 +184,18 @@ def _keyboard() -> dict[str, Any]:
     return {
         "inline_keyboard": [
             [
-                {"text": "Запустить проверку", "callback_data": BTN_RUN},
-                {"text": "Топ предложений", "callback_data": BTN_TOP},
+                {"text": "Обновить цены", "callback_data": BTN_RUN},
+                {"text": "TOP-10 России", "callback_data": BTN_TOP},
             ],
             [
-                {"text": "📈 История цены", "callback_data": BTN_HISTORY},
+                {"text": "⭐ Избранное", "callback_data": BTN_PERSONAL},
             ],
             [
-                {"text": "🎯 Что покупать сейчас", "callback_data": BTN_RECOMMEND},
-            ],
-            [
-                {"text": "🌍 Рынки", "callback_data": BTN_MARKETS},
-            ],
-            [
-                {"text": "Мой TOP-3", "callback_data": BTN_PERSONAL},
+                {"text": "📈 История цен", "callback_data": BTN_HISTORY},
             ],
             [
                 {"text": "Статус", "callback_data": BTN_STATUS},
-                {"text": "Версия", "callback_data": BTN_VERSION},
+                {"text": "Дополнительно", "callback_data": BTN_MARKETS},
             ],
         ]
     }
@@ -616,113 +613,76 @@ def format_pipeline_result_message(result: PipelineResult) -> str:
 
 
 def build_status_text(db_path: Path | str = DEFAULT_DB_PATH) -> str:
-    # Read-only: never mutate schema.
     runs = pipeline_status(db_path, limit=1)
     last = runs[0] if runs else None
-    tg = _deliver_status_readonly(db_path)
-    lock = read_lock_info(DEFAULT_LOCK_PATH)
     latest = get_latest_store_runs_readonly(db_path)
-    lines = [
-        f"<b>{APP_NAME}</b>",
-        f"Version: {get_version()}",
-        f"Instance: {config.get_instance_id()}",
-        f"Price cap: ≤ {config.format_price_cap_label()} ₽",
-    ]
-    if last:
-        lines.append(f"Last pipeline: {last.get('started_at')}")
-        lines.append(f"Status: {str(last.get('status') or '').upper()}")
-        if last.get("duration_seconds") is not None:
-            lines.append(f"Duration: {last.get('duration_seconds')}s")
-        # Optional one-line Thailand worker status (read-only).
+    operation = read_request() if Path(db_path) == Path(DEFAULT_DB_PATH) else {}
+    fresh_count = len(unique_russian_top(db_path, limit=0))
+    sent_at = None
+    try:
+        conn = open_db_readonly(db_path)
         try:
-            from thailand.job_queue import pending_count, read_worker_state
-
-            pending = pending_count()
-            ws = read_worker_state()
-            if pending > 0:
-                lines.append(f"Thailand worker: pending {pending}")
-            elif ws.get("last_status"):
-                finished = str(ws.get("last_finished_at") or "")
-                hhmm = finished[11:16] if len(finished) >= 16 else ""
-                suffix = f" {hhmm}" if hhmm else ""
-                lines.append(
-                    f"Thailand worker: last {ws.get('last_status')}{suffix}"
-                )
-            else:
-                lines.append("Thailand worker: idle")
-        except Exception:
-            pass
-        lines.append("Stores:")
-        run_id = last.get("id")
-        store_rows: list[dict[str, Any]] | None = None
-        if run_id is not None:
-            try:
-                conn = open_db_readonly(db_path)
-                try:
-                    store_rows = get_store_runs_for_pipeline(conn, int(run_id))
-                finally:
-                    conn.close()
-            except Exception:
-                store_rows = None
-        if store_rows:
-            for line in format_store_summary_lines(store_rows=store_rows):
-                lines.append(f"  {line}")
-        elif latest:
-            for line in format_store_summary_lines(
-                store_statuses={
-                    s: {"status": r.get("status"), "products_count": r.get("products_count")}
-                    for s, r in latest.items()
-                }
-            ):
-                lines.append(f"  {line}")
-        else:
-            for adapter in all_adapters():
-                flag = "enabled" if adapter.enabled else "disabled"
-                lines.append(f"  {adapter.display_name}: {flag}")
-        lines.append(f"New alerts: {last.get('alerts_created')}")
-        lines.append(
-            f"Telegram sent/failed: {last.get('messages_sent')}/"
-            f"{last.get('messages_failed')}"
-        )
-        if last.get("app_version"):
-            lines.append(f"Run version: {last.get('app_version')}")
-    else:
-        lines.append("Last pipeline: none")
-        lines.append("Stores:")
-        for adapter in all_adapters():
-            flag = "enabled" if adapter.enabled else "disabled"
-            lines.append(f"  {adapter.display_name}: {flag}")
-    lines.append(f"Telegram queue unsent: {tg.get('unsent_alert_events', 0)}")
-    lines.append(f"Lock active: {'yes' if lock else 'no'}")
+            row = conn.execute("SELECT MAX(sent_at) AS sent_at FROM notification_deliveries "
+                               "WHERE channel = ? AND status = 'sent'", (config.CHANNEL_TELEGRAM,)).fetchone()
+            sent_at = row["sent_at"] if row else None
+        finally:
+            conn.close()
+    except Exception:
+        pass
+    lines = [
+        f"<b>{APP_NAME} {get_version()}</b>",
+        f"Подходящих моделей сейчас: {fresh_count}",
+        f"Последний российский сбор: {last.get('started_at') if last else 'нет'}",
+        f"Итог сбора: {last.get('status') if last else 'нет'}",
+        f"Ручная проверка: {operation.get('status') or 'нет'}"
+        + (f" (№ {operation.get('id', '')[:8]})" if operation.get('id') else ""),
+        f"Последняя успешная отправка: {sent_at or 'нет'}",
+    ]
     return "\n".join(lines)
 
 
 def build_top_parts(db_path: Path | str = DEFAULT_DB_PATH) -> list[str]:
-    """Use the exact RU snapshot evidence gate shared with the morning digest."""
+    """Render the same fresh ranked list used for model selection and BUY."""
     from datetime import datetime, timezone
-    from market_contracts import ComparisonPolicy, age_valid, moment
-    from market_snapshot import load_russian_market_snapshot
-    from thai_catalog import russian_offer_views
-    from thailand.market_messages import format_market_messages
+    from deal_ranking import effective_deal_score
 
-    now = datetime.now(timezone.utc)
-    try:
-        ru = load_russian_market_snapshot(Path(db_path).parent / "russian_market")
-        eligible, candidates = russian_offer_views(ru, now=now)
-    except Exception as exc:  # noqa: BLE001
-        logger.warning("Russian market snapshot unavailable: %s", type(exc).__name__)
-        return ["Российский каталог сейчас недоступен. Повторите запрос после штатной проверки магазинов."]
-    comparison = {
-        "ru_eligible_offers": eligible,
-        "ru_information_candidates": candidates,
-        "source_coverage": {"RU": [{"source": x.get("store"), "state": x.get("state"),
-                                        "checked_at": (x.get("completed_work") or {}).get("finished_at") or x.get("latest_attempt_at")}
-                                       for x in ru.get("source_coverage") or []]},
-        "data_freshness": {"ru_current": age_valid(moment(ru.get("created_at")), now, ComparisonPolicy().ru_quote_hours)},
-        "ru_input_summary": {"offer_count": len(ru.get("offers") or [])},
-    }
-    result = {"status": "completed", "comparison": comparison}
-    return [part["text"] for part in format_market_messages(result, {"trigger_type": "daily"}, now=now)]
+    deals = unique_russian_top(db_path, limit=10)
+    if not deals:
+        return ["<b>TOP-10 России</b>\nПодходящих свежих предложений сейчас нет."]
+    latest = get_latest_store_runs_readonly(db_path)
+    header = f"<b>TOP-10 России — {len(deals)} моделей</b>"
+    parts: list[str] = []
+    current = header
+    for index, deal in enumerate(deals, 1):
+        raw_time = (latest.get(deal.store) or {}).get("finished_at")
+        try:
+            checked = datetime.fromisoformat(str(raw_time).replace("Z", "+00:00"))
+            if checked.tzinfo is None:
+                checked = checked.replace(tzinfo=timezone.utc)
+            clock = checked.astimezone(ZoneInfo("Europe/Moscow")).strftime("%d.%m %H:%M МСК")
+        except (ValueError, TypeError):
+            clock = "время неизвестно"
+        name = html.escape(html.unescape(deal.cluster_name or "Модель"), quote=False)
+        specs = f"{deal.gpu} · {deal.cpu} · {deal.ram_gb} ГБ RAM · {deal.ssd_gb} ГБ SSD · {deal.screen_inch:g}″ {deal.screen_resolution}"
+        price = f"{int(deal.price):,}".replace(",", " ")
+        card = (f"<b>{index}. {name}</b>\n{html.escape(specs)}\n"
+                f"{price} ₽ · {html.escape(deal.store)} · оценка {effective_deal_score(deal):g}/100\n"
+                f"Проверено: {clock}\n{html.escape(deal.url or '')}")
+        if len(current) + len(card) + 2 > 3500:
+            parts.append(current)
+            current = header
+        current += "\n\n" + card
+    parts.append(current)
+    return parts
+
+
+def handle_top(client: httpx.Client, token: str, chat_id: str | int,
+               *, db_path: Path | str = DEFAULT_DB_PATH) -> None:
+    deals = unique_russian_top(db_path, limit=10)
+    parts = build_top_parts(db_path)
+    for index, part in enumerate(parts):
+        markup = buy_picker_keyboard(deals) if deals and index == len(parts) - 1 else None
+        send_message(client, token, chat_id, part, with_keyboard=False, reply_markup=markup)
 
 
 def build_top_text(db_path: Path | str = DEFAULT_DB_PATH) -> str:
@@ -732,7 +692,6 @@ def build_top_text(db_path: Path | str = DEFAULT_DB_PATH) -> str:
 def _personal_keyboard() -> dict[str, Any]:
     return {
         "inline_keyboard": [
-            [{"text": "Обновить Таиланд", "callback_data": BTN_PERSONAL_REFRESH}],
             [{"text": "🏠 Меню", "callback_data": CALLBACK_MENU}],
         ]
     }
@@ -745,33 +704,25 @@ def handle_personal_top(
     *,
     message_id: int | None = None,
 ) -> None:
-    from personal_top import build_cards, format_personal_board, load_state
-    from storage import (
-        DEFAULT_DB_PATH,
-        get_all_products_readonly,
-        get_price_history_for_products_readonly,
-    )
-    from deal_ranking import historical_mins_from_rows
+    from personal_top import exact_skus, product_codes
+    from product_identity import normalize_identifier
 
-    from store_freshness import get_fresh_store_slugs
-    from storage import get_latest_store_runs_readonly
-
-    products = get_all_products_readonly()
-    ids = [int(row["id"]) for row in products if row.get("id") is not None]
-    histories = get_price_history_for_products_readonly(DEFAULT_DB_PATH, ids) if ids else {}
-    from personal_top import specs_for_products
-
-    fresh = get_fresh_store_slugs(get_latest_store_runs_readonly(DEFAULT_DB_PATH))
-    text = format_personal_board(
-        build_cards(
-            products=products,
-            state=load_state(),
-            history_mins=historical_mins_from_rows(histories),
-            fresh_stores=fresh,
-            specs_by_key=specs_for_products(products),
-        ),
-        histories=load_state().get("history") or {},
-    )
+    deals = unique_russian_top(DEFAULT_DB_PATH, limit=0)
+    lines = ["<b>⭐ Избранное — Россия</b>"]
+    for model in config.PERSONAL_TOP3:
+        codes = exact_skus(model)
+        deal = next((item for item in deals if codes & (
+            product_codes({"name": item.cluster_name, "sku": item.offer.get("sku")})
+            | {normalize_identifier(str(item.offer.get("mpn") or ""))}
+        )), None)
+        lines.append("")
+        lines.append(f"<b>{html.escape(str(model['model']))}</b>")
+        if deal is None:
+            lines.append("Свежей подтверждённой цены и наличия в России нет. Старые данные не считаются текущими.")
+            continue
+        lines.append(f"В наличии · {int(deal.price):,} ₽ · {html.escape(deal.store)}".replace(",", " "))
+        lines.append(html.escape(deal.url or ""))
+    text = "\n".join(lines)
     _reply_or_edit(
         client,
         token,
@@ -844,17 +795,18 @@ def model_callback_token(cluster_name: str) -> str:
 
 def unique_russian_top(db_path: Path | str = DEFAULT_DB_PATH, *, limit: int = 10):
     from russian_deals import load_russian_ranked_deals
+    from laptop_eligibility import deal_is_eligible
 
-    deals = load_russian_ranked_deals(db_path, limit=limit)
+    deals = load_russian_ranked_deals(db_path, limit=0)
     out = []
     seen: set[str] = set()
     for deal in deals:
         name = deal.cluster_name or ""
-        if not name or name in seen:
+        if not name or name in seen or not deal_is_eligible(deal) or not deal.url or not deal.cpu:
             continue
         seen.add(name)
         out.append(deal)
-        if len(out) >= limit:
+        if limit > 0 and len(out) >= limit:
             break
     return out
 
@@ -871,7 +823,7 @@ def _short_gpu_label(gpu: str | None) -> str | None:
 
 def friendly_model_label(deal) -> str | None:
     """Readable model for a button. Long SKU tails are dropped; a bare SKU returns None."""
-    raw = re.sub(r"^(ноутбук|notebook|laptop)\s+", "", (deal.cluster_name or "").strip(), flags=re.I)
+    raw = re.sub(r"^(ноутбук|notebook|laptop)\s+", "", html.unescape((deal.cluster_name or "").strip()), flags=re.I)
     parts: list[str] = []
     for token in raw.split():
         piece = token.strip(" ,.;")
@@ -922,12 +874,19 @@ def model_picker_keyboard(deals) -> dict[str, Any]:
 
 
 def recommendation_keyboard(deals) -> dict[str, Any]:
-    rows = [[{"text": "🏆 Лучший вариант", "callback_data": CALLBACK_RECOMMEND + "best"}]]
-    for index, deal in enumerate(deals[:5], start=1):
+    rows = []
+    for index, deal in enumerate(deals[:10], start=1):
         token = CALLBACK_RECOMMEND + model_callback_token(deal.cluster_name)
         rows.append([{"text": picker_button_label(deal, index), "callback_data": token}])
     rows.append([{"text": "🏠 Меню", "callback_data": CALLBACK_MENU}])
     return {"inline_keyboard": rows}
+
+
+def buy_picker_keyboard(deals) -> dict[str, Any]:
+    return {"inline_keyboard": [
+        [{"text": f"{index}. Стоит ли покупать?", "callback_data": CALLBACK_BUY + model_callback_token(deal.cluster_name)}]
+        for index, deal in enumerate(deals[:10], 1)
+    ]}
 
 
 def handle_recommendation_menu(
@@ -938,7 +897,7 @@ def handle_recommendation_menu(
     db_path: Path | str = DEFAULT_DB_PATH,
     message_id: int | None = None,
 ) -> None:
-    deals = unique_russian_top(db_path, limit=5)
+    deals = unique_russian_top(db_path, limit=10)
     if not deals:
         send_message(
             client,
@@ -952,7 +911,7 @@ def handle_recommendation_menu(
         client,
         token,
         chat_id,
-        "<b>Что покупать сейчас</b>\nВыберите модель или лучший вариант:",
+        "Выберите модель из TOP-10 России:",
         message_id=message_id,
         reply_markup=recommendation_keyboard(deals),
     )
@@ -966,8 +925,8 @@ def handle_recommendation_pick(
     *,
     db_path: Path | str = DEFAULT_DB_PATH,
 ) -> None:
-    """Enqueue one targeted job. The scan runs in the Thailand worker, not here."""
-    deals = unique_russian_top(db_path, limit=5)
+    """Explain a current Russian offer without enqueueing a Thailand scan."""
+    deals = unique_russian_top(db_path, limit=10)
     if not deals:
         send_message(client, token, chat_id, "Нет свежих данных. Сначала запустите проверку.", with_keyboard=False)
         return
@@ -978,14 +937,9 @@ def handle_recommendation_pick(
     if deal is None:
         send_message(client, token, chat_id, "Эта модель уже не в текущем ТОП. Откройте список ещё раз.", with_keyboard=False)
         return
-    from buy_thailand_flow import enqueue_recommendation_job
+    from purchase_recommendation import format_russian_recommendation
 
-    result = enqueue_recommendation_job(deal, chat_id=chat_id)
-    if result.get("ok"):
-        name = friendly_model_label(deal) or deal.cluster_name
-        send_message(client, token, chat_id, f"Анализирую лучший вариант...\n{name}", with_keyboard=False)
-    else:
-        send_message(client, token, chat_id, "Не удалось поставить рекомендацию в очередь.", with_keyboard=False)
+    send_message(client, token, chat_id, format_russian_recommendation(deal), with_keyboard=False)
 
 
 def handle_thailand_model_picker(
@@ -1111,24 +1065,39 @@ def _stage22_thailand_action(client, token, chat_id, *, compare: bool) -> None:
 
 
 def handle_run(client: httpx.Client, token: str, chat_id: str | int) -> None:
-    send_message(
-        client,
-        token,
-        chat_id,
-        f"<b>{APP_NAME}</b> {get_version()}\nЗапускаю проверку…",
-        with_keyboard=False,
-    )
-    result = run_pipeline(
-        DEFAULT_DB_PATH,
-        enrich_identities=True,
-        write_comparison_artifacts=True,
-        last_run_path=Path("data") / "last_run.json",
-        deliver=True,
-    )
-    if result.exit_code == EXIT_LOCKED:
-        send_message(client, token, chat_id, "Проверка уже выполняется.")
+    notify_manual_result(client, token)
+    state, accepted = request_run(chat_id)
+    if not accepted:
+        message = ("Результат предыдущей проверки ещё отправляется."
+                   if state.get("status") not in {"pending", "running", "busy"}
+                   else "Проверка уже выполняется.")
+        if state.get("id"):
+            message += f" № {state['id'][:8]}"
+        send_message(client, token, chat_id, message, with_keyboard=False)
         return
-    send_message(client, token, chat_id, format_pipeline_result_message(result))
+    notice = _post_telegram(client, token, "sendMessage", {
+        "chat_id": chat_id,
+        "text": f"<b>Обновление цен принято</b> · № {state['id'][:8]}\nПроверка идёт. Статус доступен через /status.",
+        "parse_mode": "HTML", "disable_web_page_preview": True,
+    })
+    message_id = ((notice or {}).get("result") or {}).get("message_id")
+    if message_id is not None:
+        set_message_id(state["id"], int(message_id))
+
+
+def notify_manual_result(client: httpx.Client, token: str) -> None:
+    state = reconcile()
+    if state.get("status") in {"pending", "running"} or state.get("notified") or not state.get("id"):
+        return
+    if not state.get("message_id"):
+        return  # Outcome remains available through /status if the acknowledgement failed.
+    label = "успешно" if state.get("status") == "success" else "с ошибкой"
+    detail = html.escape(str(state.get("error") or ""))[:900]
+    text = (f"<b>Обновление цен завершилось {label}</b> · № {state['id'][:8]}\n"
+            f"Состояние: {html.escape(str(state.get('status')))}"
+            + (f"\n{detail}" if detail else ""))
+    if edit_message(client, token, state["chat_id"], int(state["message_id"]), text):
+        mark_notified(state["id"])
 
 
 def process_update(client: httpx.Client, token: str, update: dict[str, Any]) -> None:
@@ -1155,15 +1124,13 @@ def process_update(client: httpx.Client, token: str, update: dict[str, Any]) -> 
         if data == BTN_RUN:
             handle_run(client, token, chat_id)
         elif data == BTN_TOP:
-            for text in build_top_parts():
-                send_message(client, token, chat_id, text)
+            handle_top(client, token, chat_id)
         elif data == BTN_MARKETS:
             handle_markets_menu(
                 client, token, chat_id, message_id=message_id
             )
         elif data == BTN_RU_TOP:
-            for text in build_top_parts():
-                send_message(client, token, chat_id, text)
+            handle_top(client, token, chat_id)
         elif data == BTN_TH_SCAN:
             handle_thailand_manual(client, token, chat_id, compare=False)
         elif data == BTN_TH_COMPARE:
@@ -1178,6 +1145,8 @@ def process_update(client: httpx.Client, token: str, update: dict[str, Any]) -> 
             handle_recommendation_pick(
                 client, token, chat_id, data[len(CALLBACK_RECOMMEND):]
             )
+        elif data.startswith(CALLBACK_BUY):
+            handle_recommendation_pick(client, token, chat_id, data[len(CALLBACK_BUY):])
         elif data == BTN_TH_FIND:
             handle_thailand_model_picker(client, token, chat_id, message_id=message_id)
         elif data.startswith(CALLBACK_MODEL_PICK):
@@ -1271,10 +1240,11 @@ def run_polling(*, timeout: int = 25) -> None:
             config.get_instance_id(),
         )
         while True:
+            notify_manual_result(client, token)
             try:
                 resp = client.get(
                     _api(token, "getUpdates"),
-                    params={"timeout": timeout, "offset": offset},
+                    params={"timeout": min(timeout, 5), "offset": offset},
                 )
             except httpx.TimeoutException:
                 logger.error("Telegram getUpdates timeout")
@@ -1324,6 +1294,7 @@ def run_polling(*, timeout: int = 25) -> None:
                         "Failed to process update: %s",
                         safe_exc_message(exc),
                     )
+            notify_manual_result(client, token)
 
 
 def main() -> int:

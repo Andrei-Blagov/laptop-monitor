@@ -16,6 +16,7 @@ from pathlib import Path
 from typing import Any, Mapping
 from zoneinfo import ZoneInfo
 
+import config
 from market_contracts import ComparisonPolicy, FxObservation, age_valid, moment
 from thai_catalog import REFERENCES_NAME, discovery_scope_hash
 from thailand.catalog_refresh import execute_catalog_plan
@@ -663,6 +664,13 @@ def _stamp(base: Path, events: list[dict[str, Any]], result: Mapping[str, Any], 
 
 
 def _run_plan(events, *, catalog_root, health_path, fx, russian_snapshot, transport, clock, now):
+    if not config.THAILAND_AUTOMATIC_ENABLED and all(
+        event.get("trigger_type") == "daily" for event in events
+    ):
+        # Keep the existing daily queue, receipt and Russian digest. No Thai
+        # catalogue refresh, FX request or store HTTP call is made.
+        return {"action": "RU_ONLY"}, {"status": "completed", "http_calls": 0,
+                                      "comparison": None, "rankings": {}}, 0
     trigger = "daily" if any(event.get("trigger_type") == "daily" for event in events) else "manual"
     decision = evaluate_catalog_reuse(
         catalog_root, now=now, instance_id=events[0]["instance_id"], trigger=trigger,

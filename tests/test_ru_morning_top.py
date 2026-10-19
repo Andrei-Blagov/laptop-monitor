@@ -36,17 +36,16 @@ def digest(ru, *, now=NOW, fx=None, th=None, status="completed"):
 
 
 class RussianMorning(unittest.TestCase):
-    def test_interactive_top_uses_same_snapshot_evidence_and_budget(self):
+    def test_interactive_top_uses_current_ranked_deals(self):
         from control_bot import build_top_parts
-        ru=russian()
-        current=datetime.now(timezone.utc)
-        ru["created_at"]=current.isoformat()
-        ru["source_coverage"][0]["latest_attempt_at"]=current.isoformat()
-        for row in ru["offers"]:
-            row["price_checked_at"]=row["availability_checked_at"]=current.isoformat()
-            row["availability_evidence"]["captured_at"]=current.isoformat()
-            for entry in row["specs"].values():entry["evidence"]["captured_at"]=current.isoformat()
-        with patch("market_snapshot.load_russian_market_snapshot",return_value=ru):
+        from deal_ranking import RankedDeal
+        deals = [RankedDeal(score=80, cluster_name=f"Model {i}", gpu="RTX 5080",
+                            cpu="Intel Core i9 14900HX", store="regard", price=250000,
+                            url=f"https://example.test/ru-{i:02d}", ram_gb=32, ssd_gb=1024,
+                            screen_inch=16, screen_resolution="2560x1600") for i in range(1, 12)]
+        with patch("control_bot.unique_russian_top", return_value=deals[:10]), patch(
+            "control_bot.get_latest_store_runs_readonly", return_value={"regard": {"finished_at": datetime.now(timezone.utc).isoformat()}}
+        ):
             texts=build_top_parts("/tmp/fixture.db")
         self.assertIn("TOP-10",texts[0])
         self.assertIn("https://example.test/ru-01",texts[0])

@@ -2,33 +2,33 @@
 
 Мониторинг цен на игровые ноутбуки (RTX 5070 Ti / RTX 5080 Laptop) с multi-store adapter architecture, матчингом моделей, ranking v2, Telegram alerts / control, Price History charts и n8n OPS layer.
 
-**Version:** читается из файла `VERSION` (сейчас `0.10.2`) — единственный source of truth.  
+**Version:** читается из файла `VERSION` — единственный source of truth.
 **Production target:** Linux VPS через **clean release bundle** + Docker + systemd  
 **Windows:** только development / testing
 
 ---
 
-## Что умеет (v0.10.2)
+## Что умеет
 
 | Область | Описание |
 |---------|----------|
 | **Multi-store** | `StoreAdapter` registry. Enabled: Regard, ANDPRO, KNS, Citilink (experimental browser) |
 | **Region** | `MONITOR_REGION=moscow` — cross-store только по одной географии |
 | **Price semantics** | `Product.price` = публичная цена без membership/кредита/trade-in |
-| **Price cap** | User-facing TOP / alerts / cross-store / Thailand: **≤ 330 000 ₽** (`MAX_TRACKED_PRICE_RUB`) |
+| **Price cap** | User-facing TOP / alerts / cross-store / Thailand: **≤ 290 000 ₽** (`MAX_TRACKED_PRICE_RUB`) |
 | **Hard eligibility** | Единый фильтр для RU / TH рейтингов, BUY, PRICE DROP, HISTORICAL LOW, TARGET PRICE, CROSS-STORE и рекомендаций: RTX 5070 Ti / 5080, установлено **≥ 32 GB RAM**, **SSD ≥ 1 TB** (1000 / 1024 GB), экран **> 1920 по горизонтали, ≥ 1440 по вертикали, ≥ 2560×1440 пикселей**. Неизвестные GPU / RAM / SSD / разрешение не проходят. Поиск широкий, любых производителей; личный TOP-3 — эталон, не список разрешённых моделей. Сбор и история не фильтруются. Модели одного магазина тоже в рейтинге, без cross-store saving. Одинаковая модель соединяется только при точном идентификаторе и полном совпадении CPU, GPU, RAM, SSD, диагонали и разрешения; все магазины и цены сохраняются. Региональный суффикс и `-wpro` остаются отдельными |
 | **Priority watchlist** | `PRIORITY_MODELS`: модель отслеживается отдельно от рейтинга (цена, история, наличие, причина исключения). Если поиск Regard её не вернул, запрашивается одна карточка товара. Сейчас там MSI Vector 17 HX AI A2XWIG-063XRU |
-| **Мой TOP-3** | Три личные модели сравниваются с Таиландом одним ежедневным заданием существующего worker. В Telegram: цены РФ и свежая цена THB, курс, экономия, история и вывод. Устаревшая тайская цена не показывается как актуальная |
+| **Избранное** | Три личные модели: текущие российские цена и наличие либо явное сообщение об отсутствии свежих данных. Автоматическое сравнение с Таиландом приостановлено |
 | **Independent snapshots** | Успешный store сохраняется отдельно; failed ≠ «все unavailable» |
 | **Fresh TOP** | Только stores с последней попыткой `ok` и age ≤ `STORE_FRESHNESS_MAX_MINUTES` (180) |
 | **Matching** | Exact SKU / MPN / strong ID + config conflict; без fuzzy auto-match |
 | **CROSS_STORE** | Cheapest vs second among fresh offers; metadata содержит весь список |
 | **Specs coverage** | Collected metadata → `product_specs.json` для всех stores; safe title parse; Regard/ANDPRO re-enrich on cache miss; non-destructive merge / `SPEC_CONFLICT` |
 | **Ranking v2** | Explainable score **0..100** + **confidence**; GPU / price-value / CPU / RAM / SSD / screen / historical opportunity / cross-store saving (**weights unchanged**) |
-| **Buy Opportunity** | Explainable BUY / STRONG_BUY + cooldown; при новом signal — enqueue Thailand job |
-| **Thailand markets** | Async worker: **JIB**, **SpeedCom**, **InvadeIT**, **IT City**. Discovery starts with RTX 5070 Ti / 5080, then regional codes and rotating lines. InvadeIT reads a numeric resolution only from the Display field. A store HTTP 429 makes the scan partial. **BaNANA** / **Lazada** stay off; TOP ≤330k ₽ |
+| **Buy Opportunity** | Explainable российский BUY / STRONG_BUY + cooldown; автоматическое тайское задание не создаётся |
+| **Thailand markets** | Async worker по явному запросу: **JIB**, **SpeedCom**, **InvadeIT**, **IT City**. Discovery starts with RTX 5070 Ti / 5080, then regional codes and rotating lines. InvadeIT reads a numeric resolution only from the Display field. A store HTTP 429 makes the scan partial. **BaNANA** / **Lazada** stay off; TOP ≤290k ₽ |
 | **Price History** | Telegram: карточка истории (v1) + PNG-графики 30 / 90 / all-time (v2), read-only |
-| **Control bot** | Long polling; Run / TOP / История / **🌍 Рынки** / Status / Version; admin allowlist |
+| **Control bot** | Long polling; TOP-10 России / Обновить цены / Избранное / История цен / Статус / Дополнительно; admin allowlist |
 | **Scheduler** | Primary: **systemd timer** → `run_pipeline.py`. Thailand: **systemd.path** → async worker |
 | **n8n OPS** | Pipeline Events (HMAC) + Failure Alert + Daily Digest; host watchdog; pinned **2.42.1** immutable digest |
 | **Migration** | Явная команда `python -m scripts.migrate_db` |
@@ -37,12 +37,9 @@
 ### Россия vs Таиланд
 
 - **Россия** мониторится каждые ~2 часа (Regard / ANDPRO / KNS / Citilink) как раньше
-- **Таиланд** не в Russian critical path:
-  - Russian pipeline → BUY evaluate → enqueue job → `pipeline.completed` → exit
-  - `laptop-monitor-thailand.path` → worker container → Thailand scan / comparison Telegram
-- Scan только при новом BUY signal или вручную из Telegram **🌍 Рынки** (enqueue-only в control bot)
+- **Таиланд** запускается только по явной команде в Telegram. Существующий `laptop-monitor-thailand.path` запускает worker для такого задания.
 - Сравнение предполагает локальную покупку в Таиланде (без авиа / таможни / пересылки)
-- User-facing Thailand recommendations: **verified + purchasable + единый фильтр GPU / RAM / SSD / экрана + ≤ 330 000 ₽ по актуальному курсу**, sorted **price_rub ASC**. Старые результаты без отметки новой проверки не поддерживают рекомендацию покупки до свежего скана; исходные предложения и история сохраняются.
+- User-facing Thailand recommendations: **verified + purchasable + единый фильтр GPU / RAM / SSD / экрана + ≤ 290 000 ₽ по актуальному курсу**, sorted **price_rub ASC**. Старые результаты без отметки новой проверки не поддерживают рекомендацию покупки до свежего скана; исходные предложения и история сохраняются.
 - Sources: JIB (direct); Advice / BaNANA direct (experimental/fail-safe); Lazada marketplace (labels `Lazada · seller`, never as direct)
 - Over-cap Thai offers may remain in snapshots; Telegram shows only the excluded count
 
@@ -197,34 +194,39 @@ Control bot при старте проверяет schema и завершает�
 
 ## Telegram control
 
+Основное меню: **TOP-10 России**, **Обновить цены**, **Избранное**, **История цен**, **Статус**. Таиланд доступен только из «Дополнительно» по явному нажатию «Проверить Таиланд». Автоматическая тайская проверка при ежедневной сводке, личном TOP-3 и сигнале BUY приостановлена; российская ежедневная сводка продолжает работать без запросов к Таиланду.
+
+TOP и выбор «Стоит ли покупать?» используют один список свежих подходящих российских предложений. Вывод о покупке опирается на российскую цену и собственную историю модели. Если подтверждённой цены, наличия, ссылки или обязательных характеристик нет, модель не попадает в список. «Избранное» показывает текущие российские цены; старую тайскую проверку за текущую не выдаёт.
+
+«Обновить цены» запускает отдельный процесс с существующей блокировкой pipeline, не задерживая Telegram polling. Идентификатор и состояние ручной операции хранятся в `data/manual_run.json`. Итог обновляет сообщение о принятии команды; `/status` также показывает состояние после перезапуска. Не удаляйте файл операции или `data/laptop_monitor.lock.lease` во время проверки.
+
 Кнопки и slash-команды вызывают одни и те же действия. Список для BotFather:
 
 ```text
 start - Открыть главное меню
 menu - Главное меню
-recommend - Что покупать сейчас
-top - Топ предложений
+recommend - Стоит ли покупать модель из TOP-10
+top - TOP-10 России
 history - История цен
 markets - Россия и Таиланд
-run - Запустить проверку
+run - Обновить цены
 status - Статус системы
 version - Версия бота
 help - Помощь
 ```
 
-`/recommend` и `/markets` только открывают меню. Проверка и поиск Таиланда запускаются отдельным выбором, как с кнопок.
+`/recommend` открывает выбор модели из TOP-10, `/markets` — дополнительное меню. Проверка и поиск Таиланда запускаются только отдельным выбором.
 
 Кнопки:
 
-- Запустить проверку
-- Топ предложений
-- История цены
-- Что покупать сейчас
-- **🌍 Рынки** → Россия / Проверить Таиланд / Сравнить сейчас
+- TOP-10 России
+- Обновить цены
+- Избранное
+- История цен
 - Статус
-- Версия
+- Дополнительно → Проверить Таиланд / Сравнить сейчас
 
-**🌍 Рынки:** ставит Thailand job в очередь (без Russian collection и без ожидания JIB/CBR в bot). Worker присылает comparison отдельным сообщением. Автоматический BUY тоже только enqueue.
+**Дополнительно:** явная проверка Таиланда ставит задание в существующую очередь. Worker присылает результат отдельным сообщением.
 
 Env: `TELEGRAM_BOT_TOKEN`, `TELEGRAM_CHAT_ID`, `TELEGRAM_ADMIN_CHAT_ID`, `LAPTOP_MONITOR_INSTANCE`.
 
