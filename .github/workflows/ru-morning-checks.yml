@@ -50,13 +50,13 @@ jobs:
           python -m scripts.build_deploy_bundle
           mkdir -p dist/context
           tar -xzf "dist/laptop-monitor-$(cat VERSION).tar.gz" -C dist/context
-          docker build --build-arg APP_VERSION=0.12.0 -t laptop-ru-top-pr:check \
+          docker build --build-arg APP_VERSION=0.12.0 -t laptop-ru-top-pr:0.12.0 \
             -f "dist/context/laptop-monitor-$(cat VERSION)/deploy/Dockerfile" \
             "dist/context/laptop-monitor-$(cat VERSION)"
       - name: Actual isolated Docker lifecycle
-        run: python -m scripts.check_containers --image laptop-ru-top-pr:check
+        run: python -m scripts.check_containers --image laptop-ru-top-pr:0.12.0
       - name: Actual full-state DELETE/WAL restore
-        run: sudo env PATH="$PATH" python3 scripts/check_full_backup.py --image laptop-ru-top-pr:check
+        run: sudo env PATH="$PATH" python3 scripts/check_full_backup.py --image laptop-ru-top-pr:0.12.0
       - if: always()
         uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
         with:
