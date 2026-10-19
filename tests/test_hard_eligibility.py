@@ -336,10 +336,10 @@ class ConsistencyTests(unittest.TestCase):
         self.assertEqual([d.cluster_name for d in deals], ["Good One" + SPECS])
         self.assertEqual([d.cluster_name for d in picker], ["Good One" + SPECS])
         self.assertEqual([i.name for i in history], ["Good One" + SPECS])
-        self.assertIn("Good One", top)
+        # Interactive presentation now requires the published RU evidence snapshot.
+        self.assertIn("Российский каталог сейчас недоступен", top)
         for name in ("Small One", "Fhd One", "Over One", "Unk One"):
             self.assertNotIn(name, top)
-        self.assertIn("ТОП ПРЕДЛОЖЕНИЙ ДО 290 000 ₽", top)
 
     def test_best_recommendation_is_eligible(self) -> None:
         from control_bot import handle_recommendation_pick

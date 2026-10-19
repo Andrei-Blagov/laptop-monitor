@@ -154,7 +154,8 @@ def handle_text_message(
     elif name == "run":
         handle_run(client, token, chat_id)
     elif name == "top":
-        send_message(client, token, chat_id, build_top_text())
+        for text in build_top_parts():
+            send_message(client, token, chat_id, text)
     elif name == "history":
         handle_history_list(client, token, chat_id)
     elif name == "recommend":
@@ -696,31 +697,36 @@ def build_status_text(db_path: Path | str = DEFAULT_DB_PATH) -> str:
     return "\n".join(lines)
 
 
-def build_top_text(db_path: Path | str = DEFAULT_DB_PATH) -> str:
-    latest = get_latest_store_runs_readonly(db_path)
-    fresh = get_fresh_store_slugs(latest)
-    if not fresh:
-        return "Нет свежих данных. Запустите проверку."
-    from priority_watchlist import build_priority_statuses, format_priority_block
-    from russian_deals import load_russian_ranked_deals
+def build_top_parts(db_path: Path | str = DEFAULT_DB_PATH) -> list[str]:
+    """Use the exact RU snapshot evidence gate shared with the morning digest."""
+    from datetime import datetime, timezone
+    from market_contracts import ComparisonPolicy, age_valid, moment
+    from market_snapshot import load_russian_market_snapshot
+    from thai_catalog import russian_offer_views
+    from thailand.market_messages import format_market_messages
 
-    deals = load_russian_ranked_deals(db_path, limit=int(config.TOP_DEALS_LIMIT))
-    age = freshness_age_minutes(latest, fresh)
+    now = datetime.now(timezone.utc)
     try:
-        footer = format_priority_block(build_priority_statuses(db_path))
+        ru = load_russian_market_snapshot(Path(db_path).parent / "russian_market")
+        eligible, candidates = russian_offer_views(ru, now=now)
     except Exception as exc:  # noqa: BLE001
-        logger.warning("priority watchlist status failed: %s", type(exc).__name__)
-        footer = ""
-    return format_top_deals_message(
-        deals,
-        limit=int(config.TOP_DEALS_LIMIT),
-        max_age_minutes=age,
-        empty_message=(
-            f"Нет свежих подходящих предложений до {config.format_price_cap_label()} ₽. "
-            "Запустите проверку."
-        ),
-        footer=footer,
-    )
+        logger.warning("Russian market snapshot unavailable: %s", type(exc).__name__)
+        return ["Российский каталог сейчас недоступен. Повторите запрос после штатной проверки магазинов."]
+    comparison = {
+        "ru_eligible_offers": eligible,
+        "ru_information_candidates": candidates,
+        "source_coverage": {"RU": [{"source": x.get("store"), "state": x.get("state"),
+                                        "checked_at": (x.get("completed_work") or {}).get("finished_at") or x.get("latest_attempt_at")}
+                                       for x in ru.get("source_coverage") or []]},
+        "data_freshness": {"ru_current": age_valid(moment(ru.get("created_at")), now, ComparisonPolicy().ru_quote_hours)},
+        "ru_input_summary": {"offer_count": len(ru.get("offers") or [])},
+    }
+    result = {"status": "completed", "comparison": comparison}
+    return [part["text"] for part in format_market_messages(result, {"trigger_type": "daily"}, now=now)]
+
+
+def build_top_text(db_path: Path | str = DEFAULT_DB_PATH) -> str:
+    return "\n\n".join(build_top_parts(db_path))
 
 
 def _personal_keyboard() -> dict[str, Any]:
@@ -1149,13 +1155,15 @@ def process_update(client: httpx.Client, token: str, update: dict[str, Any]) -> 
         if data == BTN_RUN:
             handle_run(client, token, chat_id)
         elif data == BTN_TOP:
-            send_message(client, token, chat_id, build_top_text())
+            for text in build_top_parts():
+                send_message(client, token, chat_id, text)
         elif data == BTN_MARKETS:
             handle_markets_menu(
                 client, token, chat_id, message_id=message_id
             )
         elif data == BTN_RU_TOP:
-            send_message(client, token, chat_id, build_top_text())
+            for text in build_top_parts():
+                send_message(client, token, chat_id, text)
         elif data == BTN_TH_SCAN:
             handle_thailand_manual(client, token, chat_id, compare=False)
         elif data == BTN_TH_COMPARE:

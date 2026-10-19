@@ -2,10 +2,12 @@
 from __future__ import annotations
 
 from decimal import Decimal
+from html import escape
 from zoneinfo import ZoneInfo
 from typing import Any, Mapping
 
 MESSAGE_LIMIT = 3500
+DAILY_LIMIT = 4000  # Telegram's 4096-character body with a little headroom.
 
 _AVAILABILITY = {
     "in_stock": "в наличии",
@@ -100,108 +102,114 @@ def iter_market_sends(result: Mapping[str, Any], event: Mapping[str, Any], now_f
 
 
 def _daily_parts(result, event, now):
-    """One bounded morning digest from already ranked, evidenced observations."""
+    """Russian purchasing list first; Thailand is optional and never gates RU."""
     from market_contracts import ComparisonPolicy, age_valid, moment
-    from product_policy import MAX_PRICE_RUB
+    from product_policy import MAX_PRICE_RUB, LAPTOP_VRAM_GB
     policy = ComparisonPolicy()
     day = now.astimezone(ZoneInfo("Europe/Moscow")).strftime("%d.%m.%Y")
     comparison = result.get("comparison") or {}
-    rankings = result.get("rankings") or {}
-    rows = [("TH", row) for row in rankings.get("eligible_models", rankings.get("thai_top_value", []))]
-    rows += [("RU", row) for row in comparison.get("ru_eligible_offers") or []]
-    if result.get("status") == "failed":
-        rows = []
-    rows.sort(key=lambda item: (-Decimal(str(item[1].get("score") or 0)),
-                               -int(item[1].get("confidence") or 0),
-                               Decimal(str(item[1].get("price_rub") or "Infinity")),
-                               item[0], str(item[1].get("best_offer_id"))))
-    pairs = [p for p in _confirmed_pairs(comparison, "all") if _pair_purchase(p, result, now)]
-    pair_by_offer = {}
-    for pair in pairs:
-        for side in ("th", "ru"):
-            pair_by_offer[(side.upper(), str(pair.get(side + "_offer_id")))] = pair
     chosen, seen = [], set()
-    for market, row in rows:
+    for row in comparison.get("ru_eligible_offers") or []:
         offer = _best_offer(row)
-        ttl = policy.ru_quote_hours if market == "RU" else policy.quote_hours
-        if not _times_fresh(offer, now, ttl):
+        if not _times_fresh(offer, now, policy.ru_quote_hours):
             continue
-        if market == "TH":
-            from thailand.market_events import _fx_usable
-            if not _fx_usable(result.get("fx") or {}, now, policy):
-                continue
-        if market == "RU":
-            sources = (comparison.get("source_coverage") or {}).get("RU", [])
-            if not any(s.get("source") == offer.get("source") and s.get("state") == "ok"
-                       and age_valid(moment(s.get("checked_at")), now, ttl) for s in sources):
-                continue
-        if not offer.get("availability_confirmed") or offer.get("availability_state") not in _AVAILABILITY or offer.get("availability_state") not in {"in_stock", "online_available", "store_pickup_only"}:
+        sources = (comparison.get("source_coverage") or {}).get("RU", [])
+        if not any(s.get("source") == offer.get("source") and s.get("state") == "ok"
+                   and age_valid(moment(s.get("checked_at")), now, policy.ru_quote_hours) for s in sources):
+            continue
+        if not offer.get("availability_confirmed") or offer.get("availability_state") not in {"in_stock", "online_available", "store_pickup_only"}:
+            continue
+        if not offer.get("url"):
             continue
         if any(_spec_value(offer, key) is None for key in ("gpu", "ram_gb", "ssd_gb", "screen_inch", "screen_resolution")):
             continue
         price = Decimal(str(row.get("price_rub") or 0))
         if not 0 < price <= MAX_PRICE_RUB:
             continue
-        pair = pair_by_offer.get((market, str(offer.get("offer_id"))))
-        # Only a D-confirmed relation joins the two regional listings. Printed
-        # names/SKUs alone never collapse configurations.
-        key = ("pair", str(pair["th_variant_id"])) if pair else _daily_model_key(market, row, offer)
+        key = _daily_model_key("RU", row, offer)
         if key in seen:
             continue
         seen.add(key)
-        chosen.append((market, row, offer))
-        if len(chosen) == 5:
+        chosen.append((row, offer))
+        if len(chosen) == 10:
             break
-    lines = [f"Ноутбуки — {day}, 08:00 МСК", f"До {MAX_PRICE_RUB:,} ₽ · RTX 5070 Ti / 5080 Laptop".replace(",", " ")]
-    if result.get("status") == "failed":
-        lines.append("Обновление не удалось. Актуальная подборка не сформирована; по этому сбою нельзя судить о рынке.")
-    elif not chosen:
-        lines.append("Сейчас нет предложений, которые одновременно проходят требования к характеристикам, цене, наличию и свежести. Фильтры не ослаблены.")
-    else:
-        lines.append(f"Подтверждено подходящих вариантов в этом отчёте: {len(chosen)}.")
-    for index, (market, row, offer) in enumerate(chosen, 1):
-        price = f"{Decimal(str(row['price_rub'])):,.0f}".replace(",", " ")
-        title = _card_title(row.get("name") or offer.get("name"))[:130]
-        lines.extend(["", f"{index}. {title}", f"{'Россия' if market == 'RU' else 'Таиланд'} · {price} ₽" +
-                      (f" ({offer.get('price')} ฿)" if market == "TH" else ""), _specs(offer),
-                      f"{offer.get('source')} · {_AVAILABILITY[offer['availability_state']]}",
-                      f"Цена: {_display_time(offer.get('price_checked_at'))}; наличие: {_display_time(offer.get('availability_checked_at'))}"])
-        pair = pair_by_offer.get((market, str(offer.get("offer_id"))))
-        if pair:
-            lines.append(_relation_line(pair))
-            lines.append(_saving_line(pair, purchase_current=True))
-            other = pair.get("ru_observation" if market == "TH" else "th_observation") or {}
-            lines.append(f"Сравнение: {other.get('source')} · {other.get('price')} {'₽' if market == 'TH' else '฿'}")
-            if other.get("url"):
-                lines.append(str(other["url"]))
-        if _personal(row) or _personal(offer) or (pair and _personal_pair(pair)):
-            lines.append("Личный TOP-3: эталон")
-        if offer.get("url"):
-            lines.append(str(offer["url"]))
-    if any(m == "TH" for m, _, _ in chosen):
-        lines.append(_fx_line(result))
-        lines.append("Рублёвая цена TH — пересчёт; поездка, таможня и комиссии не включены. Отсутствие российской пары не исключает подходящий вариант.")
+    cap = f"{MAX_PRICE_RUB:,}".replace(",", " ")
+    header = f"Россия · TOP-{len(chosen)} — {day}, 08:00 МСК\nДо {cap} ₽ · RTX 5070 Ti / 5080 Laptop"
+    cards = []
+    for index, (row, offer) in enumerate(chosen, 1):
+        gpu = str(_spec_value(offer, "gpu"))
+        from product_policy import exact_target_gpu
+        kind = exact_target_gpu(gpu)
+        vram = LAPTOP_VRAM_GB.get(kind)
+        price = Decimal(str(row["price_rub"]))
+        screen = f"{_spec_value(offer, 'screen_inch')}″ {_spec_value(offer, 'screen_resolution')}"
+        tgp = _evidenced_extra(offer, "gpu_tgp_w")
+        specs = f"{gpu} {vram} ГБ · RAM {_spec_value(offer, 'ram_gb')} ГБ · SSD {_spec_value(offer, 'ssd_gb')} ГБ · {screen}"
+        if tgp is not None:
+            specs += f" · TGP {tgp} Вт"
+        target = policy.target(kind)
+        reason = "цена до цели" if target is not None and price <= target else "цена выше цели"
+        reason += "; " + ("экран от 17″" if Decimal(str(_spec_value(offer, "screen_inch"))) >= 17 else "экран меньше 17″")
+        if tgp is None:
+            reason += "; TGP неизвестен"
+        cards.append("\n".join((f"{index}. {escape(_card_title(row.get('name') or offer.get('name'))[:75])} — {price:,.0f} ₽".replace(",", " "),
+                      escape(specs), f"{escape(str(offer.get('source') or ''))} · {_AVAILABILITY[offer['availability_state']]} · {escape(str(offer.get('url') or 'ссылка не подтверждена'))}",
+                      f"Цена/наличие: {_short_time(offer.get('price_checked_at'))} / {_short_time(offer.get('availability_checked_at'))}",
+                      f"Плюс/компромисс: {reason}.")))
+    if not chosen:
+        header += "\nСейчас нет предложений, прошедших все проверки. Подтверждённых предложений сейчас нет: обязательные характеристики, наличие или свежесть не доказаны."
+        information = sorted(comparison.get("ru_information_candidates") or [],
+                             key=lambda item: Decimal(str((item.get("offer") or {}).get("price") or "Infinity")))
+        missing_labels = {"gpu": "GPU", "ram_gb": "RAM", "ssd_gb": "SSD",
+                          "screen_inch": "диагональ", "screen_resolution": "разрешение"}
+        for row in information[:3]:
+            offer = row.get("offer") or {}
+            reason = ", ".join(missing_labels.get(key, key) for key in missing_labels
+                               if "spec_unconfirmed:"+key in (row.get("reasons") or []))
+            price = f"{Decimal(str(offer.get('price'))):,.0f}".replace(",", " ")
+            cards.append(f"Кандидат, не рекомендация: {escape(_card_title(offer.get('name'))[:95])} · {price} ₽ · {escape(str(offer.get('source') or ''))}. Не подтверждено: {reason or 'характеристики'}. {escape(str(offer.get('url') or ''))}")
+    # Only a confirmed, current pair may appear as an optional Thai note.
+    pairs = [p for p in _confirmed_pairs(comparison, "all") if _pair_purchase(p, result, now)]
+    if pairs:
+        pair = pairs[0]
+        th = pair.get("th_observation") or {}
+        cards.append(f"Таиланд (подтверждённая пара): {escape(_card_title(th.get('name'))[:60])} · {th.get('price')} ฿. {_relation_line(pair)} {_saving_line(pair, purchase_current=True)}")
     coverage = _coverage_text(comparison, result)
-    if coverage:
-        lines.append(coverage)
+    footer = escape(coverage)
     if result.get("errors") or result.get("status") == "failed":
-        lines.append("Часть проверок завершилась с ошибкой; охват ограничен. Подробности сохранены в диагностике.")
-    # Keep one physical daily message. Drop the last complete card if needed;
-    # never truncate an offer halfway or split a digest into duplicate messages.
-    text = "\n".join(lines)
-    if len(text) > MESSAGE_LIMIT:
-        compact = dict(result)
-        compact["rankings"] = dict(rankings)
-        compact["comparison"] = dict(comparison)
-        if chosen:
-            remove_market, remove_row, _ = chosen[-1]
-            if remove_market == "TH":
-                compact["rankings"]["eligible_models"] = [r for r in rankings.get("eligible_models", rankings.get("thai_top_value", [])) if r is not remove_row]
-            else:
-                compact["comparison"]["ru_eligible_offers"] = [r for r in comparison.get("ru_eligible_offers", []) if r is not remove_row]
-            return _daily_parts(compact, event, now)
-        text = text[:MESSAGE_LIMIT - 100] + "\nПолное описание ограничений сохранено в диагностике."
-    return [{"part_id": "daily#0", "text": text, "reply_markup": None}]
+        footer = (footer + "\n" if footer else "") + ("Обновление не удалось; " if result.get("status") == "failed" else "") + "часть проверок завершилась с ошибкой; охват ограничен."
+    # Split only when unusually long links make one Telegram body impossible.
+    # Keep every complete card and a stable indexed part for durable ACK.
+    bodies = [header]
+    for card in cards:
+        if len(bodies[-1]) + len(card) + 2 > DAILY_LIMIT:
+            bodies.append("Россия · продолжение")
+        if len(card) + len(bodies[-1]) + 2 > DAILY_LIMIT:
+            raise ValueError("daily card exceeds Telegram limit")
+        bodies[-1] += "\n\n" + card
+    if footer:
+        if len(bodies[-1]) + len(footer) + 2 > DAILY_LIMIT:
+            bodies.append("Россия · сведения об охвате")
+        bodies[-1] += "\n\n" + footer[:DAILY_LIMIT - len(bodies[-1]) - 2]
+    return [{"part_id": f"daily#{i}", "text": body, "reply_markup": None} for i, body in enumerate(bodies)]
+
+
+def _short_time(value) -> str:
+    from market_contracts import moment
+    parsed = moment(value)
+    return parsed.astimezone(ZoneInfo("Europe/Moscow")).strftime("%d.%m %H:%M МСК") if parsed else "не подтверждена"
+
+
+def _evidenced_extra(offer, key):
+    from market_contracts import METHODS, moment
+    raw = (offer.get("extras") or {}).get(key) or {}
+    evidence = raw.get("evidence") or {}
+    if (evidence.get("source") == offer.get("source") and
+        str(evidence.get("external_id")) == str(offer.get("external_id")) and
+        evidence.get("method") in METHODS and
+        evidence.get("capture_state") != "unknown" and moment(evidence.get("captured_at"))):
+        return raw.get("value")
+    return None
 
 
 def _daily_model_key(market, row, offer):

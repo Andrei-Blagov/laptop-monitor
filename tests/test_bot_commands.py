@@ -90,9 +90,9 @@ class DispatchTests(unittest.TestCase):
             process_update(object(), "token", _message("/run"))
         run.assert_called_once()
 
-    def test_top_uses_existing_top_text(self) -> None:
+    def test_top_uses_russian_snapshot_parts(self) -> None:
         with patch("control_bot._is_admin", return_value=True), patch(
-            "control_bot.build_top_text", return_value="TOP-BODY"
+            "control_bot.build_top_parts", return_value=["TOP-BODY"]
         ) as top, patch("control_bot.send_message") as send:
             process_update(object(), "token", _message("/top@LaptopMonitorBot"))
         top.assert_called_once()

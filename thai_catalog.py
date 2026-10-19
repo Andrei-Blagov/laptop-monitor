@@ -273,26 +273,9 @@ def comparison_from_catalog(
     ru = russian_snapshot(russian) if russian is not None else None
     rate = fx_observation(fx) if fx is not None else None
     comparison = compare_markets(as_comparison_snapshot(document), ru, rate, now=_utc(now))
-    # Presentation uses the entire eligible RU input, never the personal TOP.
-    # Reuse the same evidence gate and value score; the pure matching core stays unchanged.
-    from thai_market_ranking import assess_quote, value_score
-    from market_contracts import ComparisonPolicy
-    policy = ComparisonPolicy()
-    ru_rows = []
-    if ru is not None:
-        for offer in ru.offers:
-            assessment = assess_quote(offer, ru, rate, now=_utc(now), policy=policy)
-            if assessment.eligible:
-                score, breakdown, confidence = value_score(offer, assessment.price_rub, now=_utc(now), policy=policy)
-                ru_rows.append({"model_id": offer.model_id or offer.offer_id,
-                    "variant_id": offer.variant_id or offer.offer_id,
-                    "offers": [offer.to_dict()], "best_offer_id": offer.offer_id,
-                    "name": offer.name, "price_rub": str(assessment.price_rub),
-                    "score": str(score), "confidence": confidence, "score_breakdown": breakdown,
-                    "in_personal_top3": any(offer.model_id in p["model_ids"] for p in ru.personal_profiles)})
-    from decimal import Decimal
-    ru_rows.sort(key=lambda row: (-Decimal(row["score"]), -row["confidence"], Decimal(row["price_rub"]), row["best_offer_id"]))
+    ru_rows, ru_candidates = russian_offer_views(russian, now=now)
     comparison["ru_eligible_offers"] = ru_rows
+    comparison["ru_information_candidates"] = ru_candidates
     from collections import Counter
     comparison["ru_input_summary"] = {
         "offer_count": len(russian.get("offers") or []),
@@ -301,6 +284,37 @@ def comparison_from_catalog(
                                           for row in russian.get("exclusions") or [])),
     } if russian is not None else None
     return comparison
+
+
+def russian_offer_views(russian: Mapping[str, Any] | None, *, now: datetime) -> tuple[list[dict], list[dict]]:
+    """One evidence gate for daily and the interactive Russian TOP."""
+    from market_contracts import fx_observation, russian_snapshot
+    ru = russian_snapshot(russian) if russian is not None else None
+    from thai_market_ranking import assess_quote, value_score
+    from market_contracts import ComparisonPolicy
+    policy = ComparisonPolicy()
+    ru_rows = []
+    ru_candidates = []
+    if ru is not None:
+        for offer in ru.offers:
+            assessment = assess_quote(offer, ru, None, now=_utc(now), policy=policy)
+            if assessment.eligible:
+                score, breakdown, confidence = value_score(offer, assessment.price_rub, now=_utc(now), policy=policy)
+                ru_rows.append({"model_id": offer.model_id or offer.offer_id,
+                    "variant_id": offer.variant_id or offer.offer_id,
+                    "offers": [offer.to_dict()], "best_offer_id": offer.offer_id,
+                    "name": offer.name, "price_rub": str(assessment.price_rub),
+                    "score": str(score), "confidence": confidence, "score_breakdown": breakdown,
+                    "in_personal_top3": any(offer.model_id in p["model_ids"] for p in ru.personal_profiles)})
+            elif (assessment.price_rub is not None and assessment.price_rub <= policy.max_price_rub
+                  and offer.availability_state in {"in_stock", "online_available", "store_pickup_only"}
+                  and not any(reason in assessment.reasons for reason in
+                              ("price_stale_or_unknown", "availability_stale_or_unknown",
+                               "availability_unconfirmed", "ru_source_not_current"))):
+                ru_candidates.append({"offer": offer.to_dict(), "reasons": list(assessment.reasons)})
+    from decimal import Decimal
+    ru_rows.sort(key=lambda row: (-Decimal(row["score"]), -row["confidence"], Decimal(row["price_rub"]), row["best_offer_id"]))
+    return ru_rows, ru_candidates
 
 
 def _offers(store_results: Sequence[StoreScanResult], *, now: datetime) -> list[dict[str, Any]]:
