@@ -1,14 +1,17 @@
 """Acceptance for the Russian Telegram workflow, entirely offline."""
 from __future__ import annotations
 
+import json
 import tempfile
 import unittest
 from pathlib import Path
 from unittest.mock import Mock, patch
 
 import config
-from control_bot import (build_top_parts, handle_personal_top, handle_recommendation_pick,
-                         handle_run, notify_manual_result, process_update, unique_russian_top)
+from control_bot import (build_top_parts, buy_picker_keyboard, handle_personal_top,
+                         handle_recommendation_pick, handle_run, handle_thailand_manual,
+                         model_callback_token, notify_manual_result, process_update,
+                         unique_russian_top)
 from deal_ranking import RankedDeal
 from manual_run import read_request, request_run, run_request, set_message_id
 from purchase_recommendation import format_russian_recommendation
@@ -46,7 +49,33 @@ class RussianTopTests(unittest.TestCase):
                 deal(4, cpu=None), deal(5, url=None), deal(6, screen_resolution="1920x1080")]
         with patch("russian_deals.load_russian_ranked_deals", return_value=rows):
             found = unique_russian_top("unused.db", limit=10)
-        self.assertEqual([item.url for item in found], ["https://example.test/1"])
+        self.assertEqual([item.url for item in found], ["https://example.test/1", "https://example.test/4"])
+
+    def test_same_name_variants_keep_separate_links_and_callbacks(self):
+        first = deal(1, cluster_name="Same model", offer={"sku": "VARIANT-1"})
+        second = deal(2, cluster_name="Same model", offer={"sku": "VARIANT-2"},
+                      cpu=None, ssd_gb=2048)
+        duplicate = deal(3, cluster_name="Same model", offer={"sku": "VARIANT-1"},
+                         url="https://example.test/alternate")
+        with patch("russian_deals.load_russian_ranked_deals", return_value=[first, second, duplicate]):
+            found = unique_russian_top("unused.db", limit=10)
+        self.assertEqual([item.url for item in found], [first.url, second.url])
+        callbacks = [row[0]["callback_data"] for row in buy_picker_keyboard(found)["inline_keyboard"]]
+        self.assertEqual(len(set(callbacks)), 2)
+        self.assertNotEqual(model_callback_token(first), model_callback_token(second))
+        with patch("control_bot.unique_russian_top", return_value=found), patch(
+            "control_bot.send_message"
+        ) as send:
+            handle_recommendation_pick(Mock(), "token", 1, model_callback_token(second), db_path="unused.db")
+        self.assertIn(second.url, send.call_args.args[3])
+        self.assertNotIn(first.url, send.call_args.args[3])
+        self.assertIn("CPU не подтверждён", send.call_args.args[3])
+        with patch("control_bot.unique_russian_top", return_value=found), patch(
+            "control_bot.get_latest_store_runs_readonly", return_value={}
+        ):
+            text = "\n".join(build_top_parts("unused.db"))
+        self.assertIn("CPU не подтверждён", text)
+        self.assertNotIn("None", text)
 
     def test_buy_explanation_is_russian_and_has_exact_url(self):
         item = deal(1)
@@ -76,6 +105,28 @@ class RussianTopTests(unittest.TestCase):
         self.assertIn("Старые данные не считаются текущими", text)
         self.assertNotIn("Таиланд", text)
 
+    def test_lenovo_series_needs_confirmed_profile_and_shows_variant(self):
+        compatible = deal(1, cluster_name="Lenovo Legion Pro 7 16AFR10H",
+                          offer={"name": "Lenovo Legion Pro 7 16AFR10H", "sku": "16AFR10H-82ZZ0001RU",
+                                 "external_id": "1"}, gpu="RTX 5070 Ti")
+        incompatible = deal(2, cluster_name="Lenovo Legion Pro 7 16AFR10H",
+                            offer={"name": "Lenovo Legion Pro 7 16AFR10H", "sku": "16AFR10H-82ZZ0002RU",
+                                   "external_id": "2"}, gpu="RTX 5080")
+        with patch("control_bot.unique_russian_top", return_value=[incompatible, compatible]), patch(
+            "control_bot._reply_or_edit"
+        ) as reply:
+            handle_personal_top(Mock(), "token", 1)
+        text = reply.call_args.args[3]
+        self.assertIn("Вариант серии: 16AFR10H-82ZZ0001RU", text)
+        self.assertIn(compatible.url, text)
+        self.assertNotIn(incompatible.url, text)
+        with patch("control_bot.unique_russian_top", return_value=[incompatible]), patch(
+            "control_bot._reply_or_edit"
+        ) as reply:
+            handle_personal_top(Mock(), "token", 1)
+        self.assertNotIn("Вариант серии:", reply.call_args.args[3])
+        self.assertNotIn(incompatible.url, reply.call_args.args[3])
+
 
 class ManualRunTests(unittest.TestCase):
     def test_duplicate_completion_error_and_restart_state(self):
@@ -100,10 +151,59 @@ class ManualRunTests(unittest.TestCase):
             from manual_run import _save
             third["status"] = "running"
             _save(path, third)
-            with patch("manual_run.read_pipeline_runs_readonly", return_value=[]):
-                state = __import__("manual_run").reconcile(path=path)
-            self.assertEqual(state["status"], "failed")
-            self.assertIn("прервана", state["error"])
+            state = __import__("manual_run").reconcile(path=path)
+            self.assertEqual(state["status"], "unconfirmed")
+            self.assertIn("не подтверждён", state["error"])
+
+    def test_interleaved_scheduled_run_cannot_confirm_killed_manual_after_restart(self):
+        with tempfile.TemporaryDirectory() as tmp, patch("manual_run._pipeline_busy", return_value=False):
+            path = Path(tmp) / "manual.json"
+            manual, accepted = request_run(42, path=path, spawn=lambda *_: 999999)
+            self.assertTrue(accepted)
+            from manual_run import _save, reconcile
+            manual.update(status="running", pid=999999, started_at=manual["created_at"])
+            _save(path, manual)
+            # A newer scheduled pipeline exists; its SUCCESS is unrelated to this request.
+            scheduled = {"id": 123, "started_at": manual["created_at"], "status": "success"}
+            with patch("storage.read_pipeline_runs_readonly", return_value=[scheduled]) as runs:
+                state = reconcile(path=path)
+                restarted_state = reconcile(path=path)
+            runs.assert_not_called()
+            self.assertEqual(state["status"], "unconfirmed")
+            self.assertEqual(restarted_state, state)
+            self.assertNotIn("run_id", state)
+
+
+class ManualThailandTests(unittest.TestCase):
+    def test_cached_result_does_not_intercept_explicit_refresh(self):
+        with tempfile.TemporaryDirectory() as tmp, patch.object(
+            config, "THAILAND_JOBS_DIR", tmp
+        ), patch.object(config, "stage22_market_telegram_enabled", return_value=True), patch(
+            "thailand.market_telegram.latest_result", return_value={"generated_at": "2020-01-01T00:00:00Z"}
+        ) as cached, patch("thailand.market_telegram.stream_ready_view") as stream, patch(
+            "control_bot.send_message"
+        ) as send, patch("thailand.catalog_refresh.execute_catalog_plan") as collect:
+            handle_thailand_manual(Mock(), "token", 42, compare=False)
+            files = list((Path(tmp) / "pending").glob("*.json"))
+            self.assertEqual(len(files), 1)
+            event = json.loads(files[0].read_text(encoding="utf-8"))
+        self.assertEqual(event["trigger_type"], "manual")
+        self.assertEqual(event["requested_view"], "thai_top")
+        cached.assert_not_called()
+        stream.assert_not_called()
+        collect.assert_not_called()
+        self.assertIn("поставлена в очередь", send.call_args.args[3])
+
+        from thailand.market_events import _run_plan
+        with patch("thailand.market_events.evaluate_catalog_reuse", return_value={"action": "DEFERRED"}) as planner, patch(
+            "thailand.market_events.execute_catalog_plan", return_value={"status": "deferred", "http_calls": 0}
+        ) as execute:
+            decision, outcome, _ = _run_plan([event], catalog_root="unused", health_path=None,
+                                             fx=None, russian_snapshot=None, transport=None, clock=None, now=None)
+        self.assertEqual(decision["action"], "DEFERRED")
+        self.assertEqual(outcome["http_calls"], 0)
+        self.assertEqual(planner.call_args.kwargs["trigger"], "manual")
+        execute.assert_called_once()
 
     def test_bot_accepts_without_running_pipeline_and_edits_once(self):
         state = {"id": "a" * 32, "status": "pending", "chat_id": "42"}

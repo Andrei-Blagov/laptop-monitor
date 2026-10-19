@@ -120,7 +120,7 @@ def format_russian_recommendation(deal: RankedDeal) -> str:
     """Immediate Russian-only BUY explanation from the same ranked deal as TOP."""
     from deal_ranking import effective_deal_score
 
-    if not deal_is_eligible(deal) or not deal.url or not deal.cpu:
+    if not deal_is_eligible(deal) or not deal.url:
         return "Модель не проходит подтверждённый фильтр покупки."
     days = history_days_for_deal(deal)
     mature = days is not None and days >= config.BUY_MIN_HISTORY_DAYS
@@ -128,7 +128,7 @@ def format_russian_recommendation(deal: RankedDeal) -> str:
     signal = evaluate_buy_rules(deal) if mature else None
     name = escape(unescape(deal.cluster_name or "Модель"), quote=False)
     lines = [f"<b>Стоит ли покупать: {name}</b>",
-             f"{escape(str(deal.gpu))} · {escape(str(deal.cpu))}",
+             f"{escape(str(deal.gpu))} · {escape(str(deal.cpu or 'CPU не подтверждён'))}",
              f"{deal.ram_gb} ГБ RAM · {deal.ssd_gb} ГБ SSD · {deal.screen_inch:g}″ {escape(str(deal.screen_resolution))}",
              f"{_rub(deal.price)} ₽ · {escape(_store_label(deal.store))}",
              escape(deal.url), "",
@@ -142,6 +142,8 @@ def format_russian_recommendation(deal: RankedDeal) -> str:
     lines.append("Плюсы: " + ("; ".join(escape(unescape(str(x))) for x in deal.reasons[:3])
                               if deal.reasons else "подтверждённые характеристики подходят."))
     limitations = []
+    if not deal.cpu:
+        limitations.append("CPU не подтверждён")
     if not mature:
         limitations.append("история наблюдений короче 14 дней")
     if not deal.historical_min:
@@ -150,7 +152,7 @@ def format_russian_recommendation(deal: RankedDeal) -> str:
         limitations.append("цена заметно выше собственного минимума")
     limitations.append("охлаждение и качество корпуса не подтверждены магазином")
     lines.append("Ограничения: " + "; ".join(limitations) + ".")
-    if not mature or deal.historical_min is None:
+    if not deal.cpu or not mature or deal.historical_min is None:
         verdict = "Недостаточно данных для уверенной покупки."
     elif signal is not None:
         verdict = "Интересное предложение по российской цене и истории."

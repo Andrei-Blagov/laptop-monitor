@@ -439,7 +439,7 @@ class PickerTests(unittest.TestCase):
         self.assertIn("5070 Ti", label)
         self.assertIn("257 540", label)
         self.assertNotIn("TS113W", label)
-        self.assertLessEqual(len(CALLBACK_MODEL_PICK + model_callback_token(deal.cluster_name)), 64)
+        self.assertLessEqual(len(CALLBACK_MODEL_PICK + model_callback_token(deal)), 64)
 
     def test_long_name_is_shortened_and_sku_only_falls_back(self) -> None:
         long_name = "Ноутбук " + ("Gigabyte Aorus " * 8) + "DYJG3KZBC4SD"
@@ -502,7 +502,7 @@ class PickerTests(unittest.TestCase):
             "buy_thailand_flow.enqueue_model_thailand_job",
             return_value={"ok": True, "thailand_job_id": "abc"},
         ) as enq, patch("thailand.scanner.run_thailand_scan") as scan:
-            handle_thailand_model_pick(MagicMock(), "t", 1, model_callback_token(deal.cluster_name))
+            handle_thailand_model_pick(MagicMock(), "t", 1, model_callback_token(deal))
         enq.assert_called_once()
         scan.assert_not_called()
         text = send.call_args.args[3]
@@ -510,7 +510,7 @@ class PickerTests(unittest.TestCase):
         self.assertIn("ASUS ROG Strix", text)
         self.assertIn("5070 Ti", text)
         self.assertIn("220 000", text)
-        self.assertNotIn(model_callback_token(deal.cluster_name), text)
+        self.assertNotIn(model_callback_token(deal), text)
 
 
 class RateLimitTests(unittest.TestCase):

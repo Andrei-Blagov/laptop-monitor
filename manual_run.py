@@ -17,7 +17,7 @@ from pathlib import Path
 from typing import Any, Callable
 
 from pipeline_lock import DEFAULT_LOCK_PATH, PipelineLockError, acquire_pipeline_lock, release_pipeline_lock
-from storage import DEFAULT_DB_PATH, read_pipeline_runs_readonly
+from storage import DEFAULT_DB_PATH
 
 DEFAULT_REQUEST_PATH = Path("data/manual_run.json")
 ACTIVE = {"pending", "running"}
@@ -147,17 +147,9 @@ def reconcile(*, path: Path = DEFAULT_REQUEST_PATH) -> dict[str, Any]:
                 return state
             except OSError:
                 pass
-        runs = read_pipeline_runs_readonly(DEFAULT_DB_PATH, limit=1)
-        last = runs[0] if runs else None
-        if (last and str(last.get("started_at") or "") >= str(state.get("created_at") or "")
-                and last.get("status") in {"success", "partial", "failed"}):
-            state.update(status=last["status"], run_id=last.get("id"),
-                         error=last.get("error_message"), finished_at=_now())
-        elif _pipeline_busy():
-            return state
-        else:
-            state.update(status="failed", error="Проверка прервана при перезапуске. Запустите её снова.",
-                         finished_at=_now())
+        state.update(status="unconfirmed",
+                     error="Результат ручной проверки не подтверждён после остановки процесса. Проверьте статус и запустите её снова.",
+                     finished_at=_now())
         _save(path, state)
         return state
 

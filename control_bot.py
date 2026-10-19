@@ -663,7 +663,7 @@ def build_top_parts(db_path: Path | str = DEFAULT_DB_PATH) -> list[str]:
         except (ValueError, TypeError):
             clock = "время неизвестно"
         name = html.escape(html.unescape(deal.cluster_name or "Модель"), quote=False)
-        specs = f"{deal.gpu} · {deal.cpu} · {deal.ram_gb} ГБ RAM · {deal.ssd_gb} ГБ SSD · {deal.screen_inch:g}″ {deal.screen_resolution}"
+        specs = f"{deal.gpu} · {deal.cpu or 'CPU не подтверждён'} · {deal.ram_gb} ГБ RAM · {deal.ssd_gb} ГБ SSD · {deal.screen_inch:g}″ {deal.screen_resolution}"
         price = f"{int(deal.price):,}".replace(",", " ")
         card = (f"<b>{index}. {name}</b>\n{html.escape(specs)}\n"
                 f"{price} ₽ · {html.escape(deal.store)} · оценка {effective_deal_score(deal):g}/100\n"
@@ -704,7 +704,7 @@ def handle_personal_top(
     *,
     message_id: int | None = None,
 ) -> None:
-    from personal_top import exact_skus, product_codes
+    from personal_top import exact_skus, product_codes, series_product_candidates
     from product_identity import normalize_identifier
 
     deals = unique_russian_top(DEFAULT_DB_PATH, limit=0)
@@ -715,11 +715,29 @@ def handle_personal_top(
             product_codes({"name": item.cluster_name, "sku": item.offer.get("sku")})
             | {normalize_identifier(str(item.offer.get("mpn") or ""))}
         )), None)
+        series_variant = None
+        if deal is None and model.get("series_codes"):
+            for item in deals:
+                row = {"name": item.offer.get("name") or item.cluster_name,
+                       "sku": item.offer.get("sku"), "store": item.store,
+                       "external_id": item.offer.get("external_id"),
+                       "available": True, "price": item.price, "url": item.url}
+                key = (str(row["store"]), str(row["external_id"] or ""))
+                specs = {key: {"cpu": item.cpu, "gpu": item.gpu, "ram_gb": item.ram_gb,
+                               "ssd_gb": item.ssd_gb, "screen_inch": item.screen_inch,
+                               "screen_resolution": item.screen_resolution,
+                               "gpu_vram_gb": item.gpu_vram_gb}}
+                if series_product_candidates(model, [row], specs_by_key=specs):
+                    deal = item
+                    series_variant = str(row["sku"] or row["name"])
+                    break
         lines.append("")
         lines.append(f"<b>{html.escape(str(model['model']))}</b>")
         if deal is None:
             lines.append("Свежей подтверждённой цены и наличия в России нет. Старые данные не считаются текущими.")
             continue
+        if series_variant:
+            lines.append(f"Вариант серии: {html.escape(series_variant)}")
         lines.append(f"В наличии · {int(deal.price):,} ₽ · {html.escape(deal.store)}".replace(",", " "))
         lines.append(html.escape(deal.url or ""))
     text = "\n".join(lines)
@@ -789,8 +807,21 @@ def handle_markets_menu(
     )
 
 
-def model_callback_token(cluster_name: str) -> str:
-    return hashlib.sha256(cluster_name.encode("utf-8")).hexdigest()[:8]
+def model_callback_token(model, *, length: int = 16) -> str:
+    if isinstance(model, str):
+        identity = model
+    else:
+        offer = model.offer or {}
+        code = str(model.cluster_key or offer.get("sku") or offer.get("mpn") or "")
+        if not code:
+            code = f"{model.store}:{offer.get('external_id') or model.url or ''}"
+        elif code.startswith("id:"):
+            code = f"{model.store}:{code}"
+        identity = json.dumps(tuple(str(value or "") for value in (
+            code, model.gpu, model.cpu, model.ram_gb, model.ssd_gb,
+            model.screen_inch, model.screen_resolution,
+        )))
+    return hashlib.sha256(identity.encode("utf-8")).hexdigest()[:length]
 
 
 def unique_russian_top(db_path: Path | str = DEFAULT_DB_PATH, *, limit: int = 10):
@@ -801,10 +832,10 @@ def unique_russian_top(db_path: Path | str = DEFAULT_DB_PATH, *, limit: int = 10
     out = []
     seen: set[str] = set()
     for deal in deals:
-        name = deal.cluster_name or ""
-        if not name or name in seen or not deal_is_eligible(deal) or not deal.url or not deal.cpu:
+        identity = model_callback_token(deal, length=64)
+        if not deal.cluster_name or identity in seen or not deal_is_eligible(deal) or not deal.url:
             continue
-        seen.add(name)
+        seen.add(identity)
         out.append(deal)
         if limit > 0 and len(out) >= limit:
             break
@@ -867,7 +898,7 @@ def picker_button_label(deal, index: int) -> str:
 def model_picker_keyboard(deals) -> dict[str, Any]:
     rows = []
     for index, deal in enumerate(deals[:10], start=1):
-        token = CALLBACK_MODEL_PICK + model_callback_token(deal.cluster_name)
+        token = CALLBACK_MODEL_PICK + model_callback_token(deal)
         rows.append([{"text": picker_button_label(deal, index), "callback_data": token}])
     rows.append([{"text": "🏠 Меню", "callback_data": CALLBACK_MENU}])
     return {"inline_keyboard": rows}
@@ -876,7 +907,7 @@ def model_picker_keyboard(deals) -> dict[str, Any]:
 def recommendation_keyboard(deals) -> dict[str, Any]:
     rows = []
     for index, deal in enumerate(deals[:10], start=1):
-        token = CALLBACK_RECOMMEND + model_callback_token(deal.cluster_name)
+        token = CALLBACK_RECOMMEND + model_callback_token(deal)
         rows.append([{"text": picker_button_label(deal, index), "callback_data": token}])
     rows.append([{"text": "🏠 Меню", "callback_data": CALLBACK_MENU}])
     return {"inline_keyboard": rows}
@@ -884,7 +915,7 @@ def recommendation_keyboard(deals) -> dict[str, Any]:
 
 def buy_picker_keyboard(deals) -> dict[str, Any]:
     return {"inline_keyboard": [
-        [{"text": f"{index}. Стоит ли покупать?", "callback_data": CALLBACK_BUY + model_callback_token(deal.cluster_name)}]
+        [{"text": f"{index}. Стоит ли покупать?", "callback_data": CALLBACK_BUY + model_callback_token(deal)}]
         for index, deal in enumerate(deals[:10], 1)
     ]}
 
@@ -933,7 +964,7 @@ def handle_recommendation_pick(
     if token_id == "best":
         deal = deals[0]
     else:
-        deal = next((item for item in deals if model_callback_token(item.cluster_name) == token_id), None)
+        deal = next((item for item in deals if model_callback_token(item) == token_id), None)
     if deal is None:
         send_message(client, token, chat_id, "Эта модель уже не в текущем ТОП. Откройте список ещё раз.", with_keyboard=False)
         return
@@ -974,7 +1005,7 @@ def handle_thailand_model_pick(
 ) -> None:
     """Resolve the clicked model now and enqueue. Does not wait for the scan."""
     deals = unique_russian_top(db_path, limit=10)
-    deal = next((d for d in deals if model_callback_token(d.cluster_name) == token_id), None)
+    deal = next((d for d in deals if model_callback_token(d) == token_id), None)
     if deal is None:
         send_message(client, token, chat_id, "Эта модель уже не в текущем ТОП. Откройте список ещё раз.", with_keyboard=False)
         return
@@ -1041,21 +1072,10 @@ def handle_thailand_manual(
 
 
 def _stage22_thailand_action(client, token, chat_id, *, compare: bool) -> None:
-    """Show a stored result, or enqueue one market event. Never calls collect."""
-    from thailand.market_telegram import enqueue_view_refresh, latest_result
+    """Explicit refresh always enters the existing planner; no store calls here."""
+    from thailand.market_telegram import enqueue_view_refresh
 
     view = "general_top" if compare else "thai_top"
-    stored = latest_result(config.THAILAND_JOBS_DIR)
-    if stored is not None:
-        from thailand.market_telegram import stream_ready_view
-
-        stream_ready_view(
-            stored, chat_id=chat_id, view=view,
-            emit=lambda text, markup, recipient: send_message(
-                client, token, recipient, text, with_keyboard=False, reply_markup=markup,
-            ),
-        )
-        return
     enqueue_view_refresh(chat_id=chat_id, view=view, trigger="manual")
     send_message(
         client, token, chat_id,
