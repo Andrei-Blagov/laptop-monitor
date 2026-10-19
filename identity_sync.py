@@ -91,6 +91,28 @@ def _identity_has_core_specs(identity: ProductIdentity | None) -> bool:
     )
 
 
+def _needs_structured_capture(identity: ProductIdentity | None, product: dict[str, Any]) -> bool:
+    """Legacy structured values without field clocks need a fresh *successful* card read.
+
+    A listing/price observation cannot date the old cache. Limit this repair to
+    in-stock target laptops inside the budget; a failed enrichment leaves the
+    old fields unknown to the comparison gate.
+    """
+    from product_policy import MAX_PRICE_RUB, exact_target_gpu
+
+    if identity is None or exact_target_gpu(identity.gpu) is None or not product.get("available"):
+        return False
+    try:
+        price = int(product.get("price"))
+    except (TypeError, ValueError):
+        return False
+    if not 0 < price <= MAX_PRICE_RUB:
+        return False
+    captures = (identity.source_identifiers or {}).get("field_captured_at") or {}
+    return any(getattr(identity, field, None) is not None and not captures.get(field)
+               for field in ("gpu", "ram_gb", "ssd_gb", "screen_size_inch", "screen_resolution"))
+
+
 def _stamp_structured_provenance(
     identity: ProductIdentity, source: str
 ) -> ProductIdentity:
@@ -527,6 +549,7 @@ def sync_product_identifiers(
 
     regard_client: httpx.Client | None = None
     andpro_client: httpx.Client | None = None
+    legacy_capture_attempts = 0
 
     try:
         with open_db(db_path) as conn:
@@ -543,12 +566,16 @@ def sync_product_identifiers(
                     specs_cache, store, str(product["external_id"])
                 )
 
+                legacy_capture = _needs_structured_capture(identity, product)
                 needs_structured = (
                     enrich
                     and store in {"regard", "andpro"}
-                    and (not already or not _identity_has_core_specs(identity))
+                    and (not already or not _identity_has_core_specs(identity)
+                         or (legacy_capture and legacy_capture_attempts < 8))
                 )
                 if needs_structured:
+                    if legacy_capture and already and _identity_has_core_specs(identity):
+                        legacy_capture_attempts += 1
                     try:
                         if store == "regard":
                             if regard_client is None:

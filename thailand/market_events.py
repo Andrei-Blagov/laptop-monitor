@@ -691,8 +691,25 @@ def _protect_linked(result: Mapping[str, Any], catalog_root, russian_snapshot_ro
         _protect(Path(russian_snapshot_root), [str(result["ru_snapshot_id"])])
 
 
-def _finish_scan(base, catalog_root, scan, events, outcome, now, fx=None, russian_snapshot_root=None) -> dict[str, Any]:
+def _finish_scan(base, catalog_root, scan, events, outcome, now, fx=None, russian_snapshot_root=None, russian_snapshot=None) -> dict[str, Any]:
     comparison = outcome.get("comparison") or {}
+    if not comparison and russian_snapshot is not None and any(e.get("trigger_type") == "daily" for e in events):
+        # A failed/unavailable Thai catalogue cannot erase independent RU input.
+        # Apply exactly the same evidence assessment as a normal comparison.
+        from collections import Counter
+        from market_contracts import ComparisonPolicy, age_valid, russian_snapshot as parse_ru
+        from thai_catalog import russian_offer_views
+        ru = parse_ru(russian_snapshot)
+        eligible, candidates = russian_offer_views(russian_snapshot, now=now)
+        comparison = {
+            "ru_snapshot_id": ru.snapshot_id,
+            "ru_eligible_offers": eligible,
+            "ru_information_candidates": candidates,
+            "source_coverage": {"RU": [s.to_dict() for s in ru.coverage]},
+            "data_freshness": {"ru_current": age_valid(ru.created_at, now, ComparisonPolicy().ru_quote_hours)},
+            "ru_input_summary": {"offer_count": len(ru.offers),
+                                 "exclusion_reasons": dict(Counter(str(x.get("reason") or "unknown") for x in russian_snapshot.get("exclusions") or []))},
+        }
     supplied = fx if isinstance(fx, dict) else {}
     result = {
         "result_id": scan["scan_id"],
@@ -831,7 +848,7 @@ def _run_market_queue_locked(
         return {"status": "deferred", "event_ids": [event["event_id"] for event in events], "http_calls": int(outcome.get("http_calls") or 0)}
     result = _finish_scan(
         base, Path(catalog_root), scan, events, outcome, clock_now, fx=fx,
-        russian_snapshot_root=russian_snapshot_root,
+        russian_snapshot_root=russian_snapshot_root, russian_snapshot=russian_snapshot,
     )
     if deliver and sender is not None:
         delivered = _retry_delivery(base, sender, clock=clock, fallback=now, deliver=True)

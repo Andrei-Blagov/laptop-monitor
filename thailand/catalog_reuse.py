@@ -130,7 +130,7 @@ def _views(document, fx, russian_snapshot, now: datetime):
 
     rankings = rankings_from_catalog(document, fx, now=now)
     comparison = None
-    if russian_snapshot is not None and fx is not None:
+    if russian_snapshot is not None:
         comparison = comparison_from_catalog(document, russian_snapshot, fx, now=now)
     return rankings, comparison
 
