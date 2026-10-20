@@ -32,7 +32,10 @@ MIN_SCREEN_WIDTH_EXCLUSIVE: int = policy.MIN_SCREEN_WIDTH_EXCLUSIVE
 MIN_SCREEN_HEIGHT: int = policy.MIN_SCREEN_HEIGHT
 MIN_SCREEN_PIXELS: int = policy.MIN_SCREEN_PIXELS
 
-# Personal shortlist. Compared with Thailand on its own daily job.
+# Thailand remains available through explicit Telegram actions only.
+THAILAND_AUTOMATIC_ENABLED: bool = False
+
+# Personal shortlist. Russian prices are shown in Telegram favorites.
 # The general TOP and PRIORITY_MODELS stay independent of this list.
 PERSONAL_TOP3: tuple[dict, ...] = (
     {

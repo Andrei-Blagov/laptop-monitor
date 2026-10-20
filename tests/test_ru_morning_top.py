@@ -30,23 +30,22 @@ def russian():
 
 
 def digest(ru, *, now=NOW, fx=None, th=None, status="completed"):
-    comparison = comparison_from_catalog(th or empty_th(), ru, fx, now=NOW)
+    comparison = comparison_from_catalog(th or empty_th(), ru, fx, now=now)
     result = {"comparison": comparison, "rankings": {}, "fx": fx, "status": status}
     return result, format_market_messages(result, {"trigger_type": "daily"}, now=now)
 
 
 class RussianMorning(unittest.TestCase):
-    def test_interactive_top_uses_same_snapshot_evidence_and_budget(self):
+    def test_interactive_top_uses_current_ranked_deals(self):
         from control_bot import build_top_parts
-        ru=russian()
-        current=datetime.now(timezone.utc)
-        ru["created_at"]=current.isoformat()
-        ru["source_coverage"][0]["latest_attempt_at"]=current.isoformat()
-        for row in ru["offers"]:
-            row["price_checked_at"]=row["availability_checked_at"]=current.isoformat()
-            row["availability_evidence"]["captured_at"]=current.isoformat()
-            for entry in row["specs"].values():entry["evidence"]["captured_at"]=current.isoformat()
-        with patch("market_snapshot.load_russian_market_snapshot",return_value=ru):
+        from deal_ranking import RankedDeal
+        deals = [RankedDeal(score=80, cluster_name=f"Model {i}", gpu="RTX 5080",
+                            cpu="Intel Core i9 14900HX", store="regard", price=250000,
+                            url=f"https://example.test/ru-{i:02d}", ram_gb=32, ssd_gb=1024,
+                            screen_inch=16, screen_resolution="2560x1600") for i in range(1, 12)]
+        with patch("control_bot.unique_russian_top", return_value=deals[:10]), patch(
+            "control_bot.get_latest_store_runs_readonly", return_value={"regard": {"finished_at": datetime.now(timezone.utc).isoformat()}}
+        ):
             texts=build_top_parts("/tmp/fixture.db")
         self.assertIn("TOP-10",texts[0])
         self.assertIn("https://example.test/ru-01",texts[0])
@@ -94,21 +93,51 @@ class RussianMorning(unittest.TestCase):
             second={"event_id":"two","trigger_type":"daily","recipients":["42"]}
             sender.send(first,result,current=False,historical=False)
             sender.send(second,result,current=False,historical=False)
-            self.assertEqual(len(sink.texts),1)
+            self.assertEqual(len(sink.texts), len(digest(russian())[1]))
             self.assertEqual(second["delivered_part_ids"][0]["reused"],True)
+
+    def test_next_day_delivers_fresh_top_with_unchanged_prices(self):
+        class Sink:
+            def __init__(self): self.texts=[]
+            def send_market_message(self, text, **kwargs):
+                self.texts.append(text)
+                return type("Ack", (), {"ok": True})()
+        def next_day(value):
+            if isinstance(value, dict): return {k: next_day(v) for k,v in value.items()}
+            if isinstance(value, list): return [next_day(v) for v in value]
+            if isinstance(value, str):
+                try:
+                    stamp = datetime.fromisoformat(value.replace("Z", "+00:00"))
+                    if stamp.tzinfo: return (stamp+timedelta(days=1)).isoformat()
+                except ValueError: pass
+            return value
+        with tempfile.TemporaryDirectory() as folder:
+            sink=Sink()
+            for number, moment in enumerate((NOW, NOW+timedelta(days=1))):
+                raw=russian() if number==0 else next_day(russian())
+                result, parts=digest(raw, now=moment)
+                result["result_id"]="daily-"+str(number)
+                before=len(sink.texts)
+                sender=MarketTextSender(sink,jobs_dir=folder,now_fn=lambda:moment)
+                sender.send({"event_id":str(number), "trigger_type":"daily", "recipients":["42"]},
+                            result,current=False,historical=False)
+                self.assertEqual(len(sink.texts)-before,len(parts))
+                self.assertIn("TOP-10", "\n".join(sink.texts[before:]))
+                self.assertIn("https://example.test/ru-01", "\n".join(sink.texts[before:]))
 
     def test_ten_unique_models_all_links_and_units_without_th_or_fx(self):
         ru = russian()
         result, parts = digest(ru)
         self.assertEqual(len(result["comparison"]["ru_eligible_offers"]), 25)
-        self.assertEqual(len(parts), 1)
-        text = parts[0]["text"]
+        self.assertGreaterEqual(len(parts), 1)
+        self.assertTrue(all(len(p["text"]) <= 4000 for p in parts))
+        text = "\n".join(p["text"] for p in parts)
         self.assertIn("TOP-10", text)
         self.assertIn("RAM 32 ГБ", text)
         self.assertIn("SSD 1024 ГБ", text)
         self.assertIn("12 ГБ", text)
         self.assertIn("МСК", text)
-        self.assertLessEqual(len(text), 4000)
+        self.assertTrue(all(len(p["text"]) <= 4000 for p in parts))
         for n in range(1, 11):
             self.assertIn(f"https://example.test/ru-{n:02d}", text)
         self.assertNotIn("https://example.test/ru-11", text)

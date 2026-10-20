@@ -35,7 +35,8 @@ def _now() -> datetime:
     return datetime.now(timezone.utc).replace(microsecond=0)
 
 
-def _product(store: str, ext: str, *, name: str, sku: str, price: int, available: bool = True) -> Product:
+def _product(store: str, ext: str, *, name: str, sku: str, price: int, available: bool = True,
+             cpu: str | None = None) -> Product:
     return Product(
         store=store,
         external_id=ext,
@@ -45,6 +46,7 @@ def _product(store: str, ext: str, *, name: str, sku: str, price: int, available
         price=price,
         available=available,
         checked_at=_now(),
+        metadata={"cpu": cpu} if cpu else {},
     )
 
 
@@ -304,7 +306,7 @@ class ConsistencyTests(unittest.TestCase):
         self.db = Path(self._tmp.name) / "c.db"
         self.specs = Path(self._tmp.name) / "specs.json"
         rows = [
-            ("good", "Good One" + SPECS, "GOOD-1", 250_000),
+            ("good", "Good One Intel Core i9 14900HX" + SPECS, "GOOD-1", 250_000),
             ("small", 'Small One RTX 5080, 16GB DDR5, 17" 2560x1600', "SMALL-1", 220_000),
             ("fhd", 'Fhd One RTX 5080, 32GB DDR5, 16" 1920x1200', "FHD-1", 210_000),
             ("over", "Over One" + SPECS, "OVER-1", 340_000),
@@ -312,7 +314,8 @@ class ConsistencyTests(unittest.TestCase):
         ]
         save_products(
             [
-                _product(store, f"{store}-{ext}", name=name, sku=sku, price=price + bump)
+                _product(store, f"{store}-{ext}", name=name, sku=sku, price=price + bump,
+                         cpu="Intel Core i9 14900HX")
                 for ext, name, sku, price in rows
                 for store, bump in (("regard", 0), ("kns", 5_000))
             ],
@@ -327,28 +330,37 @@ class ConsistencyTests(unittest.TestCase):
         from control_bot import build_top_text, unique_russian_top
         from model_price_history import build_history_picker_items
         from russian_deals import load_russian_ranked_deals
+        from tests.test_telegram_ru_simplify import confirmed_quotes
 
-        with patch("identity_sync.SPECS_CACHE_PATH", self.specs):
+        with patch("identity_sync.SPECS_CACHE_PATH", self.specs), patch(
+            "control_bot._confirmed_russian_quotes",
+            return_value=confirmed_quotes(load_russian_ranked_deals(self.db, specs_path=self.specs, limit=0)),
+        ):
             deals = load_russian_ranked_deals(self.db, specs_path=self.specs)
             top = build_top_text(self.db)
             picker = unique_russian_top(self.db, limit=5)
             history = build_history_picker_items(self.db)
-        self.assertEqual([d.cluster_name for d in deals], ["Good One" + SPECS])
-        self.assertEqual([d.cluster_name for d in picker], ["Good One" + SPECS])
-        self.assertEqual([i.name for i in history], ["Good One" + SPECS])
-        # Interactive presentation now requires the published RU evidence snapshot.
-        self.assertIn("Российский каталог сейчас недоступен", top)
+        self.assertEqual([d.cluster_name for d in deals], ["Good One Intel Core i9 14900HX" + SPECS])
+        self.assertEqual([d.cluster_name for d in picker], ["Good One Intel Core i9 14900HX" + SPECS])
+        self.assertEqual([i.name for i in history], ["Good One Intel Core i9 14900HX" + SPECS])
+        self.assertIn("TOP-10 России", top)
         for name in ("Small One", "Fhd One", "Over One", "Unk One"):
             self.assertNotIn(name, top)
 
     def test_best_recommendation_is_eligible(self) -> None:
         from control_bot import handle_recommendation_pick
+        from russian_deals import load_russian_ranked_deals
+        from tests.test_telegram_ru_simplify import confirmed_quotes
 
         with patch("identity_sync.SPECS_CACHE_PATH", self.specs), patch(
-            "buy_thailand_flow.enqueue_recommendation_job", return_value={"ok": True}
-        ) as enq, patch("control_bot.send_message"):
+            "buy_thailand_flow.enqueue_recommendation_job"
+        ) as enq, patch("control_bot.send_message") as send, patch(
+            "control_bot._confirmed_russian_quotes",
+            return_value=confirmed_quotes(load_russian_ranked_deals(self.db, specs_path=self.specs, limit=0)),
+        ):
             handle_recommendation_pick(object(), "t", 1, "best", db_path=self.db)
-        self.assertEqual(enq.call_args.args[0].cluster_name, "Good One" + SPECS)
+        enq.assert_not_called()
+        self.assertIn("Good One", send.call_args.args[3])
 
     def test_excluded_products_cannot_trigger_buy(self) -> None:
         from russian_deals import load_russian_ranked_deals
@@ -573,7 +585,7 @@ class SingleStoreRankingTests(unittest.TestCase):
         self.assertIsNone(deal.saving_vs_next)
         self.assertIsNone(deal.next_store)
         self.assertEqual(deal.score_breakdown["saving"], 0.0)
-        self.assertIsNotNone(deal.history_started_at)
+        self.assertIsNone(deal.history_started_at)  # Legacy prices are preserved, not retrospectively attributed.
 
     def test_single_store_must_pass_filters(self) -> None:
         deals, exclusions = self._deals(
@@ -680,10 +692,11 @@ class ProvenIdentityMergeTests(SingleStoreRankingTests):
             ).fetchone()
             conn.execute(
                 """
-                INSERT INTO price_history (product_id, price, available, checked_at)
-                VALUES (?, ?, ?, ?)
+                INSERT INTO price_history (product_id, price, available, checked_at, configuration_key)
+                VALUES (?, ?, ?, ?, ?)
                 """,
-                (int(citi["id"]), 250_000, 1, older.isoformat()),
+                (int(citi["id"]), 250_000, 1, older.isoformat(),
+                 __import__("confirmed_history").configuration_key("CITILINK-c1", vars(deal))),
             )
         merges: list[dict] = []
         from russian_deals import load_russian_ranked_deals

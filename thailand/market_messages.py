@@ -152,8 +152,11 @@ def _daily_parts(result, event, now):
         reason += "; " + ("экран от 17″" if Decimal(str(_spec_value(offer, "screen_inch"))) >= 17 else "экран меньше 17″")
         if tgp is None:
             reason += "; TGP неизвестен"
+        from confirmed_history import summary_lines
+        history_text = "\n".join(summary_lines(offer.get("price_history") or {}, int(price)))
+        sku = ", ".join(offer.get("identifiers") or []) or "не подтверждён"
         cards.append("\n".join((f"{index}. {escape(_card_title(row.get('name') or offer.get('name'))[:75])} — {price:,.0f} ₽".replace(",", " "),
-                      escape(specs), f"{escape(str(offer.get('source') or ''))} · {_AVAILABILITY[offer['availability_state']]} · {escape(str(offer.get('url') or 'ссылка не подтверждена'))}",
+                      f"SKU: {escape(sku)}", escape(specs), history_text, f"{escape(str(offer.get('source') or ''))} · {_AVAILABILITY[offer['availability_state']]} · {escape(str(offer.get('url') or 'ссылка не подтверждена'))}",
                       f"Цена/наличие: {_short_time(offer.get('price_checked_at'))} / {_short_time(offer.get('availability_checked_at'))}",
                       f"Плюс/компромисс: {reason}.")))
     if not chosen:

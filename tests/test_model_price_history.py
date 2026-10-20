@@ -102,6 +102,17 @@ def _insert_history(
     )
 
 
+
+def _legacy_picker(*args, **kwargs):
+    return build_history_picker_items(*args, confirmed_only=False, **kwargs)
+
+
+def _legacy_build_model_history_report(*args, **kwargs):
+    # Archived unbound fixtures exercise the legacy diagnostic renderer only.
+    # Production defaults and configuration evidence are covered separately.
+    return build_model_history_report(*args, confirmed_only=False, **kwargs)
+
+
 class ModelPriceHistoryTests(unittest.TestCase):
     def setUp(self) -> None:
         self._tmpdir = tempfile.TemporaryDirectory(ignore_cleanup_errors=True)
@@ -212,7 +223,7 @@ class ModelPriceHistoryTests(unittest.TestCase):
         with open_db(self.db) as conn:
             _seed_fresh_ok(conn, ["kns", "regard"], now)
             conn.commit()
-        items = build_history_picker_items(self.db, limit=10)
+        items = _legacy_picker(self.db, limit=10)
         prices = [i.price for i in items]
         self.assertTrue(prices)
         self.assertTrue(all(p <= 330_000 for p in prices))
@@ -238,19 +249,19 @@ class ModelPriceHistoryTests(unittest.TestCase):
 
     def test_4_current_best_across_stores(self) -> None:
         ids = self._seed_cluster()
-        report = build_model_history_report(self.db, ids["regard"], now=_now())
+        report = _legacy_build_model_history_report(self.db, ids["regard"], now=_now())
         self.assertEqual(report.best_now, 220_485)
         self.assertEqual(report.best_now_store, "kns")
 
     def test_5_historical_minimum_across_stores(self) -> None:
         ids = self._seed_cluster()
-        report = build_model_history_report(self.db, ids["kns"], now=_now())
+        report = _legacy_build_model_history_report(self.db, ids["kns"], now=_now())
         self.assertEqual(report.all_time_min, 206_391)
         self.assertEqual(report.all_time_min_store, "kns")
 
     def test_6_per_store_minimum(self) -> None:
         ids = self._seed_cluster()
-        report = build_model_history_report(self.db, ids["kns"], now=_now())
+        report = _legacy_build_model_history_report(self.db, ids["kns"], now=_now())
         by_store = {s.store: s for s in report.stores}
         self.assertEqual(by_store["kns"].historical_min, 206_391)
         self.assertEqual(by_store["kns"].current_price, 220_485)
@@ -290,7 +301,7 @@ class ModelPriceHistoryTests(unittest.TestCase):
                 ((_now() - timedelta(days=5)).isoformat(),),
             )
             conn.commit()
-        report = build_model_history_report(self.db, ids["kns"], now=_now())
+        report = _legacy_build_model_history_report(self.db, ids["kns"], now=_now())
         self.assertIsNone(report.best_30d_ago)
         self.assertEqual(
             format_delta_line(report.best_now, report.best_30d_ago),
@@ -299,7 +310,7 @@ class ModelPriceHistoryTests(unittest.TestCase):
 
     def test_10_historical_over_300k_preserved(self) -> None:
         ids = self._seed_cluster()
-        report = build_model_history_report(self.db, ids["kns"], now=_now())
+        report = _legacy_build_model_history_report(self.db, ids["kns"], now=_now())
         # All-time min is 206391, but 350k must still be part of history calc path
         # (min is not 350k — presence verified via step at old cutoff)
         cutoff = _now() - timedelta(days=50)
@@ -324,7 +335,7 @@ class ModelPriceHistoryTests(unittest.TestCase):
         with open_db(self.db) as conn:
             _seed_fresh_ok(conn, ["kns", "regard", "andpro", "citilink"], _now())
             conn.commit()
-        report = build_model_history_report(self.db, ids["kns"], now=_now())
+        report = _legacy_build_model_history_report(self.db, ids["kns"], now=_now())
         self.assertEqual(report.best_now, 226_840)
         self.assertEqual(report.best_now_store, "regard")
         cit = next(s for s in report.stores if s.store == "citilink")
@@ -345,17 +356,17 @@ class ModelPriceHistoryTests(unittest.TestCase):
                 error_message="boom",
             )
             conn.commit()
-        report = build_model_history_report(self.db, ids["kns"], now=_now())
+        report = _legacy_build_model_history_report(self.db, ids["kns"], now=_now())
         self.assertNotEqual(report.best_now_store, "kns")
         self.assertEqual(report.best_now, 226_840)
 
     def test_13_history_readonly_counts_unchanged(self) -> None:
         ids = self._seed_cluster()
         before = assert_history_readonly(self.db)
-        build_history_picker_items(self.db)
-        build_model_history_report(self.db, ids["kns"], now=_now())
+        _legacy_picker(self.db)
+        _legacy_build_model_history_report(self.db, ids["kns"], now=_now())
         format_model_history_message(
-            build_model_history_report(self.db, ids["kns"], now=_now())
+            _legacy_build_model_history_report(self.db, ids["kns"], now=_now())
         )
         after = assert_history_readonly(self.db)
         self.assertEqual(before, after)
@@ -364,7 +375,7 @@ class ModelPriceHistoryTests(unittest.TestCase):
             self.assertEqual(count_price_history(conn), before[1])
 
     def test_14_unknown_product_graceful(self) -> None:
-        report = build_model_history_report(self.db, 999999, now=_now())
+        report = _legacy_build_model_history_report(self.db, 999999, now=_now())
         self.assertFalse(report.found)
         msg = format_model_history_message(report)
         self.assertIn("не найдена", msg.lower())
@@ -372,7 +383,7 @@ class ModelPriceHistoryTests(unittest.TestCase):
     def test_15_message_below_size_limit(self) -> None:
         ids = self._seed_cluster()
         msg = format_model_history_message(
-            build_model_history_report(self.db, ids["kns"], now=_now())
+            _legacy_build_model_history_report(self.db, ids["kns"], now=_now())
         )
         self.assertLessEqual(len(msg), TELEGRAM_MESSAGE_SOFT_LIMIT)
         self.assertIn("ИСТОРИЯ ЦЕНЫ", msg)
@@ -387,7 +398,7 @@ class ModelPriceHistoryTests(unittest.TestCase):
 
     def test_7d_delta_from_cluster(self) -> None:
         ids = self._seed_cluster()
-        report = build_model_history_report(self.db, ids["kns"], now=_now())
+        report = _legacy_build_model_history_report(self.db, ids["kns"], now=_now())
         # At 7d ago: KNS latest <=cutoff is 229000 (10d ago), Regard 226840, etc.
         # best_7d = min(229000, 226840, 250000?, 240000) = 226840 from regard
         # ANDPRO at 25d is 250000, at 2d is 236000 — at 7d cutoff 250000

@@ -148,17 +148,20 @@ class MarketTelegramTests(unittest.TestCase):
         self.assertIn("ctrl:ptop_go", json.dumps(self.sender.sent[-1]["reply_markup"], ensure_ascii=False))
         self.assertLessEqual(max(len(item["text"]) for item in self.sender.sent), 4096)
 
-    def test_ready_result_is_shown_without_a_new_event(self) -> None:
+    def test_ready_result_does_not_suppress_explicit_refresh(self) -> None:
         self._catalog(2)
         enqueue_view_refresh(chat_id=42, view="general_top", now=NOW)
         self._run(sender=TextSender())
         pending_before = list(self.jobs.rglob("*.json"))
         client = FakeClient()
         handle_thailand_manual(client, "token", 42, compare=True)
-        self.assertEqual(list(self.jobs.rglob("*.json")), pending_before)
+        self.assertEqual(len(list(self.jobs.rglob("*.json"))), len(pending_before) + 1)
+        pending = list((self.jobs / "pending").glob("*.json"))
+        self.assertEqual(len(pending), 1)
+        self.assertEqual(json.loads(pending[0].read_text())["trigger_type"], "manual")
         shown = "\n".join(call["json"].get("text", "") for call in client.calls)
-        self.assertIn("https://example.test/th-1", shown)
-        self.assertIn("ctrl:ptop_go", json.dumps(client.calls[-1]["json"].get("reply_markup"), ensure_ascii=False))
+        self.assertIn("поставлена в очередь", shown)
+        self.assertNotIn("https://example.test/th-1", shown)
 
     def test_manual_daily_and_buy_share_scan_but_keep_distinct_daily_text(self) -> None:
         self._catalog(2)
@@ -639,7 +642,7 @@ class MarketTelegramTests(unittest.TestCase):
         deferred = json.loads((self.jobs / "deferred" / "empty-none.json").read_text(encoding="utf-8"))
         self.assertNotEqual(deferred.get("delivery_state"), "sent")
 
-    def test_menu_view_refreshes_each_part_and_does_not_enqueue(self) -> None:
+    def test_manual_compare_with_cached_result_enqueues_without_immediate_stream(self) -> None:
         import httpx
 
         fresh = NOW.isoformat()
@@ -709,10 +712,9 @@ class MarketTelegramTests(unittest.TestCase):
                 },
             })
         messages = [call["json"] for call in calls if call["url"].endswith("sendMessage")]
-        self.assertGreaterEqual(len(messages), 2)
-        self.assertNotIn("Таиланд дешевле", messages[1]["text"])
-        self.assertIn("не текущая", messages[1]["text"])
-        self.assertEqual(sorted(path.name for path in self.jobs.rglob("*.json")), before)
+        self.assertEqual(len(messages), 1)
+        self.assertIn("поставлена в очередь", messages[0]["text"])
+        self.assertEqual(len(list(self.jobs.rglob("*.json"))), len(before) + 1)
         self.assertTrue(all("api.telegram.org" in call["url"] for call in calls))
 
     def test_old_unmatched_price_is_historical_without_blaming_the_missing_pair(self) -> None:

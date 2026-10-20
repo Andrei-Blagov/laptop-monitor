@@ -4,6 +4,7 @@ from __future__ import annotations
 
 from dataclasses import dataclass, field
 from datetime import datetime, timezone
+from html import escape, unescape
 from typing import Any, Sequence
 
 import config
@@ -115,6 +116,52 @@ def _store_label(store: str | None) -> str:
     return _STORE.get(str(store or "").lower(), str(store or ""))
 
 
+def format_russian_recommendation(deal: RankedDeal) -> str:
+    """Immediate Russian-only BUY explanation from the same ranked deal as TOP."""
+    from deal_ranking import effective_deal_score
+
+    if not deal_is_eligible(deal) or not deal.url:
+        return "Модель не проходит подтверждённый фильтр покупки."
+    days = history_days_for_deal(deal)
+    mature = days is not None and days >= config.BUY_MIN_HISTORY_DAYS
+    quality, over = russian_price_quality(deal, history_mature=mature)
+    signal = evaluate_buy_rules(deal) if mature else None
+    name = escape(unescape(deal.cluster_name or "Модель"), quote=False)
+    lines = [f"<b>Стоит ли покупать: {name}</b>",
+             f"{escape(str(deal.gpu))} · {escape(str(deal.cpu or 'CPU не подтверждён'))}",
+             f"{deal.ram_gb} ГБ RAM · {deal.ssd_gb} ГБ SSD · {deal.screen_inch:g}″ {escape(str(deal.screen_resolution))}",
+             f"{_rub(deal.price)} ₽ · {escape(_store_label(deal.store))}",
+             escape(deal.url), "",
+             f"Оценка: {effective_deal_score(deal):g}/100 · подтверждение: {deal.confidence}%"]
+    if deal.historical_min is not None:
+        lines.append(f"Минимум собственной истории: {_rub(deal.historical_min)} ₽")
+        if over is not None:
+            lines.append(f"Текущая цена выше минимума на {over * 100:.1f}%")
+    else:
+        lines.append("Исторический минимум пока неизвестен.")
+    lines.append("Плюсы: " + ("; ".join(escape(unescape(str(x))) for x in deal.reasons[:3])
+                              if deal.reasons else "подтверждённые характеристики подходят."))
+    limitations = []
+    if not deal.cpu:
+        limitations.append("CPU не подтверждён")
+    if not mature:
+        limitations.append("история наблюдений короче 14 дней")
+    if not deal.historical_min:
+        limitations.append("нет проверенного минимума цены")
+    if quality == NORMAL:
+        limitations.append("цена заметно выше собственного минимума")
+    limitations.append("охлаждение и качество корпуса не подтверждены магазином")
+    lines.append("Ограничения: " + "; ".join(limitations) + ".")
+    if not deal.cpu or not mature or deal.historical_min is None:
+        verdict = "Недостаточно данных для уверенной покупки."
+    elif signal is not None:
+        verdict = "Интересное предложение по российской цене и истории."
+    else:
+        verdict = "Можно подождать следующую проверку цены."
+    lines.extend(["", f"<b>Вывод:</b> {verdict}"])
+    return "\n".join(lines)
+
+
 def format_purchase_recommendation(
     deal: RankedDeal,
     rec: Recommendation,
@@ -141,6 +188,8 @@ def format_purchase_recommendation(
     lines.append("")
     lines.append("🇷🇺 Россия")
     lines.append(f"{_rub(deal.price)} ₽ — {_store_label(deal.store)}")
+    if deal.url:
+        lines.append(escape(deal.url))
     if rec.history_min is not None:
         lines.append(f"Исторический минимум: {_rub(rec.history_min)} ₽")
     history_line = _history_quality_line(rec)

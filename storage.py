@@ -208,6 +208,8 @@ def init_db(conn: sqlite3.Connection) -> None:
             ON store_runs(store, attempted_at DESC);
         """
     )
+    if "configuration_key" not in _column_names(conn, "price_history"):
+        conn.execute("ALTER TABLE price_history ADD COLUMN configuration_key TEXT")
     _migrate_product_price_clock(conn)
     _migrate_notification_schema(conn)
     _migrate_pipeline_runs(conn)
@@ -1170,7 +1172,7 @@ def get_price_history_for_products(
     placeholders = ",".join("?" for _ in ids)
     rows = conn.execute(
         f"""
-        SELECT id, product_id, price, available, checked_at
+        SELECT *
         FROM price_history
         WHERE product_id IN ({placeholders})
         ORDER BY product_id ASC, checked_at ASC, id ASC
@@ -1265,17 +1267,19 @@ def read_market_rows_consistent(db_path: Path | str) -> MarketRows:
 def get_previous_price(
     conn: sqlite3.Connection,
     product_id: int,
+    configuration_key: str | None = None,
 ) -> int | None:
     """Цена предыдущего наблюдения (вторая с конца). None если истории < 2."""
     rows = conn.execute(
-        """
+        f"""
         SELECT price
         FROM price_history
         WHERE product_id = ?
+        {"AND configuration_key = ?" if configuration_key is not None else ""}
         ORDER BY checked_at DESC, id DESC
         LIMIT 2
         """,
-        (product_id,),
+        (product_id, configuration_key) if configuration_key is not None else (product_id,),
     ).fetchall()
     if len(rows) < 2:
         return None
@@ -1286,19 +1290,21 @@ def get_previous_price(
 def get_historical_min_before_current(
     conn: sqlite3.Connection,
     product_id: int,
+    configuration_key: str | None = None,
 ) -> int | None:
     """
     Минимум цен до текущего (последнего) наблюдения.
     None если нет предыдущих ценовых точек.
     """
     rows = conn.execute(
-        """
+        f"""
         SELECT price
         FROM price_history
         WHERE product_id = ?
+        {"AND configuration_key = ?" if configuration_key is not None else ""}
         ORDER BY checked_at DESC, id DESC
         """,
-        (product_id,),
+        (product_id, configuration_key) if configuration_key is not None else (product_id,),
     ).fetchall()
     if len(rows) < 2:
         return None

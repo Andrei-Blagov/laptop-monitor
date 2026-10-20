@@ -534,6 +534,7 @@ def build_price_history_chart(
     period: PeriodKey,
     *,
     now: datetime | None = None,
+    confirmed_only: bool = True,
 ) -> ChartResult:
     """Read-only chart builder. Never writes DB / never raises to caller."""
     now_u = _as_utc(now or datetime.now(timezone.utc))
@@ -544,7 +545,12 @@ def build_price_history_chart(
                 error="Некорректный период.",
                 product_id=int(product_id),
             )
-        match, histories, product = _load_match_and_histories(db_path, product_id)
+        if confirmed_only:
+            from confirmed_history import load_model_history
+            match, histories = load_model_history(db_path, product_id)
+            product = get_product_by_id_readonly(db_path, product_id)
+        else:
+            match, histories, product = _load_match_and_histories(db_path, product_id)
         if product is None or match is None:
             return ChartResult(
                 ok=False,
@@ -567,7 +573,7 @@ def build_price_history_chart(
                 period=period,
             )
 
-        report = build_model_history_report(db_path, product_id, now=now_u)
+        report = build_model_history_report(db_path, product_id, now=now_u, confirmed_only=confirmed_only)
         show_fresh = (
             not report.stale_current
             and report.best_now is not None

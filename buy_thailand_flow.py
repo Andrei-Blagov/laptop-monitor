@@ -11,6 +11,7 @@ from buy_opportunity import (
     DEFAULT_STATE_PATH,
     BuySignal,
     record_signal_enqueue_failed,
+    record_signal,
     record_signal_enqueued,
     record_thailand_job_completed,
     record_thailand_retry_result,
@@ -147,6 +148,7 @@ def evaluate_buy_opportunity_flow(
     jobs_dir: Path | str | None = None,
     source_pipeline_run_id: int | None = None,
     instance_id: str | None = None,
+    enqueue_thailand: bool = True,
 ) -> dict[str, Any]:
     """
     Evaluate BUY / STRONG_BUY, send Russian BUY message, enqueue Thailand job.
@@ -181,7 +183,7 @@ def evaluate_buy_opportunity_flow(
         out["buy_actionable"] = len(actionable)
 
         if not actionable:
-            retry = select_thailand_retry(all_signals, state)
+            retry = select_thailand_retry(all_signals, state) if enqueue_thailand else None
             if retry is not None:
                 _retry_thailand_enqueue(
                     retry,
@@ -196,6 +198,32 @@ def evaluate_buy_opportunity_flow(
 
         primary = actionable[0]
         job_id: str | None = None
+
+        if not enqueue_thailand:
+            with_state(lambda st: record_signal(st, primary, thailand_scanned=False,
+                                                top1_key=top1_key), state_path)
+            text = format_buy_opportunity_message(primary)
+            out["messages"] = [text]
+            if deliver:
+                transport = sender
+                owns = False
+                if transport is None:
+                    try:
+                        token, chat = config.get_telegram_credentials()
+                        transport = TelegramSender(token, str(chat))
+                        owns = True
+                    except Exception:
+                        transport = None
+                if transport is not None:
+                    try:
+                        sent = transport.send_message(text)
+                        out["messages_sent" if getattr(sent, "ok", False) else "messages_failed"] += 1
+                    except Exception:
+                        out["messages_failed"] += 1
+                    finally:
+                        if owns:
+                            transport.close()
+            return out
 
         # Build + enqueue job BEFORE Telegram so message note is accurate.
         enq = _safe_enqueue(

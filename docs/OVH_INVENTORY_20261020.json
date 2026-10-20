@@ -1,0 +1,281 @@
+{
+  "checked_at": "2026-10-20T06:25:25.954346+00:00",
+  "source": "https://github.com/Andrei-Blagov/infra-ops/actions/runs/39380246276",
+  "resources_modified": false,
+  "free_root_bytes": 15343366144,
+  "production": "0.12.1",
+  "production_files_match": true,
+  "images": [
+    {
+      "Id": "sha256:fcfddd74df2a52a89f4456f3edb42ac5ae9a1bc46c75749d911e5ebdc1eff218",
+      "RepoTags": [
+        "lm-pr19:39376742146"
+      ],
+      "RepoDigests": [
+        "lm-pr19@sha256:fcfddd74df2a52a89f4456f3edb42ac5ae9a1bc46c75749d911e5ebdc1eff218"
+      ],
+      "Size": 901665149,
+      "SharedSize": 285857792,
+      "Containers": 0,
+      "Created": 1792475254
+    },
+    {
+      "Id": "sha256:64f4f8311c4283a02e0beeb4337a3f63b8c826576141cc7a15196c4f0cca8ade",
+      "RepoTags": [
+        "laptop-monitor:0.12.1"
+      ],
+      "RepoDigests": [
+        "laptop-monitor@sha256:64f4f8311c4283a02e0beeb4337a3f63b8c826576141cc7a15196c4f0cca8ade"
+      ],
+      "Size": 2725250310,
+      "SharedSize": 285857792,
+      "Containers": 1,
+      "Created": 1792402425
+    },
+    {
+      "Id": "sha256:4f5d628a0d33d1aca8b86b327ef554a59af09e334cba10d5fbea98b8900dff62",
+      "RepoTags": [
+        "laptop-monitor:0.12.0"
+      ],
+      "RepoDigests": [
+        "laptop-monitor@sha256:4f5d628a0d33d1aca8b86b327ef554a59af09e334cba10d5fbea98b8900dff62"
+      ],
+      "Size": 2725242118,
+      "SharedSize": 285857792,
+      "Containers": 0,
+      "Created": 1792314516
+    },
+    {
+      "Id": "sha256:aca1213d08ab757483de2cfee449a77235b083ff87e7ceeaf4e5e9ab3278ec7c",
+      "RepoTags": [
+        "laptop-monitor:0.11.1"
+      ],
+      "RepoDigests": [
+        "laptop-monitor@sha256:aca1213d08ab757483de2cfee449a77235b083ff87e7ceeaf4e5e9ab3278ec7c"
+      ],
+      "Size": 2725067525,
+      "SharedSize": 285857792,
+      "Containers": 0,
+      "Created": 1792236482
+    },
+    {
+      "Id": "sha256:640a40e86f70adc6359f5cece78a6ab876e8126653f429d79eecd87f2c7e1f72",
+      "RepoTags": [
+        "laptop-monitor:0.11.0"
+      ],
+      "RepoDigests": [
+        "laptop-monitor@sha256:640a40e86f70adc6359f5cece78a6ab876e8126653f429d79eecd87f2c7e1f72"
+      ],
+      "Size": 2725048070,
+      "SharedSize": 285857792,
+      "Containers": 0,
+      "Created": 1792220410
+    },
+    {
+      "Id": "sha256:35a7e0882bbdeb5a0e2e85116eb7e7401ad78cd78c518381a548789730805ba3",
+      "RepoTags": [
+        "laptop-monitor-stage21-d189cea:latest"
+      ],
+      "RepoDigests": [
+        "laptop-monitor-stage21-d189cea@sha256:35a7e0882bbdeb5a0e2e85116eb7e7401ad78cd78c518381a548789730805ba3"
+      ],
+      "Size": 1842919536,
+      "SharedSize": 1839746734,
+      "Containers": 0,
+      "Created": 1791974486
+    },
+    {
+      "Id": "sha256:503eb045d9aa1d75107a28da04ddc6ba99ede2020ed2d7a83640bca67e56905d",
+      "RepoTags": [
+        "laptop-monitor-stage21-c0952f2:latest"
+      ],
+      "RepoDigests": [
+        "laptop-monitor-stage21-c0952f2@sha256:503eb045d9aa1d75107a28da04ddc6ba99ede2020ed2d7a83640bca67e56905d"
+      ],
+      "Size": 1842899335,
+      "SharedSize": 1839746734,
+      "Containers": 0,
+      "Created": 1791960786
+    },
+    {
+      "Id": "sha256:9fd45a437557926059e51547cc48ccbaa13a774bcf6b50ff614e88037a6cac14",
+      "RepoTags": [
+        "laptop-monitor-stage1-61352e5:latest"
+      ],
+      "RepoDigests": [
+        "laptop-monitor-stage1-61352e5@sha256:9fd45a437557926059e51547cc48ccbaa13a774bcf6b50ff614e88037a6cac14"
+      ],
+      "Size": 1842867183,
+      "SharedSize": 1839746476,
+      "Containers": 0,
+      "Created": 1791951984
+    },
+    {
+      "Id": "sha256:5f9a2569edd6b60ca1e50bfbbff3aba816224b8d0de8ce932bfd40fbb041e9ac",
+      "RepoTags": [
+        "laptop-monitor-stage1:latest"
+      ],
+      "RepoDigests": [
+        "laptop-monitor-stage1@sha256:5f9a2569edd6b60ca1e50bfbbff3aba816224b8d0de8ce932bfd40fbb041e9ac"
+      ],
+      "Size": 1842867520,
+      "SharedSize": 1839746476,
+      "Containers": 0,
+      "Created": 1791906948
+    },
+    {
+      "Id": "sha256:35462e1fa34341e3499e7c7216e79d74855f25eb2a69034ee55dd118d04d1923",
+      "RepoTags": [
+        "laptop-monitor:stage1-a7e4524"
+      ],
+      "RepoDigests": [
+        "laptop-monitor@sha256:35462e1fa34341e3499e7c7216e79d74855f25eb2a69034ee55dd118d04d1923"
+      ],
+      "Size": 1842947960,
+      "SharedSize": 197103533,
+      "Containers": 0,
+      "Created": 1791906761
+    },
+    {
+      "Id": "sha256:803b96c8943a61062d9df24161d51e95b02e0c25d8cf624f4eea3c4d56df401d",
+      "RepoTags": [
+        "laptop-monitor:0.5.2"
+      ],
+      "RepoDigests": [
+        "laptop-monitor@sha256:803b96c8943a61062d9df24161d51e95b02e0c25d8cf624f4eea3c4d56df401d"
+      ],
+      "Size": 1836131864,
+      "SharedSize": 191097792,
+      "Containers": 0,
+      "Created": 1791174855
+    },
+    {
+      "Id": "sha256:02b0e65ff4dde34b135f0bfca05484c4f2990bc437b865ac0beddececda9e9d2",
+      "RepoTags": [
+        "laptop-monitor:0.5.1"
+      ],
+      "RepoDigests": [
+        "laptop-monitor@sha256:02b0e65ff4dde34b135f0bfca05484c4f2990bc437b865ac0beddececda9e9d2"
+      ],
+      "Size": 1835948045,
+      "SharedSize": 191097792,
+      "Containers": 0,
+      "Created": 1791119329
+    },
+    {
+      "Id": "sha256:c3dfd5b2f21034cd55335b5954a2b5592b331d89dfe2a95886590353df9d622d",
+      "RepoTags": [
+        "laptop-monitor:0.5.0"
+      ],
+      "RepoDigests": [
+        "laptop-monitor@sha256:c3dfd5b2f21034cd55335b5954a2b5592b331d89dfe2a95886590353df9d622d"
+      ],
+      "Size": 1835816352,
+      "SharedSize": 191097792,
+      "Containers": 0,
+      "Created": 1791113646
+    },
+    {
+      "Id": "sha256:c83d0168e8e09a6487da21c5d069ab2df624b312a41a08be7476f494764da967",
+      "RepoTags": [
+        "laptop-monitor:0.4.0"
+      ],
+      "RepoDigests": [
+        "laptop-monitor@sha256:c83d0168e8e09a6487da21c5d069ab2df624b312a41a08be7476f494764da967"
+      ],
+      "Size": 1835381509,
+      "SharedSize": 191097792,
+      "Containers": 0,
+      "Created": 1791108677
+    },
+    {
+      "Id": "sha256:665a098c5eb5720babfb5f7ee9e1cf7bf47314edd4e70808522ebfb357f1dd33",
+      "RepoTags": [
+        "laptop-monitor:0.4.0-test"
+      ],
+      "RepoDigests": [
+        "laptop-monitor@sha256:665a098c5eb5720babfb5f7ee9e1cf7bf47314edd4e70808522ebfb357f1dd33"
+      ],
+      "Size": 1835440847,
+      "SharedSize": 191085116,
+      "Containers": 0,
+      "Created": 1791108226
+    },
+    {
+      "Id": "sha256:941e97d9bf21d8ccb0b0c3a8e4cf879c811a7712a64bc86712696c84706d2f2a",
+      "RepoTags": [
+        "laptop-monitor:0.3.0"
+      ],
+      "RepoDigests": [
+        "laptop-monitor@sha256:941e97d9bf21d8ccb0b0c3a8e4cf879c811a7712a64bc86712696c84706d2f2a"
+      ],
+      "Size": 1835309960,
+      "SharedSize": 191097791,
+      "Containers": 0,
+      "Created": 1791104027
+    },
+    {
+      "Id": "sha256:d7b666a9e6c83bee78924c13c78548685426bd19b5c940368ec563306caf9c83",
+      "RepoTags": [
+        "laptop-monitor:0.2.0"
+      ],
+      "RepoDigests": [
+        "laptop-monitor@sha256:d7b666a9e6c83bee78924c13c78548685426bd19b5c940368ec563306caf9c83"
+      ],
+      "Size": 1835309627,
+      "SharedSize": 191097791,
+      "Containers": 0,
+      "Created": 1791103325
+    }
+  ],
+  "release_directories": [
+    {
+      "root": "/var/lib/laptop-acceptance-38904681983",
+      "logical_file_bytes": 37577,
+      "allocated_unique_inode_bytes": 53248
+    },
+    {
+      "root": "/var/lib/laptop-acceptance-recovery-38925872048",
+      "logical_file_bytes": 133087,
+      "allocated_unique_inode_bytes": 159744
+    },
+    {
+      "root": "/var/lib/laptop-release-0.11.0",
+      "logical_file_bytes": 513909037,
+      "allocated_unique_inode_bytes": 514187264
+    },
+    {
+      "root": "/var/lib/laptop-release-0.11.1",
+      "logical_file_bytes": 516329004,
+      "allocated_unique_inode_bytes": 516718592
+    },
+    {
+      "root": "/var/lib/laptop-release-0.12.0",
+      "logical_file_bytes": 534555784,
+      "allocated_unique_inode_bytes": 534962176
+    },
+    {
+      "root": "/var/lib/laptop-release-0.12.1",
+      "logical_file_bytes": 548840601,
+      "allocated_unique_inode_bytes": 549310464
+    }
+  ],
+  "failed_stage": [
+    {
+      "path": "/var/tmp/lm-pr19-39376742146",
+      "bytes": 4096,
+      "allocated_bytes": 4096,
+      "inode": 788,
+      "dev": 2049,
+      "uid": 1001,
+      "gid": 1001,
+      "mode": "0o700",
+      "nlink": 4,
+      "kind": "directory",
+      "mtime": "2026-10-20T05:49:23.142570+00:00"
+    }
+  ],
+  "recovery_archive_bytes": 439571456,
+  "recovery_archive_sha256": "f0ff205ede0c9fb20b5a88e042f57235618e533889128375ae6ef74d715f453f",
+  "removed": []
+}

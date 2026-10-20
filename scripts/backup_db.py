@@ -79,9 +79,12 @@ def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(description="Private full-state backup from a read-only mount")
     parser.add_argument("--source", default="/source")
     parser.add_argument("--out-dir", default="/backup")
+    parser.add_argument("--keep", type=int, default=7, help="Verified full daily copies to retain (minimum 2; enable 2 only after restore/dependency review)")
     args = parser.parse_args(argv)
+    if args.keep < 2:
+        parser.error("--keep must be at least 2")
     path = create_backup(args.source, args.out_dir)
-    retained = retain_daily(args.out_dir, keep=7)
+    retained = retain_daily(args.out_dir, keep=args.keep)
     print(f"Full backup integrity PASS: {path.name}; kept={retained['kept']}; removed={len(retained['removed'])}; unknown preserved={len(retained['skipped'])}")
     return 0
 

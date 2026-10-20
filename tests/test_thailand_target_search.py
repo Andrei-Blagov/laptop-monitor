@@ -439,7 +439,7 @@ class PickerTests(unittest.TestCase):
         self.assertIn("5070 Ti", label)
         self.assertIn("257 540", label)
         self.assertNotIn("TS113W", label)
-        self.assertLessEqual(len(CALLBACK_MODEL_PICK + model_callback_token(deal.cluster_name)), 64)
+        self.assertLessEqual(len(CALLBACK_MODEL_PICK + model_callback_token(deal)), 64)
 
     def test_long_name_is_shortened_and_sku_only_falls_back(self) -> None:
         long_name = "Ноутбук " + ("Gigabyte Aorus " * 8) + "DYJG3KZBC4SD"
@@ -452,10 +452,13 @@ class PickerTests(unittest.TestCase):
         self.assertIn("DYJG3KZBC4SD", picker_button_label(bare, 2))
 
     def test_duplicate_clusters_collapse(self) -> None:
-        first = _deal(cluster_name="ASUS ROG Strix G16")
-        second = _deal(cluster_name="ASUS ROG Strix G16", price=240000)
-        other = _deal(cluster_name="MSI Vector 16", offer={"sku": "9S7-17S372-240", "mpn": "9S7-17S372-240"})
-        with patch("russian_deals.load_russian_ranked_deals", return_value=[first, second, other]):
+        first = _deal(cluster_name="ASUS ROG Strix G16", ram_gb=32)
+        second = _deal(cluster_name="ASUS ROG Strix G16", ram_gb=32)
+        other = _deal(cluster_name="MSI Vector 16", ram_gb=32, offer={"external_id": "2", "sku": "9S7-17S372-240", "mpn": "9S7-17S372-240"})
+        from tests.test_telegram_ru_simplify import confirmed_quotes
+        with patch("russian_deals.load_russian_ranked_deals", return_value=[first, second, other]), patch(
+            "control_bot._confirmed_russian_quotes", return_value=confirmed_quotes([first, other])
+        ):
             deals = unique_russian_top("unused.db", limit=10)
         self.assertEqual([d.cluster_name for d in deals], ["ASUS ROG Strix G16", "MSI Vector 16"])
 
@@ -502,7 +505,7 @@ class PickerTests(unittest.TestCase):
             "buy_thailand_flow.enqueue_model_thailand_job",
             return_value={"ok": True, "thailand_job_id": "abc"},
         ) as enq, patch("thailand.scanner.run_thailand_scan") as scan:
-            handle_thailand_model_pick(MagicMock(), "t", 1, model_callback_token(deal.cluster_name))
+            handle_thailand_model_pick(MagicMock(), "t", 1, model_callback_token(deal))
         enq.assert_called_once()
         scan.assert_not_called()
         text = send.call_args.args[3]
@@ -510,7 +513,7 @@ class PickerTests(unittest.TestCase):
         self.assertIn("ASUS ROG Strix", text)
         self.assertIn("5070 Ti", text)
         self.assertIn("220 000", text)
-        self.assertNotIn(model_callback_token(deal.cluster_name), text)
+        self.assertNotIn(model_callback_token(deal), text)
 
 
 class RateLimitTests(unittest.TestCase):

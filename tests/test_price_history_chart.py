@@ -111,6 +111,13 @@ def _counts(db: Path) -> tuple[int, int, int, int]:
         )
 
 
+
+def _legacy_build_price_history_chart(*args, **kwargs):
+    # Archived unbound fixtures exercise the legacy diagnostic renderer only.
+    # Production defaults and configuration evidence are covered separately.
+    return build_price_history_chart(*args, confirmed_only=False, **kwargs)
+
+
 class PriceHistoryChartTests(unittest.TestCase):
     def setUp(self) -> None:
         self._tmpdir = tempfile.TemporaryDirectory(ignore_cleanup_errors=True)
@@ -351,7 +358,7 @@ class PriceHistoryChartTests(unittest.TestCase):
     # --- 14–16 prices / multi-store ---
     def test_14_historical_over_300k_retained(self) -> None:
         ids = self._seed_cluster()
-        result = build_price_history_chart(self.db, ids["kns"], "all", now=_now())
+        result = _legacy_build_price_history_chart(self.db, ids["kns"], "all", now=_now())
         self.assertTrue(result.ok)
         assert result.png is not None
         # Series must include 350k in constructed segments path
@@ -416,7 +423,7 @@ class PriceHistoryChartTests(unittest.TestCase):
     # --- 17–20 PNG / no-data / figures ---
     def test_17_png_signature(self) -> None:
         ids = self._seed_cluster()
-        result = build_price_history_chart(self.db, ids["kns"], "30", now=_now())
+        result = _legacy_build_price_history_chart(self.db, ids["kns"], "30", now=_now())
         self.assertTrue(result.ok)
         assert result.png is not None
         self.assertTrue(result.png.startswith(PNG_SIGNATURE))
@@ -453,7 +460,7 @@ class PriceHistoryChartTests(unittest.TestCase):
                 (pid,),
             )
             conn.commit()
-        result = build_price_history_chart(self.db, pid, "30", now=_now())
+        result = _legacy_build_price_history_chart(self.db, pid, "30", now=_now())
         self.assertFalse(result.ok)
         self.assertIsNone(result.png)
         self.assertIn("Недостаточно данных", result.error or "")
@@ -524,15 +531,15 @@ class PriceHistoryChartTests(unittest.TestCase):
         ids = self._seed_cluster()
         before = _counts(self.db)
         hist_before = assert_history_readonly(self.db)
-        build_price_history_chart(self.db, ids["kns"], "30", now=_now())
-        build_price_history_chart(self.db, ids["kns"], "90", now=_now())
-        build_price_history_chart(self.db, ids["kns"], "all", now=_now())
+        _legacy_build_price_history_chart(self.db, ids["kns"], "30", now=_now())
+        _legacy_build_price_history_chart(self.db, ids["kns"], "90", now=_now())
+        _legacy_build_price_history_chart(self.db, ids["kns"], "all", now=_now())
         after = _counts(self.db)
         self.assertEqual(before, after)
         self.assertEqual(hist_before, assert_history_readonly(self.db))
 
     def test_25_unknown_product_graceful(self) -> None:
-        result = build_price_history_chart(self.db, 999999, "30", now=_now())
+        result = _legacy_build_price_history_chart(self.db, 999999, "30", now=_now())
         self.assertFalse(result.ok)
         self.assertIsNone(result.png)
         self.assertIn("не найдена", (result.error or "").lower())

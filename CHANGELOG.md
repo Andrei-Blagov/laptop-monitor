@@ -1,5 +1,13 @@
 # Changelog
 
+## 0.12.2 — candidate (not deployed)
+
+- Russian TOP/daily cards: SKU, confirmed configuration price minimum and 7/30-day changes.
+- Configuration-bound price observations and alert comparisons; legacy history preserved without retrospective attribution.
+- Telegram history and charts use confirmed configurations; partial store failures remain isolated.
+- Full-state retention accepts an explicit minimum of two verified copies; default seven remains during observation. Docker log rotation remains 10 MB × 3.
+- Includes PR19 manual-run recovery, stable TOP buttons and F1-R1 snapshot consistency fixes.
+
 ## Unreleased
 
 ## 0.12.0 — 2026-10-18

@@ -465,6 +465,11 @@ def rank_prepared_matches(
     exclusions: list[dict[str, Any]] | None = None,
 ) -> list[RankedDeal]:
     """Full ranked list. Callers apply TOP_DEALS_LIMIT themselves."""
+    from confirmed_history import configuration_key, select_history
+    histories = {int(offer.product_id): select_history(
+        histories.get(int(offer.product_id), ()),
+        configuration_key(offer.sku, _offer_specs(offer, specs_by_key)),
+    ) for match in matches for offer in match.offers if offer.product_id is not None}
     return rank_clusters(
         matches,
         specs_by_key=specs_by_key,
