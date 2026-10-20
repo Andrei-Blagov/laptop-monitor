@@ -1,0 +1,10 @@
+{
+  "version": "0.12.2",
+  "source_sha": "02acefe01e816140e333169a3d0f3f6c78c0fa2e",
+  "deployment_run": 39386982308,
+  "acceptance_run": 39388558332,
+  "acceptance_artifact": 12248512092,
+  "acceptance_artifact_sha256": "ceb8bdeb9e49d4ade5c9964b1a8992649e8f320b23de1f56c9832e16016fa675",
+  "owner_approval": "explicit yes 2026-10-20",
+  "status": "PASS"
+}
