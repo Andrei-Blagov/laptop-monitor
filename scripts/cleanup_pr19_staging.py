@@ -130,6 +130,25 @@ def production():
             'restarts': obj['RestartCount']}
 
 
+
+def remove_stage(inventory, root=ROOT):
+    # Anchor each removal to the validated directory inode, even if another
+    # process renames/replaces the path between the preflight and unlink.
+    fd = os.open(root, os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW)
+    try:
+        st = os.fstat(fd)
+        require((st.st_dev, st.st_ino) == (inventory['device'], inventory['inode']), 'stage replaced before removal')
+        archive = os.stat('candidate.tar', dir_fd=fd, follow_symlinks=False)
+        require(stat.S_ISREG(archive.st_mode) and archive.st_ino == inventory['archive_inode'], 'archive replaced before removal')
+        os.rmdir('data', dir_fd=fd)
+        os.rmdir('evidence', dir_fd=fd)
+        os.unlink('candidate.tar', dir_fd=fd)
+        current = root.lstat()
+        require((current.st_dev, current.st_ino) == (st.st_dev, st.st_ino), 'stage path changed; root preserved')
+        root.rmdir()
+    finally:
+        os.close(fd)
+
 def main(argv=None):
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument('--apply', action='store_true')
@@ -160,10 +179,7 @@ def main(argv=None):
             require(tree() == inventory and digest(ROOT/'candidate.tar') == ARCHIVE, 'stage changed before deletion')
             references()
             # Non-recursive removal: a new child makes rmdir fail, never disappear.
-            (ROOT/'data').rmdir()
-            (ROOT/'evidence').rmdir()
-            (ROOT/'candidate.tar').unlink()
-            ROOT.rmdir()
+            remove_stage(inventory)
             report['removed'].append(str(ROOT))
     except Exception as exc:
         report['status'] = 'FAILED'

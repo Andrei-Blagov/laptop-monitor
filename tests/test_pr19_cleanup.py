@@ -31,6 +31,27 @@ class CleanupOwnershipTests(unittest.TestCase):
             with self.subTest(field=field), self.assertRaises(RuntimeError):
                 cleanup.image_owned(image, config)
 
+    def test_removal_refuses_replaced_root_and_preserves_unknown_children(self):
+        import tempfile
+        from pathlib import Path
+        for replace in (True, False):
+            with tempfile.TemporaryDirectory() as folder:
+                root=Path(folder)/'stage';root.mkdir()
+                (root/'data').mkdir();(root/'evidence').mkdir()
+                (root/'candidate.tar').write_bytes(b'archive')
+                st=root.stat()
+                inv={'device':st.st_dev,'inode':st.st_ino,'archive_inode':(root/'candidate.tar').stat().st_ino}
+                if replace:
+                    original=Path(folder)/'original';root.rename(original)
+                    root.symlink_to(original, target_is_directory=True)
+                    with self.assertRaises(OSError):cleanup.remove_stage(inv, root)
+                    self.assertTrue((original/'candidate.tar').exists())
+                else:
+                    (root/'data'/'unknown').write_text('preserve')
+                    with self.assertRaises(OSError):cleanup.remove_stage(inv, root)
+                    self.assertTrue((root/'data'/'unknown').exists())
+                    self.assertTrue((root/'candidate.tar').exists())
+
     def test_default_is_inventory_without_mutations(self):
         import json
         image, config = self.image()
