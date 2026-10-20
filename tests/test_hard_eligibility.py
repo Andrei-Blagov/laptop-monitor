@@ -585,7 +585,7 @@ class SingleStoreRankingTests(unittest.TestCase):
         self.assertIsNone(deal.saving_vs_next)
         self.assertIsNone(deal.next_store)
         self.assertEqual(deal.score_breakdown["saving"], 0.0)
-        self.assertIsNotNone(deal.history_started_at)
+        self.assertIsNone(deal.history_started_at)  # Legacy prices are preserved, not retrospectively attributed.
 
     def test_single_store_must_pass_filters(self) -> None:
         deals, exclusions = self._deals(
@@ -692,10 +692,11 @@ class ProvenIdentityMergeTests(SingleStoreRankingTests):
             ).fetchone()
             conn.execute(
                 """
-                INSERT INTO price_history (product_id, price, available, checked_at)
-                VALUES (?, ?, ?, ?)
+                INSERT INTO price_history (product_id, price, available, checked_at, configuration_key)
+                VALUES (?, ?, ?, ?, ?)
                 """,
-                (int(citi["id"]), 250_000, 1, older.isoformat()),
+                (int(citi["id"]), 250_000, 1, older.isoformat(),
+                 __import__("confirmed_history").configuration_key("CITILINK-c1", vars(deal))),
             )
         merges: list[dict] = []
         from russian_deals import load_russian_ranked_deals

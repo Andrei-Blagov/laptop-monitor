@@ -46,7 +46,7 @@ PRODUCTION_DB = Path(DEFAULT_DB_PATH).resolve()
 
 
 def _now(offset_sec: int = 0) -> datetime:
-    return datetime.now(timezone.utc) + timedelta(seconds=offset_sec)
+    return datetime.now(timezone.utc) + timedelta(seconds=offset_sec - 60)
 
 
 def _product(
@@ -93,6 +93,14 @@ class PipelineTests(unittest.TestCase):
             self.db_path,
         )
 
+        # This fixture represents previously evidenced observations. Legacy
+        # unbound prices are deliberately not used by production alerts.
+        from confirmed_history import configuration_key
+        key = configuration_key("SKU-1", dict(gpu="RTX 5070 Ti", cpu=None,
+            ram_gb=32, ssd_gb=1024, screen_inch=16, screen_resolution="2560x1600"))
+        with open_db(self.db_path) as conn:
+            conn.execute("UPDATE price_history SET configuration_key=?", (key,))
+
     def _fetchers(self, regard_price: int = 250_000, andpro_price: int = 240_000):
         def regard():
             return [
@@ -136,6 +144,33 @@ class PipelineTests(unittest.TestCase):
         )
         defaults.update(kwargs)
         return run_pipeline(**defaults)
+
+    def test_kns_and_andpro_failures_do_not_block_other_confirmed_stores(self):
+        from types import SimpleNamespace
+        from collection import collect_products
+        from market_snapshot import load_russian_market_snapshot
+        from thai_catalog import russian_offer_views
+        for failed in ("kns", "andpro"):
+            calls = []
+            def fetch(store):
+                calls.append(store)
+                if store == failed:
+                    raise RuntimeError("fixture store unavailable")
+                return [_product(store=store, external_id=store, sku="SKU-"+store, price=220000)]
+            adapters = [SimpleNamespace(slug=slug) for slug in ("regard", "kns", "andpro")]
+            def collect(**_kwargs):
+                return collect_products(adapters=adapters,
+                    fetchers={a.slug: (lambda slug=a.slug: fetch(slug)) for a in adapters})
+            with self.subTest(failed=failed), patch("run_pipeline.collect_products", side_effect=collect):
+                result = self._run(deliver=False)
+                self.assertEqual(result.status, PIPELINE_STATUS_PARTIAL)
+                self.assertEqual(set(calls), {"regard", "kns", "andpro"})
+                self.assertEqual(result.store_statuses[failed]["status"], "failed")
+                accepted, _ = russian_offer_views(load_russian_market_snapshot(self.root/"russian_market"),
+                                                  now=datetime.now(timezone.utc))
+                sources = {row["offers"][0]["source"] for row in accepted}
+                self.assertNotIn(failed, sources)
+                self.assertEqual(sources, {"regard", "kns", "andpro"} - {failed})
 
     def test_full_success(self) -> None:
         self._seed_history()
@@ -306,6 +341,13 @@ class PipelineTests(unittest.TestCase):
             ],
             self.db_path,
         )
+
+        from confirmed_history import configuration_key
+        key = configuration_key("SKU-2", dict(gpu="RTX 5070 Ti", cpu=None,
+            ram_gb=32, ssd_gb=1024, screen_inch=16, screen_resolution="2560x1600"))
+        with open_db(self.db_path) as conn:
+            conn.execute("UPDATE price_history SET configuration_key=? WHERE product_id IN "
+                         "(SELECT id FROM products WHERE sku='SKU-2')", (key,))
 
         def regard():
             return [

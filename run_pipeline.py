@@ -311,9 +311,16 @@ def run_pipeline(
             )
             return finish(PIPELINE_STATUS_FAILED, EXIT_FAILED, notify_n8n=True)
 
+        # Bind new price points to the same evidence gate as TOP/daily before alerts.
+        confirmed = _publish_russian_market_snapshot(
+            db_path, result, specs_path=specs_path, snapshot_root=russian_snapshot_root,
+            pipeline_run_id=run_id, lock_path=lock_path, pipeline_lock_held=use_lock,
+        )
+
         # --- MONITOR / ALERTS ---
         try:
             mon_kwargs: dict[str, Any] = {
+                "confirmed_offers": confirmed,
                 "fresh_stores": fresh_stores,
                 "product_store_filter": fresh_stores,
             }
@@ -398,9 +405,8 @@ def run_pipeline(
         try:
             from buy_opportunity import DEFAULT_STATE_PATH as BUY_STATE_PATH
             from buy_thailand_flow import evaluate_buy_opportunity_flow
-            from russian_deals import load_russian_ranked_deals
-
-            deals = load_russian_ranked_deals(db_path, specs_path=specs_path)
+            from control_bot import unique_russian_top
+            deals = unique_russian_top(db_path, specs_path=specs_path)
             buy_flow = evaluate_buy_opportunity_flow(
                 russian_deals=deals,
                 sender=sender if deliver else None,
@@ -477,8 +483,8 @@ def _publish_russian_market_snapshot(
     pipeline_run_id: int | None,
     lock_path: Path | str,
     pipeline_lock_held: bool,
-) -> None:
-    """Publish the full Russian snapshot. Never changes the Russian run status."""
+) -> dict:
+    """Publish and record evidenced prices. Failure suppresses purchasing alerts."""
     try:
         from market_snapshot import export_russian_market_snapshot
 
@@ -498,9 +504,13 @@ def _publish_russian_market_snapshot(
         )
         result.russian_snapshot_id = str(manifest.get("snapshot_id") or "") or None
         result.russian_snapshot_status = "published"
+        from market_snapshot import load_russian_market_snapshot
+        from confirmed_history import save_confirmed_prices
+        return save_confirmed_prices(db_path, load_russian_market_snapshot(root))
     except Exception:
         traceback.print_exc()
         result.russian_snapshot_status = "export_failed"
+        return {}
 
 
 def _maybe_notify_n8n(

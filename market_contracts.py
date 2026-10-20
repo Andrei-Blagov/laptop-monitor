@@ -139,6 +139,7 @@ class Offer:
     seller_trust: str = 'unknown'
     price_verified_for_variant: bool = False
     nominal_ssd_gb: int | None = None
+    price_history: Mapping[str, Any] = field(default_factory=dict)
 
     def value(self, key: str, now: datetime) -> Any:
         entry = self.specs.get(key, SpecField())
@@ -161,7 +162,7 @@ class Offer:
                 'identifiers': list(self.identifiers), 'specs': {k: v.to_dict() for k, v in self.specs.items()},
                 'known_extras': {k: v.to_dict() for k, v in self.extras.items()},
                 'identity_evidence': {k: v.to_dict() for k, v in self.identities.items()},
-                'name': self.name, 'url': self.url}
+                'name': self.name, 'url': self.url, 'price_history': dict(self.price_history)}
 
 
 @dataclass(frozen=True)
@@ -334,7 +335,7 @@ def _snapshot(raw: Mapping[str, Any], market: str, identity_evidence: Mapping[st
             r.get('model_id'), r.get('variant_id'), name, r.get('source_url') or r.get('url'),
             'direct_retailer' if market == 'RU' else str(r.get('seller_trust') or 'unknown'),
             market == 'RU' or r.get('price_verified_for_variant') is True,
-            r.get('nominal_ssd_gb')))
+            r.get('nominal_ssd_gb'), MappingProxyType(dict(r.get('price_history') or {}))))
     if len({s.source for s in coverage}) != len(coverage) or any(not s.source for s in coverage):
         raise ContractError('duplicate/missing coverage source')
     if len({o.offer_id for o in offers}) != len(offers):

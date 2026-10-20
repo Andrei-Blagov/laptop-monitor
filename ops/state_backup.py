@@ -103,7 +103,7 @@ def create_backup(source, destination, *, now=None):
 
 
 def retain_daily(destination, *, keep=7):
-    require(isinstance(keep,int) and keep>=7,'at least seven daily backups required')
+    require(isinstance(keep,int) and keep>=2,'at least two verified daily backups required')
     root=Path(destination).absolute();safe_path(root,directory=True,uid=os.geteuid(),private=True)
     owned=[];skipped=[]
     for path in root.iterdir():

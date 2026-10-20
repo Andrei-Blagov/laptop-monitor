@@ -471,7 +471,7 @@ def handle_history_model(
     *,
     message_id: int | None = None,
 ) -> None:
-    report = build_model_history_report(DEFAULT_DB_PATH, product_id)
+    report = build_model_history_report(DEFAULT_DB_PATH, product_id, confirmed_only=True)
     text = format_model_history_message(report)
     markup = history_nav_keyboard(product_id) if report.found else build_history_picker_keyboard(
         build_history_picker_items(DEFAULT_DB_PATH)
@@ -494,7 +494,7 @@ def handle_chart_periods(
     *,
     message_id: int | None = None,
 ) -> None:
-    report = build_model_history_report(DEFAULT_DB_PATH, product_id)
+    report = build_model_history_report(DEFAULT_DB_PATH, product_id, confirmed_only=True)
     if not report.found:
         handle_history_model(client, token, chat_id, product_id, message_id=message_id)
         return
@@ -520,7 +520,7 @@ def handle_chart_render(
     product_id: int,
     period: str,
 ) -> None:
-    result = build_price_history_chart(DEFAULT_DB_PATH, product_id, period)  # type: ignore[arg-type]
+    result = build_price_history_chart(DEFAULT_DB_PATH, product_id, period, confirmed_only=True)  # type: ignore[arg-type]
     nav = chart_result_keyboard(product_id)
     if not result.ok or not result.png:
         send_message(
@@ -658,8 +658,38 @@ def build_status_text(db_path: Path | str = DEFAULT_DB_PATH) -> str:
         + (f" (№ {operation.get('id', '')[:8]})" if operation.get('id') else ""),
         f"Последняя успешная отправка: {sent_at or 'нет'}",
     ]
+    lines.extend(format_store_summary_lines(store_statuses=latest))
+    if not fresh_count:
+        lines.append(russian_top_empty_reason(db_path))
     return "\n".join(lines)
 
+
+
+def russian_top_empty_reason(db_path):
+    from collections import Counter
+    from market_snapshot import load_russian_market_snapshot
+    from market_contracts import russian_snapshot, ComparisonPolicy
+    from thai_market_ranking import assess_quote
+    try:
+        raw = load_russian_market_snapshot(Path(db_path).resolve().parent / "russian_market")
+        snapshot = russian_snapshot(raw)
+    except (OSError, ValueError, KeyError):
+        return "Нет проверенного российского снимка. Запустите проверку; состояние магазинов — /status."
+    reasons = Counter(reason for offer in snapshot.offers for reason in assess_quote(
+        offer, snapshot, None, now=datetime.now(timezone.utc), policy=ComparisonPolicy()).reasons)
+    labels = {"price_stale_or_unknown": "цена устарела или дата неизвестна",
+              "availability_stale_or_unknown": "наличие давно не проверялось",
+              "availability_unconfirmed": "наличие не подтверждено",
+              "ru_source_not_current": "магазин не прошёл свежую проверку"}
+    parts = [f"{label}: {reasons[key]}" for key, label in labels.items() if reasons[key]]
+    missing = sum(value for key, value in reasons.items() if key.startswith("spec_unconfirmed:"))
+    if missing:
+        parts.append(f"неподтверждённые характеристики: {missing}")
+    if parts:
+        return "Причины: " + "; ".join(parts) + "."
+    if not snapshot.offers:
+        return "В последнем снимке нет предложений в рамках обязательных фильтров и бюджета. Состояние магазинов — /status."
+    return "Нет согласованных предложений в рамках фильтров и бюджета: текущая карточка могла измениться после снимка. Обновите проверку."
 
 def build_top_parts(db_path: Path | str = DEFAULT_DB_PATH, *, deals=None) -> list[str]:
     """Render the same fresh ranked list used for model selection and BUY."""
@@ -668,7 +698,7 @@ def build_top_parts(db_path: Path | str = DEFAULT_DB_PATH, *, deals=None) -> lis
     if deals is None:
         deals = unique_russian_top(db_path, limit=10)
     if not deals:
-        return ["<b>TOP-10 России</b>\nПодходящих свежих предложений сейчас нет."]
+        return ["<b>TOP-10 России</b>\nПодходящих свежих предложений сейчас нет.\n" + russian_top_empty_reason(db_path)]
     header = f"<b>TOP-10 России — {len(deals)} моделей</b>"
     parts: list[str] = []
     current = header
@@ -684,9 +714,12 @@ def build_top_parts(db_path: Path | str = DEFAULT_DB_PATH, *, deals=None) -> lis
         name = html.escape(html.unescape(deal.cluster_name or "Модель"), quote=False)
         specs = f"{deal.gpu} · {deal.cpu or 'CPU не подтверждён'} · {deal.ram_gb} ГБ RAM · {deal.ssd_gb} ГБ SSD · {deal.screen_inch:g}″ {deal.screen_resolution}"
         price = f"{int(deal.price):,}".replace(",", " ")
-        card = (f"<b>{index}. {name}</b>\n{html.escape(specs)}\n"
+        from confirmed_history import summary_lines
+        history_text = "\n".join(summary_lines(deal.offer.get("price_history") or {}, deal.price))
+        sku = html.escape(str(deal.offer.get("sku") or "не подтверждён"))
+        card = (f"<b>{index}. {name}</b>\nSKU: {sku}\n{html.escape(specs)}\n"
                 f"{price} ₽ · {html.escape(deal.store)} · оценка {effective_deal_score(deal):g}/100\n"
-                f"Проверено: {clock}\n{html.escape(deal.url or '')}")
+                f"Проверено: {clock}\n{history_text}\n{html.escape(deal.url or '')}")
         if len(current) + len(card) + 2 > 3500:
             parts.append(current)
             current = header
@@ -880,6 +913,7 @@ def _confirmed_russian_quotes(db_path: Path | str, now: datetime) -> dict[tuple[
             "price": int(offer.price), "url": offer.url,
             "name": offer.name, "sku_ids": sku_ids - {None}, "mpn_ids": mpn_ids - {None},
             "nominal_ssd_gb": offer.nominal_ssd_gb,
+            "price_history": dict(offer.price_history),
             "price_checked_at": offer.price_checked_at.isoformat(),
             "availability_checked_at": offer.availability_checked_at.isoformat(),
             **{field: normalized_field(offer, field, now) for field in
@@ -913,7 +947,7 @@ def _same_confirmed_configuration(deal, quote: dict[str, Any]) -> bool:
             abs(float(deal.screen_inch) - float(quote["screen_inch"])) < 0.05)
 
 
-def unique_russian_top(db_path: Path | str = DEFAULT_DB_PATH, *, limit: int = 10):
+def unique_russian_top(db_path: Path | str = DEFAULT_DB_PATH, *, limit: int = 10, specs_path=None):
     from russian_deals import load_russian_ranked_deals
     from laptop_eligibility import deal_is_eligible
     from deal_ranking import score_offer
@@ -922,7 +956,7 @@ def unique_russian_top(db_path: Path | str = DEFAULT_DB_PATH, *, limit: int = 10
     confirmed = _confirmed_russian_quotes(db_path, now)
     if not confirmed:
         return []
-    deals = load_russian_ranked_deals(db_path, limit=0)
+    deals = load_russian_ranked_deals(db_path, limit=0, **({"specs_path": specs_path} if specs_path else {}))
     out = []
     seen: set[str] = set()
     for deal in deals:
@@ -936,7 +970,7 @@ def unique_russian_top(db_path: Path | str = DEFAULT_DB_PATH, *, limit: int = 10
             ram_gb=quote["ram_gb"], ssd_gb=quote["ssd_gb"],
             screen_inch=float(quote["screen_inch"]),
             screen_resolution=quote["screen_resolution"],
-            historical_min=deal.historical_min,
+            historical_min=quote.get("price_history", {}).get("minimum"),
         )
         deal = replace(
             deal, cluster_name=quote["name"], gpu=quote["gpu"], cpu=quote["cpu"],
@@ -945,10 +979,12 @@ def unique_russian_top(db_path: Path | str = DEFAULT_DB_PATH, *, limit: int = 10
             screen_resolution=quote["screen_resolution"],
             score=score.score, reasons=score.reasons, confidence=score.confidence,
             score_breakdown=score.breakdown,
+            historical_min=quote.get("price_history", {}).get("minimum"),
             saving_vs_next=None, saving_verified=False,
             next_store=None, next_price=None,
             offer={**deal.offer, "price_checked_at": quote["price_checked_at"],
-                   "availability_checked_at": quote["availability_checked_at"]},
+                   "availability_checked_at": quote["availability_checked_at"],
+                   "price_history": quote.get("price_history", {})},
         )
         identity = model_callback_token(deal, length=64)
         if identity in seen or not deal_is_eligible(deal):

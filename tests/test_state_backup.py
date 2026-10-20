@@ -25,6 +25,16 @@ class FullBackupTests(unittest.TestCase):
         self.assertEqual(report['kept'],7);self.assertEqual(len(report['removed']),3)
         self.assertFalse(paths[0].exists());self.assertTrue(paths[-1].exists())
         self.assertTrue(unknown.exists());self.assertTrue(rollback.exists())
+    def test_two_verified_copies_preserve_manual_predeploy_and_unknown(self):
+        paths=[self.prepared(n) for n in range(5)]
+        predeploy=self.root/'predeploy';predeploy.mkdir(mode=0o700)
+        unknown=self.root/'daily-unknown';unknown.mkdir(mode=0o700)
+        report=retain_daily(self.root,keep=2)
+        self.assertEqual(report['kept'],2)
+        self.assertEqual(len(report['removed']),3)
+        for path in paths[-2:]:verify_copy(path)
+        self.assertTrue(predeploy.exists());self.assertTrue(unknown.exists())
+        with self.assertRaises(Refused):retain_daily(self.root,keep=1)
     def test_changed_file_is_preserved_as_unknown(self):
         paths=[self.prepared(n) for n in range(9)]
         (paths[0]/'data/product_specs.json').write_text('{"changed":true}')

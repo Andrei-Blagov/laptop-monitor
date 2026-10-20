@@ -212,6 +212,7 @@ class ModelHistoryReport:
     best_30d_ago: int | None
     found: bool = True
     error: str | None = None
+    evidenced_only: bool = False
 
 
 def find_cluster_by_product_id(
@@ -241,6 +242,7 @@ def build_history_picker_items(
     db_path: Path | str = DEFAULT_DB_PATH,
     *,
     limit: int = HISTORY_PICKER_LIMIT,
+    confirmed_only: bool = True,
 ) -> list[HistoryPickerItem]:
     from russian_deals import load_russian_ranked_deals
 
@@ -253,7 +255,11 @@ def build_history_picker_items(
         for p in products
         if p.get("id") is not None
     }
-    deals = load_russian_ranked_deals(db_path, limit=int(limit))
+    if confirmed_only:
+        from control_bot import unique_russian_top
+        deals = unique_russian_top(db_path, limit=int(limit))
+    else:
+        deals = load_russian_ranked_deals(db_path, limit=int(limit))
     items: list[HistoryPickerItem] = []
     for deal in deals:
         if deal.price is None or not config.is_price_in_tracking_scope(deal.price):
@@ -361,6 +367,7 @@ def build_model_history_report(
     product_id: int,
     *,
     now: datetime | None = None,
+    confirmed_only: bool = True,
 ) -> ModelHistoryReport:
     now_utc = now or datetime.now(timezone.utc)
     if now_utc.tzinfo is None:
@@ -387,7 +394,18 @@ def build_model_history_report(
             error="Модель не найдена (product удалён или неизвестен).",
         )
 
-    _products, matches, fresh = _load_matches(db_path)
+    confirmed_histories = None
+    if confirmed_only:
+        from confirmed_history import load_model_history
+        confirmed_match, confirmed_histories = load_model_history(db_path, product_id)
+        if confirmed_match is None:
+            return ModelHistoryReport(int(product_id), str(product.get("name") or "?"),
+                str(product.get("sku") or "?"), True, [], None, None, None, None, None,
+                None, None, found=False,
+                error="Комплектация сейчас не подтверждена. Обновите /top. Старая история сохранена, но не приписывается новой комплектации.")
+        matches, fresh = [confirmed_match], {o.store for o in confirmed_match.offers}
+    else:
+        _products, matches, fresh = _load_matches(db_path)
     match = find_cluster_by_product_id(matches, int(product_id))
     if match is None:
         # Fallback: single-offer synthetic cluster from the product row.
@@ -412,7 +430,8 @@ def build_model_history_report(
     product_ids = [
         int(o.product_id) for o in match.offers if o.product_id is not None
     ]
-    histories = get_price_history_for_products_readonly(db_path, product_ids)
+    histories = (confirmed_histories if confirmed_histories is not None else
+                 get_price_history_for_products_readonly(db_path, product_ids))
 
     store_rows: list[StoreHistorySnapshot] = []
     all_time: tuple[int, str, str | None] | None = None  # price, store, at
@@ -454,6 +473,7 @@ def build_model_history_report(
         best_7d_ago=best_7,
         best_30d_ago=best_30,
         found=True,
+        evidenced_only=confirmed_only,
     )
 
 
@@ -487,6 +507,8 @@ def format_model_history_message(report: ModelHistoryReport) -> str:
         "",
         "Сейчас:",
     ]
+    if report.evidenced_only:
+        lines.insert(-1, "Только наблюдения с подтверждённой комплектацией; legacy-история сохранена отдельно.")
     if report.stores:
         for row in report.stores:
             label = store_label(row.store)

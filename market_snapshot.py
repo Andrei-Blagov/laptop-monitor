@@ -331,6 +331,8 @@ def _offer_record(
     )
     variant_id = _variant_id(specs)
     sku_candidates, mpn_candidates = _identifier_candidates(offer, identity, identifier_rows)
+    from confirmed_history import record_key, price_summary
+    history_key = record_key({"sku_candidates": sku_candidates, "specs": specs})
     return {
         "offer_id": _stable_id("ru", [offer.store, str(offer.external_id), variant_id or ""]),
         "store": offer.store,
@@ -349,6 +351,7 @@ def _offer_record(
             "method": "store_listing",
             "available": bool(product.get("available")),
         },
+        "price_history": price_summary(history, history_key, price, price_checked_at),
         "public_price_rub": price,
         "product_name": str(product.get("name") or offer.name or ""),
         "sku_candidates": sku_candidates,

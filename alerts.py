@@ -123,7 +123,7 @@ def price_drop_applies(
 ) -> bool:
     """True если текущее изменение цены квалифицируется как PRICE_DROP."""
     new_price = product.get("price")
-    old_price = get_previous_price(conn, int(product["id"]))
+    old_price = get_previous_price(conn, int(product["id"]), product.get("_history_key"))
     if new_price is None or old_price is None:
         return False
     percent = price_drop_percent(int(old_price), int(new_price))
@@ -140,7 +140,7 @@ def evaluate_price_drop(
         return None
     product_id = int(product["id"])
     new_price = product.get("price")
-    old_price = get_previous_price(conn, product_id)
+    old_price = get_previous_price(conn, product_id, product.get("_history_key"))
     if new_price is None or old_price is None:
         return None
     new_price_i = int(new_price)
@@ -151,7 +151,7 @@ def evaluate_price_drop(
     if percent is None or percent < float(config.PRICE_DROP_PERCENT):
         return None
 
-    hist_min = get_historical_min_before_current(conn, product_id)
+    hist_min = get_historical_min_before_current(conn, product_id, product.get("_history_key"))
     is_historical_low = (
         hist_min is not None and new_price_i < int(hist_min)
     )
@@ -159,6 +159,8 @@ def evaluate_price_drop(
     dedupe_key = (
         f"{EVENT_PRICE_DROP}|{product_id}|{old_price_i}|{new_price_i}"
     )
+    if product.get("_history_key"):
+        dedupe_key += "|configuration:" + product["_history_key"]
     metadata: dict[str, Any] = {
         "store": product["store"],
         "sku": product.get("sku"),
@@ -199,7 +201,7 @@ def evaluate_historical_low(
     new_price = int(new_price)
     if not config.is_price_in_tracking_scope(new_price):
         return None
-    hist_min = get_historical_min_before_current(conn, product_id)
+    hist_min = get_historical_min_before_current(conn, product_id, product.get("_history_key"))
     if hist_min is None:
         return None
     if not is_significant_historical_low(int(hist_min), new_price):
@@ -209,6 +211,8 @@ def evaluate_historical_low(
     dedupe_key = (
         f"{EVENT_HISTORICAL_LOW}|{product_id}|{hist_min}|{new_price}"
     )
+    if product.get("_history_key"):
+        dedupe_key += "|configuration:" + product["_history_key"]
     return save_alert_event(
         conn,
         event_type=EVENT_HISTORICAL_LOW,
@@ -250,7 +254,7 @@ def evaluate_target_price(
         return None
 
     product_id = int(product["id"])
-    previous = get_previous_price(conn, product_id)
+    previous = get_previous_price(conn, product_id, product.get("_history_key"))
     # Staying below threshold: previous also <= threshold → no new event.
     if previous is not None and previous <= threshold:
         return None
@@ -260,6 +264,8 @@ def evaluate_target_price(
     dedupe_key = (
         f"{EVENT_TARGET_PRICE}|{product_id}|{threshold}|from:{prev_token}|to:{price}"
     )
+    if product.get("_history_key"):
+        dedupe_key += "|configuration:" + product["_history_key"]
     return save_alert_event(
         conn,
         event_type=EVENT_TARGET_PRICE,
@@ -373,6 +379,7 @@ def run_monitor(
     specs_path: Path | str | None = None,
     fresh_stores: set[str] | None = None,
     product_store_filter: set[str] | None = None,
+    confirmed_offers: Mapping | None = None,
 ) -> MonitorResult:
     """
     Alert engine.
@@ -386,10 +393,37 @@ def run_monitor(
         products = [
             p for p in products if str(p.get("store")) in product_store_filter
         ]
+    if confirmed_offers is not None:
+        from confirmed_history import record_key
+        from product_identity import normalize_identifier
+        confirmed_products = []
+        for product in products:
+            record = confirmed_offers.get((product["store"], product["external_id"]))
+            if (record and product["price"] == record["public_price_rub"] and
+                    product.get("price_checked_at") == record["price_checked_at"] and
+                    normalize_identifier(product.get("sku")) in
+                    {normalize_identifier(v) for v in record.get("sku_candidates", ())}):
+                confirmed_products.append({**product, "_history_key": record_key(record)})
+        products = confirmed_products
     identifiers = get_all_identifiers(db_path)
     specs = _specs_index(specs_path)
+    if confirmed_offers is not None:
+        from confirmed_history import configuration_key
+        from product_identity import identity_from_collected_product
+        from types import SimpleNamespace
+        coherent = []
+        for product in products:
+            identity = specs.get((product["store"], product["external_id"]))
+            if identity is None:
+                identity = identity_from_collected_product(SimpleNamespace(**product))
+            values = {field: getattr(identity, field) for field in
+                      ("cpu", "gpu", "ram_gb", "ssd_gb", "screen_resolution")}
+            values["screen_inch"] = identity.screen_size_inch
+            if configuration_key(product.get("sku"), values) == product.get("_history_key"):
+                coherent.append(product)
+        products = coherent
     comparison = match_products(
-        products if product_store_filter is None else get_all_products(db_path),
+        products if product_store_filter is None or confirmed_offers is not None else get_all_products(db_path),
         identifiers,
         specs_by_key=specs,
     )
