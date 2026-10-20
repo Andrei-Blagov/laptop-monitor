@@ -251,9 +251,8 @@ class RuntimeAcceptanceTests(unittest.TestCase):
         from thailand.market_schedule import enqueue_daily
 
         if now is None:
-            from thailand.market_schedule import main
-            main(["enqueue-daily"])
-            return {}
+            # These delivery cases require the daily 08:00 Moscow window to be open.
+            now = datetime.now(MOSCOW).replace(hour=8, minute=1, second=0, microsecond=0)
         return enqueue_daily(now=now)
 
     def test_idle_wake_does_not_call_cbr_or_stores(self) -> None:
