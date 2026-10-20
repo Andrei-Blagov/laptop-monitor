@@ -1,25 +1,33 @@
 """Acceptance for the Russian Telegram workflow, entirely offline."""
 from __future__ import annotations
 
+import copy
 import json
 import tempfile
 import unittest
+from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from unittest.mock import Mock, patch
 
+import httpx
+
 import config
 from control_bot import (build_top_parts, buy_picker_keyboard, handle_personal_top,
+                         handle_top,
                          handle_recommendation_pick, handle_run, handle_thailand_manual,
                          model_callback_token, notify_manual_result, process_update,
                          unique_russian_top)
 from deal_ranking import RankedDeal
 from manual_run import read_request, request_run, run_request, set_message_id
 from purchase_recommendation import format_russian_recommendation
+from tests.test_thai_catalog_reuse import _russian
+from thai_catalog import russian_offer_views
 
 
 def deal(number: int, **changes) -> RankedDeal:
     data = dict(score=80.0, reasons=["мощный HX-процессор"],
-                offer={"sku": f"CODE-{number:03d}", "external_id": str(number)},
+                offer={"sku": f"CODE-{number:03d}", "external_id": str(number),
+                       "price_checked_at": "2026-10-19T09:00:00+00:00"},
                 cluster_name=f'Model &quot;{number}&quot;', gpu="RTX 5080", cpu="Intel Core i9 14900HX",
                 store="regard", price=250_000, url=f"https://example.test/{number}",
                 ram_gb=32, ssd_gb=1024, screen_inch=16.0, screen_resolution="2560x1600",
@@ -29,12 +37,21 @@ def deal(number: int, **changes) -> RankedDeal:
     return RankedDeal(**data)
 
 
+def confirmed_quotes(rows):
+    now = datetime.now(timezone.utc).isoformat()
+    return {(item.store, str(item.offer.get("external_id") or "")): {
+        "price": item.price, "url": item.url,
+        "price_checked_at": now, "availability_checked_at": now,
+        "gpu": item.gpu, "cpu": item.cpu, "ram_gb": item.ram_gb,
+        "ssd_gb": item.ssd_gb, "screen_inch": item.screen_inch,
+        "screen_resolution": item.screen_resolution,
+    } for item in rows}
+
+
 class RussianTopTests(unittest.TestCase):
     def test_counts_links_and_model_selection(self):
         for count in (0, 1, 6, 10):
-            with self.subTest(count=count), patch("control_bot.unique_russian_top", return_value=[deal(n) for n in range(count)]), patch(
-                "control_bot.get_latest_store_runs_readonly", return_value={"regard": {"finished_at": "2026-10-19T09:00:00+00:00"}}
-            ):
+            with self.subTest(count=count), patch("control_bot.unique_russian_top", return_value=[deal(n) for n in range(count)]):
                 text = "\n".join(build_top_parts("unused.db"))
                 self.assertIn("TOP-10 России", text)
                 if count:
@@ -47,17 +64,21 @@ class RussianTopTests(unittest.TestCase):
     def test_selection_uses_confirmed_policy_and_unique_models(self):
         rows = [deal(1), deal(1), deal(2, price=290_001), deal(3, ram_gb=16),
                 deal(4, cpu=None), deal(5, url=None), deal(6, screen_resolution="1920x1080")]
-        with patch("russian_deals.load_russian_ranked_deals", return_value=rows):
+        with patch("russian_deals.load_russian_ranked_deals", return_value=rows), patch(
+            "control_bot._confirmed_russian_quotes", return_value=confirmed_quotes(rows)
+        ):
             found = unique_russian_top("unused.db", limit=10)
         self.assertEqual([item.url for item in found], ["https://example.test/1", "https://example.test/4"])
 
     def test_same_name_variants_keep_separate_links_and_callbacks(self):
-        first = deal(1, cluster_name="Same model", offer={"sku": "VARIANT-1"})
-        second = deal(2, cluster_name="Same model", offer={"sku": "VARIANT-2"},
+        first = deal(1, cluster_name="Same model", offer={"sku": "VARIANT-1", "external_id": "1"})
+        second = deal(2, cluster_name="Same model", offer={"sku": "VARIANT-2", "external_id": "2"},
                       cpu=None, ssd_gb=2048)
-        duplicate = deal(3, cluster_name="Same model", offer={"sku": "VARIANT-1"},
+        duplicate = deal(3, cluster_name="Same model", offer={"sku": "VARIANT-1", "external_id": "3"},
                          url="https://example.test/alternate")
-        with patch("russian_deals.load_russian_ranked_deals", return_value=[first, second, duplicate]):
+        with patch("russian_deals.load_russian_ranked_deals", return_value=[first, second, duplicate]), patch(
+            "control_bot._confirmed_russian_quotes", return_value=confirmed_quotes([first, second, duplicate])
+        ):
             found = unique_russian_top("unused.db", limit=10)
         self.assertEqual([item.url for item in found], [first.url, second.url])
         callbacks = [row[0]["callback_data"] for row in buy_picker_keyboard(found)["inline_keyboard"]]
@@ -70,12 +91,74 @@ class RussianTopTests(unittest.TestCase):
         self.assertIn(second.url, send.call_args.args[3])
         self.assertNotIn(first.url, send.call_args.args[3])
         self.assertIn("CPU не подтверждён", send.call_args.args[3])
-        with patch("control_bot.unique_russian_top", return_value=found), patch(
-            "control_bot.get_latest_store_runs_readonly", return_value={}
-        ):
+        with patch("control_bot.unique_russian_top", return_value=found):
             text = "\n".join(build_top_parts("unused.db"))
         self.assertIn("CPU не подтверждён", text)
         self.assertNotIn("None", text)
+
+    def test_cards_and_buttons_use_one_read_and_stale_variant_is_rejected(self):
+        first, changed = deal(1), deal(2)
+        with patch("control_bot.unique_russian_top", side_effect=[[first], [changed]]) as top, patch(
+            "control_bot.send_message"
+        ) as send:
+            handle_top(Mock(), "token", 42, db_path="unused.db")
+        top.assert_called_once()
+        self.assertIn(first.url, send.call_args.args[3])
+        button = send.call_args.kwargs["reply_markup"]["inline_keyboard"][0][0]["callback_data"]
+        self.assertEqual(button, "buy:" + model_callback_token(first))
+        with patch("control_bot.unique_russian_top", return_value=[changed]), patch(
+            "control_bot.send_message"
+        ) as answer:
+            handle_recommendation_pick(Mock(), "token", 42, button[len("buy:"):], db_path="unused.db")
+        self.assertIn("Откройте список ещё раз", answer.call_args.args[3])
+        self.assertNotIn(changed.url, answer.call_args.args[3])
+
+    def test_daily_and_interactive_require_same_own_quote_and_spec_dates(self):
+        item = deal(1, cluster_name="MSI Raider 16 HX AI A2XWHG-814XRU",
+                    offer={"sku": "A2XWHG-814XRU", "external_id": "ru-01"}, gpu="RTX 5070 Ti")
+        now = datetime.now(timezone.utc)
+        fresh = (now - timedelta(minutes=20)).isoformat()
+        stale = (now - timedelta(days=8)).isoformat()
+        for case in ("fresh", "old_product", "legacy_specs"):
+            with self.subTest(case=case):
+                raw = copy.deepcopy(_russian())
+                raw["created_at"] = fresh
+                raw["source_coverage"][0]["latest_attempt_at"] = fresh
+                row = raw["offers"][0]
+                raw["offers"] = [row]
+                row["source_url"] = item.url
+                row["product_name"] = item.cluster_name
+                row["sku_candidates"] = [item.offer["sku"]]
+                row["price_checked_at"] = stale if case == "old_product" else fresh
+                row["availability_checked_at"] = stale if case == "old_product" else fresh
+                row["availability_evidence"]["captured_at"] = row["availability_checked_at"]
+                for spec in row["specs"].values():
+                    spec["evidence"]["captured_at"] = None if case == "legacy_specs" else fresh
+                    spec["evidence"]["capture_state"] = "unknown" if case == "legacy_specs" else "known"
+                daily, _ = russian_offer_views(raw, now=now)
+                with patch("market_snapshot.load_russian_market_snapshot", return_value=raw), patch(
+                    "russian_deals.load_russian_ranked_deals", return_value=[item]
+                ), patch("control_bot._reply_or_edit") as favorites, patch(
+                    "control_bot.send_message"
+                ) as buy:
+                    selected = unique_russian_top("unused.db", limit=10)
+                    top_text = "\n".join(build_top_parts("unused.db"))
+                    handle_personal_top(Mock(), "token", 42)
+                    handle_recommendation_pick(Mock(), "token", 42, "best", db_path="unused.db")
+                self.assertEqual(bool(daily), bool(selected))
+                if case == "fresh":
+                    self.assertIn(item.url, top_text)
+                    self.assertIn(item.url, favorites.call_args.args[3])
+                    self.assertIn(item.url, buy.call_args.args[3])
+                    self.assertIn("Проверено: ", top_text)
+                    self.assertIn((now - timedelta(minutes=20)).astimezone(
+                        __import__("zoneinfo").ZoneInfo("Europe/Moscow")
+                    ).strftime("%d.%m %H:%M МСК"), top_text)
+                else:
+                    self.assertNotIn(item.url, top_text)
+                    self.assertNotIn(item.url, favorites.call_args.args[3])
+                    self.assertNotIn(item.url, buy.call_args.args[3])
+                    self.assertIn("Старые данные не считаются текущими", favorites.call_args.args[3])
 
     def test_buy_explanation_is_russian_and_has_exact_url(self):
         item = deal(1)
@@ -220,7 +303,89 @@ class ManualThailandTests(unittest.TestCase):
             notify_manual_result(Mock(), "token")
             notify_manual_result(Mock(), "token")
         edit.assert_called_once()
-        marked.assert_called_once_with(state["id"])
+        marked.assert_called_once_with(state["id"], delivery="edited")
+
+    def test_permanent_edit_failure_uses_one_fallback_and_unblocks_next_run(self):
+        from manual_run import _save, claim_fallback, mark_notified, record_delivery_attempt
+
+        with tempfile.TemporaryDirectory() as tmp:
+            path = Path(tmp) / "manual.json"
+            old = {"id": "a" * 32, "chat_id": "42", "status": "unconfirmed",
+                   "error": "process stopped", "message_id": 51, "notified": False}
+            _save(path, old)
+            calls = []
+
+            def handler(request):
+                calls.append(request.url.path)
+                if request.url.path.endswith("editMessageText"):
+                    return httpx.Response(400, json={"ok": False, "description": "Bad Request: message to edit not found"})
+                return httpx.Response(200, json={"ok": True, "result": {"message_id": 52}})
+
+            with httpx.Client(transport=httpx.MockTransport(handler)) as client, patch(
+                "control_bot.reconcile", side_effect=lambda: read_request(path)
+            ), patch("control_bot.record_delivery_attempt", side_effect=lambda ident, kind: record_delivery_attempt(ident, kind, path=path)), patch(
+                "control_bot.claim_fallback", side_effect=lambda ident: claim_fallback(ident, path=path)
+            ), patch("control_bot.mark_notified", side_effect=lambda ident, delivery: mark_notified(ident, delivery=delivery, path=path)):
+                notify_manual_result(client, "token")
+                notify_manual_result(client, "token")
+            receipt = read_request(path)
+            self.assertEqual(receipt["delivery_status"], "fallback_sent")
+            self.assertEqual(receipt["delivery_attempts"], 1)
+            self.assertTrue(receipt["notified"])
+            self.assertEqual(sum(name.endswith("sendMessage") for name in calls), 1)
+            with patch("manual_run._pipeline_busy", return_value=False):
+                next_run, accepted = request_run(42, path=path, spawn=lambda *_: 999999)
+            self.assertTrue(accepted)
+            self.assertNotEqual(next_run["id"], old["id"])
+
+    def test_temporary_edit_failure_is_bounded_without_duplicate_fallback(self):
+        from manual_run import _save, mark_notified, record_delivery_attempt
+
+        with tempfile.TemporaryDirectory() as tmp:
+            path = Path(tmp) / "manual.json"
+            _save(path, {"id": "b" * 32, "chat_id": "42", "status": "success",
+                         "message_id": 51, "notified": False})
+            calls = []
+
+            def handler(request):
+                calls.append(request.url.path)
+                raise httpx.ConnectError("offline")
+
+            with httpx.Client(transport=httpx.MockTransport(handler)) as client, patch(
+                "control_bot.reconcile", side_effect=lambda: read_request(path)
+            ), patch("control_bot.record_delivery_attempt", side_effect=lambda ident, kind: record_delivery_attempt(ident, kind, path=path)), patch(
+                "control_bot.mark_notified", side_effect=lambda ident, delivery: mark_notified(ident, delivery=delivery, path=path)
+            ):
+                for _ in range(5):
+                    notify_manual_result(client, "token")
+            receipt = read_request(path)
+            self.assertEqual(receipt["delivery_status"], "edit_unconfirmed")
+            self.assertEqual(receipt["delivery_attempts"], 3)
+            self.assertEqual(len(calls), 3)
+            self.assertTrue(all(name.endswith("editMessageText") for name in calls))
+
+    def test_restart_after_successful_edit_accepts_message_not_modified(self):
+        from manual_run import _save, mark_notified
+
+        with tempfile.TemporaryDirectory() as tmp:
+            path = Path(tmp) / "manual.json"
+            _save(path, {"id": "c" * 32, "chat_id": "42", "status": "success",
+                         "message_id": 51, "notified": False})
+            replies = iter([
+                httpx.Response(200, json={"ok": True, "result": True}),
+                httpx.Response(400, json={"ok": False, "description": "Bad Request: message is not modified"}),
+            ])
+            with httpx.Client(transport=httpx.MockTransport(lambda _request: next(replies))) as client, patch(
+                "control_bot.reconcile", side_effect=lambda: read_request(path)
+            ):
+                with patch("control_bot.mark_notified"):
+                    notify_manual_result(client, "token")
+                self.assertFalse(read_request(path)["notified"])
+                with patch("control_bot.mark_notified", side_effect=lambda ident, delivery: mark_notified(ident, delivery=delivery, path=path)):
+                    notify_manual_result(client, "token")
+            receipt = read_request(path)
+            self.assertTrue(receipt["notified"])
+            self.assertEqual(receipt["delivery_status"], "already_visible")
 
     def test_status_command_dispatch_while_check_pending(self):
         update = {"message": {"chat": {"id": 42}, "text": "/status"}}

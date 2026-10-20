@@ -21,6 +21,7 @@ from storage import DEFAULT_DB_PATH
 
 DEFAULT_REQUEST_PATH = Path("data/manual_run.json")
 ACTIVE = {"pending", "running"}
+MAX_DELIVERY_ATTEMPTS = 3
 
 
 def _now() -> str:
@@ -122,12 +123,38 @@ def set_message_id(request_id: str, message_id: int, *, path: Path = DEFAULT_REQ
             _save(path, state)
 
 
-def mark_notified(request_id: str, *, path: Path = DEFAULT_REQUEST_PATH) -> None:
+def record_delivery_attempt(request_id: str, kind: str, *, path: Path = DEFAULT_REQUEST_PATH) -> dict[str, Any]:
     path = Path(path).absolute()
     with _guard(path):
         state = read_request(path)
-        if state.get("id") == request_id:
+        if state.get("id") == request_id and not state.get("notified"):
+            state["delivery_attempts"] = int(state.get("delivery_attempts") or 0) + 1
+            state["delivery_error"] = kind
+            _save(path, state)
+        return state
+
+
+def claim_fallback(request_id: str, *, path: Path = DEFAULT_REQUEST_PATH) -> bool:
+    path = Path(path).absolute()
+    with _guard(path):
+        state = read_request(path)
+        if (state.get("id") != request_id or state.get("notified") or
+                state.get("delivery_status") == "fallback_claimed"):
+            return False
+        state["delivery_status"] = "fallback_claimed"
+        _save(path, state)
+        return True
+
+
+def mark_notified(request_id: str, *, delivery: str = "edited",
+                  path: Path = DEFAULT_REQUEST_PATH) -> None:
+    path = Path(path).absolute()
+    with _guard(path):
+        state = read_request(path)
+        if state.get("id") == request_id and not state.get("notified"):
             state["notified"] = True
+            state["delivery_status"] = delivery
+            state["delivery_finished_at"] = _now()
             _save(path, state)
 
 

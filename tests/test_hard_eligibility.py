@@ -330,8 +330,12 @@ class ConsistencyTests(unittest.TestCase):
         from control_bot import build_top_text, unique_russian_top
         from model_price_history import build_history_picker_items
         from russian_deals import load_russian_ranked_deals
+        from tests.test_telegram_ru_simplify import confirmed_quotes
 
-        with patch("identity_sync.SPECS_CACHE_PATH", self.specs):
+        with patch("identity_sync.SPECS_CACHE_PATH", self.specs), patch(
+            "control_bot._confirmed_russian_quotes",
+            return_value=confirmed_quotes(load_russian_ranked_deals(self.db, specs_path=self.specs, limit=0)),
+        ):
             deals = load_russian_ranked_deals(self.db, specs_path=self.specs)
             top = build_top_text(self.db)
             picker = unique_russian_top(self.db, limit=5)
@@ -345,10 +349,15 @@ class ConsistencyTests(unittest.TestCase):
 
     def test_best_recommendation_is_eligible(self) -> None:
         from control_bot import handle_recommendation_pick
+        from russian_deals import load_russian_ranked_deals
+        from tests.test_telegram_ru_simplify import confirmed_quotes
 
         with patch("identity_sync.SPECS_CACHE_PATH", self.specs), patch(
             "buy_thailand_flow.enqueue_recommendation_job"
-        ) as enq, patch("control_bot.send_message") as send:
+        ) as enq, patch("control_bot.send_message") as send, patch(
+            "control_bot._confirmed_russian_quotes",
+            return_value=confirmed_quotes(load_russian_ranked_deals(self.db, specs_path=self.specs, limit=0)),
+        ):
             handle_recommendation_pick(object(), "t", 1, "best", db_path=self.db)
         enq.assert_not_called()
         self.assertIn("Good One", send.call_args.args[3])

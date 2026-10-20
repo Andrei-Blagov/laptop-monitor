@@ -453,9 +453,12 @@ class PickerTests(unittest.TestCase):
 
     def test_duplicate_clusters_collapse(self) -> None:
         first = _deal(cluster_name="ASUS ROG Strix G16", ram_gb=32)
-        second = _deal(cluster_name="ASUS ROG Strix G16", price=240000, ram_gb=32)
-        other = _deal(cluster_name="MSI Vector 16", ram_gb=32, offer={"sku": "9S7-17S372-240", "mpn": "9S7-17S372-240"})
-        with patch("russian_deals.load_russian_ranked_deals", return_value=[first, second, other]):
+        second = _deal(cluster_name="ASUS ROG Strix G16", ram_gb=32)
+        other = _deal(cluster_name="MSI Vector 16", ram_gb=32, offer={"external_id": "2", "sku": "9S7-17S372-240", "mpn": "9S7-17S372-240"})
+        from tests.test_telegram_ru_simplify import confirmed_quotes
+        with patch("russian_deals.load_russian_ranked_deals", return_value=[first, second, other]), patch(
+            "control_bot._confirmed_russian_quotes", return_value=confirmed_quotes([first, other])
+        ):
             deals = unique_russian_top("unused.db", limit=10)
         self.assertEqual([d.cluster_name for d in deals], ["ASUS ROG Strix G16", "MSI Vector 16"])
 

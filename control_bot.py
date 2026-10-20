@@ -14,6 +14,8 @@ import logging
 import re
 import sys
 import time
+from dataclasses import replace
+from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
 from zoneinfo import ZoneInfo
@@ -73,7 +75,9 @@ from telegram_safe import (
     telegram_http_error_summary,
 )
 from version import APP_NAME, get_version
-from manual_run import mark_notified, read_request, reconcile, request_run, set_message_id
+from manual_run import (MAX_DELIVERY_ATTEMPTS, claim_fallback, mark_notified,
+                        read_request, reconcile, record_delivery_attempt,
+                        request_run, set_message_id)
 
 logger = logging.getLogger(__name__)
 
@@ -230,18 +234,25 @@ def _post_telegram(
     payload: dict[str, Any],
     *,
     timeout: float = 30.0,
+    error_out: dict[str, str] | None = None,
 ) -> dict[str, Any] | None:
     try:
         resp = client.post(_api(token, method), json=payload, timeout=timeout)
     except httpx.TimeoutException:
+        if error_out is not None:
+            error_out["kind"] = "retry"
         logger.error("Telegram %s timeout", method)
         return None
     except httpx.HTTPError as exc:
+        if error_out is not None:
+            error_out["kind"] = "retry"
         logger.error("%s", telegram_http_error_summary(method=method, description=safe_exc_message(exc)))
         return None
     try:
         data = resp.json()
     except ValueError:
+        if error_out is not None:
+            error_out["kind"] = "retry"
         logger.error(
             "%s",
             telegram_http_error_summary(
@@ -255,6 +266,14 @@ def _post_telegram(
     ok, err = parse_telegram_response(data)
     status = _http_status(resp)
     if (status is not None and status >= 400) or not ok:
+        if error_out is not None:
+            description = str(err or "").lower()
+            if "message is not modified" in description:
+                error_out["kind"] = "not_modified"
+            elif status in {400, 401, 403, 404}:
+                error_out["kind"] = "permanent"
+            else:
+                error_out["kind"] = "retry"
         logger.error(
             "%s",
             telegram_http_error_summary(
@@ -306,6 +325,7 @@ def edit_message(
     text: str,
     *,
     reply_markup: dict[str, Any] | None = None,
+    error_out: dict[str, str] | None = None,
 ) -> bool:
     payload: dict[str, Any] = {
         "chat_id": chat_id,
@@ -316,7 +336,7 @@ def edit_message(
     }
     if reply_markup is not None:
         payload["reply_markup"] = reply_markup
-    return _post_telegram(client, token, "editMessageText", payload) is not None
+    return _post_telegram(client, token, "editMessageText", payload, error_out=error_out) is not None
 
 
 def answer_callback(
@@ -641,20 +661,19 @@ def build_status_text(db_path: Path | str = DEFAULT_DB_PATH) -> str:
     return "\n".join(lines)
 
 
-def build_top_parts(db_path: Path | str = DEFAULT_DB_PATH) -> list[str]:
+def build_top_parts(db_path: Path | str = DEFAULT_DB_PATH, *, deals=None) -> list[str]:
     """Render the same fresh ranked list used for model selection and BUY."""
-    from datetime import datetime, timezone
     from deal_ranking import effective_deal_score
 
-    deals = unique_russian_top(db_path, limit=10)
+    if deals is None:
+        deals = unique_russian_top(db_path, limit=10)
     if not deals:
         return ["<b>TOP-10 России</b>\nПодходящих свежих предложений сейчас нет."]
-    latest = get_latest_store_runs_readonly(db_path)
     header = f"<b>TOP-10 России — {len(deals)} моделей</b>"
     parts: list[str] = []
     current = header
     for index, deal in enumerate(deals, 1):
-        raw_time = (latest.get(deal.store) or {}).get("finished_at")
+        raw_time = (deal.offer or {}).get("price_checked_at")
         try:
             checked = datetime.fromisoformat(str(raw_time).replace("Z", "+00:00"))
             if checked.tzinfo is None:
@@ -679,7 +698,7 @@ def build_top_parts(db_path: Path | str = DEFAULT_DB_PATH) -> list[str]:
 def handle_top(client: httpx.Client, token: str, chat_id: str | int,
                *, db_path: Path | str = DEFAULT_DB_PATH) -> None:
     deals = unique_russian_top(db_path, limit=10)
-    parts = build_top_parts(db_path)
+    parts = build_top_parts(db_path, deals=deals)
     for index, part in enumerate(parts):
         markup = buy_picker_keyboard(deals) if deals and index == len(parts) - 1 else None
         send_message(client, token, chat_id, part, with_keyboard=False, reply_markup=markup)
@@ -824,21 +843,79 @@ def model_callback_token(model, *, length: int = 16) -> str:
     return hashlib.sha256(identity.encode("utf-8")).hexdigest()[:length]
 
 
+def _confirmed_russian_quotes(db_path: Path | str, now: datetime) -> dict[tuple[str, str], dict[str, Any]]:
+    """Read the exact per-offer evidence gate used by the Russian daily digest."""
+    from market_contracts import russian_snapshot
+    from market_snapshot import load_russian_market_snapshot
+    from thai_catalog import russian_offer_views
+    from thai_market_ranking import normalized_field
+
+    try:
+        raw = load_russian_market_snapshot(Path(db_path).resolve().parent / "russian_market")
+        eligible, _information = russian_offer_views(raw, now=now)
+        parsed = russian_snapshot(raw)
+    except (OSError, ValueError, KeyError) as exc:
+        logger.warning("Russian snapshot unavailable for Telegram TOP: %s", type(exc).__name__)
+        return {}
+    accepted = {row["best_offer_id"] for row in eligible}
+    quotes = {}
+    for offer in parsed.offers:
+        if offer.offer_id not in accepted:
+            continue
+        quotes[(offer.source, offer.external_id)] = {
+            "price": int(offer.price), "url": offer.url,
+            "price_checked_at": offer.price_checked_at.isoformat(),
+            "availability_checked_at": offer.availability_checked_at.isoformat(),
+            **{field: normalized_field(offer, field, now) for field in
+               ("gpu", "cpu", "ram_gb", "ssd_gb", "screen_inch", "screen_resolution")},
+        }
+    return quotes
+
+
 def unique_russian_top(db_path: Path | str = DEFAULT_DB_PATH, *, limit: int = 10):
     from russian_deals import load_russian_ranked_deals
     from laptop_eligibility import deal_is_eligible
+    from deal_ranking import score_offer
 
+    now = datetime.now(timezone.utc)
+    confirmed = _confirmed_russian_quotes(db_path, now)
+    if not confirmed:
+        return []
     deals = load_russian_ranked_deals(db_path, limit=0)
     out = []
     seen: set[str] = set()
     for deal in deals:
+        quote = confirmed.get((deal.store, str((deal.offer or {}).get("external_id") or "")))
+        if (not quote or not deal.cluster_name or not deal.url or
+                quote["price"] != deal.price or quote["url"] != deal.url):
+            continue
+        score = score_offer(
+            price=deal.price, gpu=quote["gpu"], cpu=quote["cpu"],
+            ram_gb=quote["ram_gb"], ssd_gb=quote["ssd_gb"],
+            screen_inch=float(quote["screen_inch"]),
+            screen_resolution=quote["screen_resolution"],
+            historical_min=deal.historical_min,
+        )
+        deal = replace(
+            deal, gpu=quote["gpu"], cpu=quote["cpu"],
+            ram_gb=int(quote["ram_gb"]), ssd_gb=int(quote["ssd_gb"]),
+            screen_inch=float(quote["screen_inch"]),
+            screen_resolution=quote["screen_resolution"],
+            score=score.score, reasons=score.reasons, confidence=score.confidence,
+            score_breakdown=score.breakdown,
+            saving_vs_next=None, saving_verified=False,
+            next_store=None, next_price=None,
+            offer={**deal.offer, "price_checked_at": quote["price_checked_at"],
+                   "availability_checked_at": quote["availability_checked_at"]},
+        )
         identity = model_callback_token(deal, length=64)
-        if not deal.cluster_name or identity in seen or not deal_is_eligible(deal) or not deal.url:
+        if identity in seen or not deal_is_eligible(deal):
             continue
         seen.add(identity)
         out.append(deal)
-        if limit > 0 and len(out) >= limit:
-            break
+    out.sort(key=lambda item: (-item.score, item.price or 10**12, item.cluster_name))
+    if limit > 0:
+        return out[:limit]
     return out
 
 
@@ -1109,15 +1186,33 @@ def notify_manual_result(client: httpx.Client, token: str) -> None:
     state = reconcile()
     if state.get("status") in {"pending", "running"} or state.get("notified") or not state.get("id"):
         return
-    if not state.get("message_id"):
-        return  # Outcome remains available through /status if the acknowledgement failed.
     label = "успешно" if state.get("status") == "success" else "с ошибкой"
     detail = html.escape(str(state.get("error") or ""))[:900]
     text = (f"<b>Обновление цен завершилось {label}</b> · № {state['id'][:8]}\n"
             f"Состояние: {html.escape(str(state.get('status')))}"
             + (f"\n{detail}" if detail else ""))
-    if edit_message(client, token, state["chat_id"], int(state["message_id"]), text):
-        mark_notified(state["id"])
+    if state.get("delivery_status") == "fallback_claimed":
+        mark_notified(state["id"], delivery="fallback_unconfirmed")
+        return
+    if state.get("message_id") and int(state.get("delivery_attempts") or 0) < MAX_DELIVERY_ATTEMPTS:
+        error: dict[str, str] = {}
+        if edit_message(client, token, state["chat_id"], int(state["message_id"]), text,
+                        error_out=error):
+            mark_notified(state["id"], delivery="edited")
+            return
+        if error.get("kind") == "not_modified":
+            mark_notified(state["id"], delivery="already_visible")
+            return
+        state = record_delivery_attempt(state["id"], error.get("kind", "retry"))
+        if error.get("kind") != "permanent" and int(state.get("delivery_attempts") or 0) < MAX_DELIVERY_ATTEMPTS:
+            return
+        if error.get("kind") != "permanent":
+            # A timed-out edit may already be visible. Do not send a duplicate.
+            mark_notified(state["id"], delivery="edit_unconfirmed")
+            return
+    if claim_fallback(state["id"]):
+        sent = send_message(client, token, state["chat_id"], text, with_keyboard=False)
+        mark_notified(state["id"], delivery="fallback_sent" if sent else "fallback_unconfirmed")
 
 
 def process_update(client: httpx.Client, token: str, update: dict[str, Any]) -> None:
