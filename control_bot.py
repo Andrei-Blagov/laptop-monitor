@@ -849,6 +849,7 @@ def _confirmed_russian_quotes(db_path: Path | str, now: datetime) -> dict[tuple[
     from market_snapshot import load_russian_market_snapshot
     from thai_catalog import russian_offer_views
     from thai_market_ranking import normalized_field
+    from product_identity import normalize_identifier
 
     try:
         raw = load_russian_market_snapshot(Path(db_path).resolve().parent / "russian_market")
@@ -858,18 +859,58 @@ def _confirmed_russian_quotes(db_path: Path | str, now: datetime) -> dict[tuple[
         logger.warning("Russian snapshot unavailable for Telegram TOP: %s", type(exc).__name__)
         return {}
     accepted = {row["best_offer_id"] for row in eligible}
+    records = {row["offer_id"]: row for row in raw.get("offers", ())}
     quotes = {}
+    ambiguous: set[tuple[str, str]] = set()
     for offer in parsed.offers:
         if offer.offer_id not in accepted:
             continue
-        quotes[(offer.source, offer.external_id)] = {
+        record = records.get(offer.offer_id, {})
+        sku_ids = {normalize_identifier(value) for value in record.get("sku_candidates") or ()}
+        mpn_ids = {normalize_identifier(value) for value in record.get("mpn_candidates") or ()}
+        key = (offer.source, offer.external_id)
+        if key in quotes:
+            # One store listing cannot establish two simultaneous configurations.
+            quotes.pop(key)
+            ambiguous.add(key)
+            continue
+        if key in ambiguous:
+            continue
+        quotes[key] = {
             "price": int(offer.price), "url": offer.url,
+            "name": offer.name, "sku_ids": sku_ids - {None}, "mpn_ids": mpn_ids - {None},
+            "nominal_ssd_gb": offer.nominal_ssd_gb,
             "price_checked_at": offer.price_checked_at.isoformat(),
             "availability_checked_at": offer.availability_checked_at.isoformat(),
             **{field: normalized_field(offer, field, now) for field in
                ("gpu", "cpu", "ram_gb", "ssd_gb", "screen_inch", "screen_resolution")},
         }
     return quotes
+
+
+def _same_confirmed_configuration(deal, quote: dict[str, Any]) -> bool:
+    """Reject a reused listing ID when its current variant differs from the snapshot."""
+    from product_identity import normalize_cpu, normalize_identifier, normalize_resolution
+
+    sku = normalize_identifier((deal.offer or {}).get("sku"))
+    mpn = normalize_identifier((deal.offer or {}).get("mpn"))
+    sku_ids = quote["sku_ids"]
+    if sku_ids:
+        if len(sku_ids) != 1 or sku not in sku_ids:
+            return False
+    elif not mpn or mpn not in quote["mpn_ids"]:
+        return False
+    if (re.search(r"DESKTOP|НАСТОЛЬН", str(deal.gpu), re.I) or
+            canonical_gpu(deal.gpu) != quote["gpu"] or
+            normalize_cpu(deal.cpu) != normalize_cpu(quote["cpu"]) or
+            deal.ram_gb != quote["ram_gb"] or
+            normalize_resolution(deal.screen_resolution) != quote["screen_resolution"]):
+        return False
+    if deal.ssd_gb != quote["ssd_gb"] and not (
+            quote["nominal_ssd_gb"] == 1000 and {deal.ssd_gb, quote["ssd_gb"]} == {1000, 1024}):
+        return False
+    return (deal.screen_inch is not None and quote["screen_inch"] is not None and
+            abs(float(deal.screen_inch) - float(quote["screen_inch"])) < 0.05)
 
 
 def unique_russian_top(db_path: Path | str = DEFAULT_DB_PATH, *, limit: int = 10):
@@ -886,8 +927,9 @@ def unique_russian_top(db_path: Path | str = DEFAULT_DB_PATH, *, limit: int = 10
     seen: set[str] = set()
     for deal in deals:
         quote = confirmed.get((deal.store, str((deal.offer or {}).get("external_id") or "")))
-        if (not quote or not deal.cluster_name or not deal.url or
-                quote["price"] != deal.price or quote["url"] != deal.url):
+        if (not quote or not quote["name"] or not deal.cluster_name or not deal.url or
+                quote["price"] != deal.price or quote["url"] != deal.url or
+                not _same_confirmed_configuration(deal, quote)):
             continue
         score = score_offer(
             price=deal.price, gpu=quote["gpu"], cpu=quote["cpu"],
@@ -897,7 +939,7 @@ def unique_russian_top(db_path: Path | str = DEFAULT_DB_PATH, *, limit: int = 10
             historical_min=deal.historical_min,
         )
         deal = replace(
-            deal, gpu=quote["gpu"], cpu=quote["cpu"],
+            deal, cluster_name=quote["name"], gpu=quote["gpu"], cpu=quote["cpu"],
             ram_gb=int(quote["ram_gb"]), ssd_gb=int(quote["ssd_gb"]),
             screen_inch=float(quote["screen_inch"]),
             screen_resolution=quote["screen_resolution"],

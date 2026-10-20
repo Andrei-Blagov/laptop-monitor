@@ -38,11 +38,18 @@ def deal(number: int, **changes) -> RankedDeal:
 
 
 def confirmed_quotes(rows):
+    from deal_ranking import canonical_gpu
+    from product_identity import normalize_identifier
+
     now = datetime.now(timezone.utc).isoformat()
     return {(item.store, str(item.offer.get("external_id") or "")): {
         "price": item.price, "url": item.url,
+        "name": item.cluster_name,
+        "sku_ids": {normalize_identifier(item.offer["sku"])} if item.offer.get("sku") else set(),
+        "mpn_ids": {normalize_identifier(item.offer["mpn"])} if item.offer.get("mpn") else set(),
+        "nominal_ssd_gb": None,
         "price_checked_at": now, "availability_checked_at": now,
-        "gpu": item.gpu, "cpu": item.cpu, "ram_gb": item.ram_gb,
+        "gpu": canonical_gpu(item.gpu), "cpu": item.cpu, "ram_gb": item.ram_gb,
         "ssd_gb": item.ssd_gb, "screen_inch": item.screen_inch,
         "screen_resolution": item.screen_resolution,
     } for item in rows}
@@ -115,7 +122,8 @@ class RussianTopTests(unittest.TestCase):
 
     def test_daily_and_interactive_require_same_own_quote_and_spec_dates(self):
         item = deal(1, cluster_name="MSI Raider 16 HX AI A2XWHG-814XRU",
-                    offer={"sku": "A2XWHG-814XRU", "external_id": "ru-01"}, gpu="RTX 5070 Ti")
+                    offer={"sku": "A2XWHG-814XRU", "external_id": "ru-01"},
+                    gpu="RTX 5070 Ti", cpu="Intel Core Ultra 9 275HX")
         now = datetime.now(timezone.utc)
         fresh = (now - timedelta(minutes=20)).isoformat()
         stale = (now - timedelta(days=8)).isoformat()
