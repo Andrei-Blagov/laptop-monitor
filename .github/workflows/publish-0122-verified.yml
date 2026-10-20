@@ -1,0 +1,54 @@
+name: Publish verified Laptop Monitor 0.12.2
+on:
+  push:
+    branches: [main]
+    paths: ['requests/publish-0.12.2.json']
+permissions:
+  contents: read
+concurrency:
+  group: publish-laptop-0122
+  cancel-in-progress: false
+jobs:
+  publish:
+    if: github.repository == 'Andrei-Blagov/laptop-monitor' && github.ref == 'refs/heads/main' && github.run_attempt == 1
+    runs-on: ubuntu-24.04
+    timeout-minutes: 5
+    permissions:
+      contents: write
+      actions: read
+    steps:
+      - name: Publish only the owner-approved exact tested source after real production acceptance
+        env:
+          GH_TOKEN: ${{ github.token }}
+        shell: python
+        run: |
+          import json,os,urllib.request,urllib.error
+          SOURCE='02acefe01e816140e333169a3d0f3f6c78c0fa2e'
+          MERGE='537319a6bdcbdf8dd6751728bfeeea24394f9392'
+          TREE='fab5bc4538b29f15979814454109890c36ae754f'
+          BODY="## Выпуск 0.12.2 — production подтверждён\n\nПроверенный source SHA: `02acefe01e816140e333169a3d0f3f6c78c0fa2e`. PR #19 merged в `537319a6bdcbdf8dd6751728bfeeea24394f9392`; деревья файлов совпадают. Тег указывает на исходный коммит, из которого собран и установлен пакет.\n\n- Российский TOP, история и ежедневная сводка используют подтверждённые SKU/характеристики, собственные timestamps цены и общий фильтр до 290 000 ₽.\n- Аддитивный `price_history.configuration_key` разделяет комплектации. Все 2323 прежние строки сохранены без backfill. После реального сбора: 2331 строка, включая 5 новых подтверждённых точек. Неподтверждённая старая история не превращается в выдуманные минимумы за 7/30 дней.\n- Существующий Telegram-бот, настройки, адресаты, очередь и receipts сохранены. Нового бота/стенда нет.\n\n### Production и приёмка, 20 октября 2026\n- Единственная установка: [infra run 39386982308](https://github.com/Andrei-Blagov/infra-ops/actions/runs/39386982308), PASS.\n- Пакет: build 39385008333, archive SHA256 `ab6917c06864664b811fc7467e9c711cb9e514981f6714804670e2aac2a2419d`.\n- Image config: `sha256:5fd2401210df8c82ae076ee188851f3f1ff2079c61434ebf4fce50211acf6e5b`; runtime manifest: `sha256:c41c8f4eb986c4b96dbac3ebd0e615fc5c2f55598d1eee0b3971886eddf43bc6`.\n- [Реальная приёмка 39388558332](https://github.com/Andrei-Blagov/infra-ops/actions/runs/39388558332), PASS: действующие обработчики /top, /history, /status, карточка истории и одна явно обозначенная тестовая daily-сводка получили реальные Telegram API ACK в разрешённом чате. Клиентский UI и входящая команда от человека не имитировались и не объявляются проверенными.\n- Четыре свежие модели за 249 690–266 270 ₽; Regard, ANDPRO, KNS и Citilink завершили реальный сбор успешно.\n- Daily acceptance: одна физическая отправка, сохранённый receipt, повторное событие заблокировано; цены/история во время отправки неизменны. Плановый таймер: 08:00 Europe/Moscow, следующий запуск 21 октября; многодневная доставка остаётся предметом наблюдения.\n- Контейнер стартовал 07:41:55.878626314 UTC, restart count 0. Все 148 файлов совпали с release manifest; polling conflict/unauthorized/traceback в проверенном хвосте логов отсутствуют.\n- Свежая полная копия из 172 файлов и offline restore обоими образами PASS, SQLite integrity ok. v0.12.1 и согласованная копия сохранены для отката; binary-only rollback после новых наблюдений не допускается.\n- Точная очистка PR19 остатков освободила 1 055 453 184 байта. Свободно до очистки 15 342 411 776 B, сразу после 16 397 864 960 B, после размещения нового пакета/копий и приёмки 13 292 756 992 B. Глобальный prune не применялся.\n\nНепрерывное наблюдение v0.12.1 закончилось 20 октября в 07:34:28.971341 UTC. Период после обновления относится к v0.12.2. Retention остаётся 7; условное обслуживание после окна наблюдения и проверки восстановления назначено на 27 октября. Необходимые rollback-копии сохраняются.\n"
+          base='https://api.github.com/repos/Andrei-Blagov/laptop-monitor'
+          class NoRedirect(urllib.request.HTTPRedirectHandler):
+              def redirect_request(self,*args,**kwargs):return None
+          client=urllib.request.build_opener(NoRedirect())
+          token=os.environ.pop('GH_TOKEN')
+          def call(path,data=None,missing=False):
+              req=urllib.request.Request(base+path,data=None if data is None else json.dumps(data).encode(),headers={'Authorization':'Bearer '+token,'Accept':'application/vnd.github+json','X-GitHub-Api-Version':'2022-11-28','Content-Type':'application/json'})
+              try:
+                  with client.open(req,timeout=40) as r:return json.load(r)
+              except urllib.error.HTTPError as e:
+                  if missing and e.code==404:return None
+                  raise SystemExit('GitHub operation refused: '+str(e.code)) from None
+          for sha in (SOURCE,MERGE):
+              if call('/git/commits/'+sha)['tree']['sha']!=TREE:raise SystemExit('source tree drift')
+          for run in (39382404843,39382404619,39382404536):
+              r=call('/actions/runs/'+str(run))
+              if r['head_sha']!=SOURCE or r['conclusion']!='success':raise SystemExit('exact source CI mismatch')
+          tag=call('/git/ref/tags/v0.12.2',missing=True)
+          if tag and (tag['object']['type']!='commit' or tag['object']['sha']!=SOURCE):raise SystemExit('existing tag differs; never overwrite')
+          release=call('/releases/tags/v0.12.2',missing=True)
+          if release is None:
+              release=call('/releases',{'tag_name':'v0.12.2','target_commitish':SOURCE,'name':'Laptop Monitor 0.12.2','body':BODY,'draft':False,'prerelease':False,'make_latest':'true'})
+          tag=call('/git/ref/tags/v0.12.2')
+          if tag['object']['sha']!=SOURCE or release['draft'] or release['prerelease']:raise SystemExit('publication mismatch')
+          print(json.dumps({'status':'PUBLISHED','url':release['html_url'],'tag':release['tag_name'],'source_sha':SOURCE,'release_id':release['id']}))
