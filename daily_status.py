@@ -55,7 +55,8 @@ def daily_status(root, *, now=None, expected_recipients=None):
     root = Path(root)
     now = now or datetime.now(timezone.utc)
     day = now.astimezone(MOSCOW).date()
-    out = {"today_ack": 0, "today_parts": 0, "today_parts_expected": 0, "invalid": 0, "pending": 0, "failed": 0,
+    out = {"today_ack": 0, "today_parts": 0, "today_parts_expected": 0, "invalid": 0, "historical_invalid": 0,
+           "undated_invalid": 0, "pending": 0, "failed": 0,
            "last_day": None, "last_ack_persisted_at": None, "unknown": False}
     for folder in ("pending", "processing", "deferred", "delivery", "delivering", "archive", "failed"):
         paths = list((root / folder).glob("*.json"))
@@ -63,6 +64,7 @@ def daily_status(root, *, now=None, expected_recipients=None):
             out["unknown"] = True
             return out
         for path in paths:
+            event_day = None
             try:
                 event = _read(path)
                 if event.get("trigger_type") != "daily":
@@ -93,7 +95,13 @@ def daily_status(root, *, now=None, expected_recipients=None):
                         out["last_day"] = event_day.isoformat()
                         out["last_ack_persisted_at"] = datetime.fromtimestamp(path.stat().st_mtime, timezone.utc).isoformat()
             except (OSError, ValueError, KeyError, TypeError, AttributeError):
-                out["invalid"] += 1
+                if event_day is not None and event_day < day:
+                    out["historical_invalid"] += 1
+                else:
+                    # Missing/invalid dates cannot be assumed to be historical.
+                    out["invalid"] += 1
+                    if event_day is None:
+                        out["undated_invalid"] += 1
     return out
 
 
@@ -106,4 +114,6 @@ def format_daily_status(status):
             f"Последняя полная daily: {status['last_day'] or 'нет подтверждения'}.\n"
             f"ACK сохранён: {status['last_ack_persisted_at'] or 'неизвестно'}.\n"
             f"Daily в очереди: {status['pending']}; failed: {status['failed']}; невалидных: {status['invalid']}.\n"
+            f"Невалидных прошлых записей: {status.get('historical_invalid', 0)}; "
+            f"без проверенной даты: {status.get('undated_invalid', 0)}.\n"
             "ACK означает принятие Telegram API, не прочтение сообщения.")
