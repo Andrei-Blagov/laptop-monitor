@@ -1,5 +1,10 @@
 # Changelog
 
+## 0.12.4 - daily receipt date correction
+
+- Today's daily confirmation is evaluated separately from invalid historical receipts. Historical errors remain visible; unknown-date and future invalid receipts still warn.
+- Read-only diagnostics only: no history, queue or ACK records are changed.
+
 ## 0.12.3 - local candidate (not deployed)
 
 - Four primary Telegram commands, explicit secondary actions, unsupported-argument and stale-button explanations.

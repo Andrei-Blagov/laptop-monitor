@@ -9,7 +9,7 @@ from unittest.mock import Mock, patch
 
 import control_bot as bot
 import history_archive as archive
-from daily_status import daily_status
+from daily_status import daily_status, format_daily_status
 from model_price_history import assert_history_readonly
 from tests import test_confirmed_price_history as history_fixture
 
@@ -176,3 +176,30 @@ class DailyStatusTests(unittest.TestCase):
         status=daily_status(self.root,now=self.now,expected_recipients={'OTHER_FAKE_CHAT'})
         self.assertEqual(status['today_ack'],0)
         self.assertGreater(status['invalid'],0)
+
+    def test_historical_invalid_ack_does_not_invalidate_today_or_change_records(self):
+        self.receipt()
+        old = {'trigger_type':'daily', 'created_at':(self.now-timedelta(days=5)).isoformat(),
+               'delivery_state':'sent', 'recipients':['FAKE_CHAT'], 'delivered_part_ids':[{}]}
+        path = self.root/'archive'/'old.json'
+        original = json.dumps(old).encode()
+        path.write_bytes(original)
+        status = daily_status(self.root,now=self.now)
+        self.assertEqual((status['today_ack'],status['invalid'],status['historical_invalid']),(1,0,1))
+        self.assertIn('сегодня: подтверждена',format_daily_status(status))
+        self.assertEqual(path.read_bytes(),original)
+        old['created_at'] = self.now.isoformat()
+        path.write_text(json.dumps(old),encoding='utf-8')
+        status = daily_status(self.root,now=self.now)
+        self.assertEqual((status['invalid'],status['historical_invalid']),(1,0))
+        self.assertIn('аномалия подтверждений',format_daily_status(status))
+
+    def test_unknown_or_future_date_cannot_be_hidden_as_historical(self):
+        self.receipt()
+        for name,created in [('unknown','invalid'),('naive',self.now.replace(tzinfo=None).isoformat()),
+                             ('future',(self.now+timedelta(days=1)).isoformat())]:
+            event = {'trigger_type':'daily','created_at':created,'delivery_state':'sent'}
+            (self.root/'archive'/(name+'.json')).write_text(json.dumps(event),encoding='utf-8')
+        status = daily_status(self.root,now=self.now)
+        self.assertEqual((status['invalid'],status['undated_invalid'],status['historical_invalid']),(3,2,0))
+        self.assertIn('аномалия подтверждений',format_daily_status(status))
