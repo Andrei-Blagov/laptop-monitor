@@ -765,8 +765,7 @@ def main(argv: list[str] | None = None) -> int:
         return EXIT_LOCKED
     print_pipeline_summary(result)
     # Ops alert only for scheduled/CLI runs — not unit tests.
-    if result.status in {PIPELINE_STATUS_PARTIAL, PIPELINE_STATUS_FAILED}:
-        maybe_notify_ops_failure(result)
+    maybe_notify_ops_failure(result)
     return result.exit_code
 
 

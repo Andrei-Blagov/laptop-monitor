@@ -1,5 +1,12 @@
 # Changelog
 
+## 0.12.3 - local candidate (not deployed)
+
+- Four primary Telegram commands, explicit secondary actions, unsupported-argument and stale-button explanations.
+- Read-only paginated saved history by persisted configuration; legacy stays separate, delisted models do not become fresh offers.
+- Daily status validates complete durable content ACKs separately from price notifications; confirmed price ages are shown.
+- Operational alerts on incident appearance/change/recovery, durable no-repeat claims and signed n8n sender ownership.
+
 ## 0.12.2 — candidate (not deployed)
 
 - Russian TOP/daily cards: SKU, confirmed configuration price minimum and 7/30-day changes.

@@ -94,6 +94,7 @@ def build_pipeline_completed_payload(
         tops.append(entry)
     payload: dict[str, Any] = {
         "event": "pipeline.completed",
+        "ops_notifications_owner": "application",
         "app_version": get_version(),
         "instance_id": config.get_instance_id(),
         "run_id": run_id,

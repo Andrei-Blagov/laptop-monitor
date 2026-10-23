@@ -80,8 +80,8 @@ class DispatchTests(unittest.TestCase):
 
     def test_help_lists_commands(self) -> None:
         sent, _ = self._run("/help")
-        self.assertIn("/recommend —", sent[0])
-        self.assertIn("/run —", sent[0])
+        self.assertIn("/top —", sent[0])
+        self.assertNotIn("/run —", sent[0])
 
     def test_run_uses_existing_handler(self) -> None:
         with patch("control_bot._is_admin", return_value=True), patch(

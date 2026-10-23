@@ -100,18 +100,13 @@ CALLBACK_RECOMMEND = "rq:"
 
 # Canonical BotFather list. Names are lowercase, without a slash.
 BOT_COMMANDS: tuple[tuple[str, str], ...] = (
-    ("start", "Открыть главное меню"),
-    ("menu", "Главное меню"),
-    ("recommend", "Стоит ли покупать модель из TOP-10"),
-    ("top", "TOP-10 России"),
+    ("top", "Предложения"),
     ("history", "История цен"),
-    ("markets", "Россия и Таиланд"),
-    ("mytop", "Избранное"),
-    ("run", "Обновить цены"),
-    ("status", "Статус системы"),
-    ("version", "Версия бота"),
+    ("status", "Статус и свежесть"),
     ("help", "Помощь"),
 )
+BTN_HELP = "ctrl:help"
+BTN_EXTRA = "ctrl:extra"
 
 
 def _api(token: str, method: str) -> str:
@@ -139,6 +134,9 @@ def format_help_text() -> str:
     for name, description in BOT_COMMANDS:
         shown = description[:1].lower() + description[1:] if description else description
         lines.append(f"/{name} — {shown}")
+    lines.extend(["", "Ежедневная сводка — в 08:00 МСК, даже без изменений цен.",
+                  "/start и /menu открывают меню. Ручное обновление и список из настроек — в дополнительных действиях.",
+                  "Команды не принимают параметры; модель выбирается кнопкой."])
     return "\n".join(lines)
 
 
@@ -153,6 +151,9 @@ def handle_text_message(
     if parsed is None:
         return
     name, _args = parsed
+    if _args and name in {"start", "menu", "help", "run", "top", "history", "recommend", "markets", "mytop", "status", "version"}:
+        send_message(client, token, chat_id, "Эта команда не принимает параметры. Выберите модель или действие кнопкой в меню.")
+        return
     if name == "start":
         send_message(client, token, chat_id, f"<b>{APP_NAME}</b>\nВыберите действие:")
     elif name == "menu":
@@ -185,24 +186,35 @@ def handle_text_message(
 
 
 def _keyboard() -> dict[str, Any]:
-    return {
-        "inline_keyboard": [
-            [
-                {"text": "Обновить цены", "callback_data": BTN_RUN},
-                {"text": "TOP-10 России", "callback_data": BTN_TOP},
-            ],
-            [
-                {"text": "⭐ Избранное", "callback_data": BTN_PERSONAL},
-            ],
-            [
-                {"text": "📈 История цен", "callback_data": BTN_HISTORY},
-            ],
-            [
-                {"text": "Статус", "callback_data": BTN_STATUS},
-                {"text": "Дополнительно", "callback_data": BTN_MARKETS},
-            ],
-        ]
-    }
+    return {"inline_keyboard": [
+        [{"text": "Предложения", "callback_data": BTN_TOP},
+         {"text": "История цен", "callback_data": BTN_HISTORY}],
+        [{"text": "Статус", "callback_data": BTN_STATUS},
+         {"text": "Помощь", "callback_data": BTN_HELP}],
+        [{"text": "Дополнительно", "callback_data": BTN_EXTRA}],
+    ]}
+
+
+def _extra_keyboard() -> dict[str, Any]:
+    return {"inline_keyboard": [
+        [{"text": "Обновить цены (новый сбор)", "callback_data": BTN_RUN}],
+        [{"text": "Мой список из настроек", "callback_data": BTN_PERSONAL}],
+        [{"text": "Рынки", "callback_data": BTN_MARKETS},
+         {"text": "Версия", "callback_data": BTN_VERSION}],
+        [{"text": "Меню", "callback_data": CALLBACK_MENU}],
+    ]}
+
+
+def register_commands(client, token):
+    """One bounded update per configured admin chat; no new recipient or broadcast."""
+    ok = True
+    for chat_id in sorted(config.get_telegram_admin_chat_ids()):
+        response = _post_telegram(client, token, "setMyCommands", {
+            "commands": [{"command": name, "description": description} for name, description in BOT_COMMANDS],
+            "scope": {"type": "chat", "chat_id": chat_id},
+        })
+        ok = bool(response and response.get("ok")) and ok
+    return ok
 
 
 def _markets_keyboard() -> dict[str, Any]:
@@ -453,6 +465,9 @@ def handle_history_list(
     items = build_history_picker_items(DEFAULT_DB_PATH)
     text = format_history_picker_message(items)
     markup = build_history_picker_keyboard(items)
+    markup["inline_keyboard"].insert(0, [{"text": "Сохранённая история (включая исчезнувшие модели)", "callback_data": "ha:page:0"}])
+    if not items:
+        text = "Свежих подходящих моделей сейчас нет. Сохранённая история доступна отдельной кнопкой; данные не удалены."
     _reply_or_edit(
         client,
         token,
@@ -551,6 +566,47 @@ def handle_chart_render(
         )
 
 
+def handle_saved_history(client, token, chat_id, data, *, message_id=None):
+    import history_archive as archive
+    import sqlite3
+    try:
+        return _handle_saved_history(client, token, chat_id, data, message_id=message_id)
+    except (OSError, ValueError, sqlite3.DatabaseError):
+        send_message(client, token, chat_id, "Не удалось прочитать сохранённую историю. Проверьте /status; данные не изменялись.")
+
+
+def _handle_saved_history(client, token, chat_id, data, *, message_id=None):
+    import history_archive as archive
+    match = re.fullmatch(r"ha:page:(\d{1,6})", data)
+    if match:
+        text, markup = archive.page(DEFAULT_DB_PATH, int(match[1]))
+        _reply_or_edit(client, token, chat_id, text, message_id=message_id, reply_markup=markup)
+        return
+    match = re.fullmatch(r"ha:(pick|chart):(.*)", data)
+    if match:
+        action, token_id = match.groups()
+        period = None
+        if action == "chart":
+            bits = token_id.split(":", 1)
+            period, token_id = bits if len(bits) == 2 else (None, "")
+        if re.fullmatch(r"[a-f0-9]{20}", token_id):
+            entry = archive.resolve(DEFAULT_DB_PATH, token_id)
+            if entry is not None:
+                text, markup = archive.card(entry)
+                if action == "pick":
+                    _reply_or_edit(client, token, chat_id, text, message_id=message_id, reply_markup=markup)
+                    return
+                try:
+                    png, caption = archive.chart(entry, period)
+                    if send_photo(client, token, chat_id, png, caption=caption, reply_markup=markup):
+                        return
+                except (ValueError, OSError):
+                    pass
+                send_message(client, token, chat_id, "Нет подтверждённых точек за выбранный период или график недоступен.", with_keyboard=False, reply_markup=markup)
+                return
+    send_message(client, token, chat_id, "Ссылка на историю устарела или некорректна. Откройте /history заново.")
+
+
 def _deliver_status_readonly(db_path: Path | str) -> dict[str, int]:
     try:
         conn = open_db_readonly(db_path)
@@ -637,18 +693,19 @@ def build_status_text(db_path: Path | str = DEFAULT_DB_PATH) -> str:
     last = runs[0] if runs else None
     latest = get_latest_store_runs_readonly(db_path)
     operation = read_request() if Path(db_path) == Path(DEFAULT_DB_PATH) else {}
-    fresh_count = len(unique_russian_top(db_path, limit=0))
-    sent_at = None
-    try:
-        conn = open_db_readonly(db_path)
+    deals = unique_russian_top(db_path, limit=0)
+    fresh_count = len(deals)
+    ages = []
+    for deal in deals:
         try:
-            row = conn.execute("SELECT MAX(sent_at) AS sent_at FROM notification_deliveries "
-                               "WHERE channel = ? AND status = 'sent'", (config.CHANNEL_TELEGRAM,)).fetchone()
-            sent_at = row["sent_at"] if row else None
-        finally:
-            conn.close()
-    except Exception:
-        pass
+            stamp = datetime.fromisoformat(str(deal.offer.get("price_checked_at")).replace("Z", "+00:00"))
+            if stamp.tzinfo is not None:
+                ages.append(max(0, int((datetime.now(timezone.utc) - stamp).total_seconds() / 60)))
+        except (TypeError, ValueError):
+            pass
+    from daily_status import daily_status, format_daily_status
+    daily = daily_status(Path(db_path).resolve().parent / "thailand_jobs",
+                         expected_recipients=config.get_telegram_admin_chat_ids())
     lines = [
         f"<b>{APP_NAME} {get_version()}</b>",
         f"Подходящих моделей сейчас: {fresh_count}",
@@ -656,9 +713,23 @@ def build_status_text(db_path: Path | str = DEFAULT_DB_PATH) -> str:
         f"Итог сбора: {last.get('status') if last else 'нет'}",
         f"Ручная проверка: {operation.get('status') or 'нет'}"
         + (f" (№ {operation.get('id', '')[:8]})" if operation.get('id') else ""),
-        f"Последняя успешная отправка: {sent_at or 'нет'}",
+        f"Возраст подтверждённых цен: {max(ages) if ages else 'неизвестен'} мин.",
+        format_daily_status(daily),
     ]
     lines.extend(format_store_summary_lines(store_statuses=latest))
+    from ops_notifications import _error_kind
+    for slug, row in sorted(latest.items()):
+        try:
+            stamp = datetime.fromisoformat(str(row.get("finished_at") or row.get("attempted_at")).replace("Z", "+00:00"))
+            age = max(0, int((datetime.now(timezone.utc) - stamp).total_seconds() / 60)) if stamp.tzinfo else None
+        except (TypeError, ValueError):
+            age = None
+        description = f"{html.escape(slug)}: попытка {age if age is not None else 'неизвестно'} мин. назад"
+        if str(row.get("status")).lower() == "failed":
+            kind = _error_kind(row.get("error_message") or row.get("error"))
+            reason = "получено недостаточно предложений" if kind == "sanity" else html.escape(kind)
+            description += "; ошибка: " + reason
+        lines.append(description)
     if not fresh_count:
         lines.append(russian_top_empty_reason(db_path))
     return "\n".join(lines)
@@ -760,7 +831,7 @@ def handle_personal_top(
     from product_identity import normalize_identifier
 
     deals = unique_russian_top(DEFAULT_DB_PATH, limit=0)
-    lines = ["<b>⭐ Избранное — Россия</b>"]
+    lines = ["<b>Мой список из настроек — Россия</b>"]
     for model in config.PERSONAL_TOP3:
         codes = exact_skus(model)
         deal = next((item for item in deals if codes & (
@@ -792,6 +863,7 @@ def handle_personal_top(
             lines.append(f"Вариант серии: {html.escape(series_variant)}")
         lines.append(f"В наличии · {int(deal.price):,} ₽ · {html.escape(deal.store)}".replace(",", " "))
         lines.append(html.escape(deal.url or ""))
+    lines.append("Список фиксирован в настройках; добавить модель из чата сейчас нельзя.")
     text = "\n".join(lines)
     _reply_or_edit(
         client,
@@ -1314,7 +1386,14 @@ def process_update(client: httpx.Client, token: str, update: dict[str, Any]) -> 
             message_id = int(message_id_raw) if message_id_raw is not None else None
         except (TypeError, ValueError):
             message_id = None
-        if data == BTN_RUN:
+        if data == BTN_HELP:
+            send_message(client, token, chat_id, format_help_text())
+        elif data == BTN_EXTRA:
+            _reply_or_edit(client, token, chat_id, "Дополнительные действия. Новый сбор запускается только по явному выбору.",
+                           message_id=message_id, reply_markup=_extra_keyboard())
+        elif data.startswith("ha:"):
+            handle_saved_history(client, token, chat_id, data, message_id=message_id)
+        elif data == BTN_RUN:
             handle_run(client, token, chat_id)
         elif data == BTN_TOP:
             handle_top(client, token, chat_id)
@@ -1406,6 +1485,8 @@ def process_update(client: httpx.Client, token: str, update: dict[str, Any]) -> 
             else:
                 period, product_id = parsed
                 handle_chart_render(client, token, chat_id, product_id, period)
+        else:
+            send_message(client, token, chat_id, "Эта кнопка устарела или неизвестна. Откройте /menu и выберите действие заново.")
         return
 
     if message:
@@ -1432,6 +1513,8 @@ def run_polling(*, timeout: int = 25) -> None:
             get_version(),
             config.get_instance_id(),
         )
+        if not register_commands(client, token):
+            logger.warning("Telegram command menu update unconfirmed")
         while True:
             notify_manual_result(client, token)
             try:
