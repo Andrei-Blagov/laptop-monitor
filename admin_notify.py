@@ -34,35 +34,14 @@ def format_ops_message(result: Any) -> str:
     return "\n".join(lines)
 
 
-def maybe_notify_ops_failure(result: Any) -> bool:
+def maybe_notify_ops_failure(result: Any, *, state_path=None) -> bool:
     """
-    Send short admin ops alert for PARTIAL/FAILED.
+    Send one operational transition alert, including recovery.
 
-    Returns True if a message was sent successfully.
+    Retained entry point; durable claims live in ops_notifications.
+    Returns True only for a confirmed message ID, never a synthetic ACK.
     Never raises; failures stay in logs only.
     """
-    status = getattr(result, "status", None)
-    if status not in {PIPELINE_STATUS_PARTIAL, PIPELINE_STATUS_FAILED}:
-        return False
-    try:
-        token, default_chat = config.get_telegram_credentials()
-        admins = config.get_telegram_admin_chat_ids() or {default_chat}
-        text = format_ops_message(result)
-        ok_any = False
-        for chat_id in admins:
-            sender = TelegramSender(token, chat_id)
-            try:
-                res = sender.send_message(text)
-                ok_any = ok_any or bool(res.ok)
-                if not res.ok:
-                    logger.error(
-                        "Ops admin notify failed chat=%s error=%s",
-                        chat_id,
-                        res.error,
-                    )
-            finally:
-                sender.close()
-        return ok_any
-    except Exception:
-        logger.exception("Ops admin notify unavailable")
-        return False
+    from ops_notifications import notify_transition
+
+    return notify_transition(result, state_path=state_path)

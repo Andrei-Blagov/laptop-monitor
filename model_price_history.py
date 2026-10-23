@@ -310,7 +310,7 @@ def history_nav_keyboard(product_id: int) -> dict[str, Any]:
             [
                 {"text": "⬅️ К списку", "callback_data": CALLBACK_LIST},
                 {
-                    "text": "🔄 Обновить",
+                    "text": "🔄 Обновить из базы",
                     "callback_data": make_refresh_callback(product_id),
                 },
             ],

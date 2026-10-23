@@ -321,7 +321,7 @@ class PriceMathTests(unittest.TestCase):
 class UxTests(unittest.TestCase):
     def test_main_menu_opens_russian_top(self) -> None:
         text = json.dumps(_keyboard(), ensure_ascii=False)
-        self.assertIn("TOP-10 России", text)
+        self.assertIn("Предложения", text)
         self.assertIn("ctrl:top", text)
 
     def test_selector_has_ten_compact_callbacks(self) -> None:
