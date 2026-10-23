@@ -1,0 +1,27 @@
+{
+  "date": "2026-10-23",
+  "base_sha": "8200765230a5f5d33f6db9ef65362fb81f747abd",
+  "status": "LOCAL_PROPOSAL_NOT_PUBLISHED",
+  "files": [
+    {
+      "original_path": ".github/workflows/checks.yml",
+      "archived_path": "docs/workflow-archive/2026-10-23/checks.yml",
+      "sha256": "3f041c850ec4136ccff445e74eb61d7685b89c1148c5c32880978af4c518334d"
+    },
+    {
+      "original_path": ".github/workflows/finalization-proof.yml",
+      "archived_path": "docs/workflow-archive/2026-10-23/finalization-proof.yml",
+      "sha256": "6d6acfbdd7888e001b54519600e4dd81c952eaac09430bbf7b217c257cad25a0"
+    },
+    {
+      "original_path": ".github/workflows/publish-0122-verified.yml",
+      "archived_path": "docs/workflow-archive/2026-10-23/publish-0122-verified.yml",
+      "sha256": "ad648e69b8dc3bec667b03e56dd0b0809036aabf708f31cae7907527ccc988c5"
+    },
+    {
+      "original_path": ".github/workflows/ru-morning-checks.yml",
+      "archived_path": "docs/workflow-archive/2026-10-23/ru-morning-checks.yml",
+      "sha256": "de38599f18a583b0239b4b2ee269e21292d169b9c21fa7801f5ec04bef43b09c"
+    }
+  ]
+}
